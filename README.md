@@ -667,10 +667,39 @@ the chat renders one wherever it arrives — in a tool's result, or in what the
 agent says. So "screenshot the dev server and show me" is a thing to ask for
 from a phone.
 
-Chromium only; Firefox and WebKit are not installed, and there is no display,
-so `--headed` cannot work. `playwright-cli install-browser chromium --only-shell`
-in a derived image drops the full browser and keeps just the headless shell if
-image size matters more than the option of a headed run later.
+**Firefox and WebKit are one download away.** Their *binaries* are not in the
+image — that would roughly double the browser layer for something most
+sessions never open — but their system libraries are, which is the half a
+session cannot install for itself:
+
+```sh
+export PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright
+npx playwright install firefox webkit
+```
+
+That is the same route as the Chromium one above and it now ends in a browser
+that starts. Without the libraries in the image it did not: `apt-get` needs a
+root and a writable `/usr` that no session has, so the download reported
+success and the launch died on `libgtk-3.so.0` — or, for WebKit, on any of
+forty-odd gstreamer and flite objects — which reads as a broken image rather
+than as a missing package. The image build proves the route by walking it: it
+downloads both, launches each and deletes them again, so a version bump that
+breaks this stops the build rather than reaching a session.
+
+Libraries rather than binaries is also the half that keeps. A binary in the
+image would be pinned to the revision *this* image's Playwright wants, and a
+project pinning its own resolves a different one and downloads it regardless —
+the same reason `/usr/local/bin/chromium` exists. Library names carry no such
+revision.
+
+There is still no display, so `--headed` cannot work in any of the three.
+`playwright-cli install-browser chromium --only-shell` in a derived image
+drops the full browser and keeps just the headless shell if image size matters
+more than the option of a headed run later. A deployment that only ever drives
+Chromium drops the Firefox and WebKit libraries by deleting that block from
+its own copy of the Dockerfile — a derived image cannot take them back out,
+since an `apt-get purge` in a later layer removes the files without
+recovering the bytes.
 
 ### The agent installs it itself
 

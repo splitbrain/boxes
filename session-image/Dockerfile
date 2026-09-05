@@ -177,10 +177,12 @@ RUN npm install -g --prefix /usr/local \
 # Pinned, like the ACP adapter, and for a better reason: this is 0.1.x, and it
 # depends on a prerelease Playwright.
 #
-# Chromium only. Firefox and WebKit would roughly double the layer, and a
-# coding agent wants a browser rather than a compatibility matrix. Ubuntu's own
-# chromium is not an option in any case -- it is a virtual package standing in
-# for a snap, and snapd does not run in here.
+# Chromium is the only browser *binary* here. Firefox and WebKit would roughly
+# double the layer, and a coding agent wants a browser rather than a
+# compatibility matrix -- but a project that does want the matrix can download
+# them for itself, and the block after this one is what makes that work.
+# Ubuntu's own chromium is not an option in any case -- it is a virtual package
+# standing in for a snap, and snapd does not run in here.
 #
 # --with-deps rather than a hand-written library list, because Playwright
 # maintains that mapping per distribution and Ubuntu's 64-bit time_t
@@ -221,6 +223,55 @@ RUN npm install -g --prefix /usr/local @playwright/cli@${PLAYWRIGHT_CLI_VERSION}
       -path '*/chromium-*' -print -quit)" /usr/local/bin/chromium \
  && chromium --version \
  && apt-get update && apt-get install -y --no-install-recommends libnss3-tools \
+ && rm -rf /var/lib/apt/lists/*
+
+# Firefox's and WebKit's system libraries, without their browser binaries.
+#
+# The binaries are the half a session can supply for itself and the libraries
+# are the half it cannot: `npx playwright install firefox` downloads happily
+# into the home volume as the agent, and then the browser will not start,
+# because `apt-get` needs a root and a writable /usr that no session has. What
+# that looks like is a download that reports success followed by a launch that
+# dies on `libgtk-3.so.0`, or on WebKit's forty-odd gstreamer and flite
+# objects -- which reads as a broken image rather than as a missing package.
+# Putting the libraries here and leaving the binaries out is what makes the
+# documented "download the build your version wants" route in the README work
+# for all three browsers instead of only for Chromium.
+#
+# Deps rather than binaries is also the only half that keeps: a binary here
+# would be at the revision *this* image's Playwright pins, and a project
+# pinning its own resolves a different revision, looks for it under a
+# read-only PLAYWRIGHT_BROWSERS_PATH and downloads its own anyway -- the same
+# argument the /usr/local/bin/chromium link above exists to answer. Library
+# names are not versioned that way, so one install serves whatever Playwright
+# a project brings. It costs roughly what the two binaries would have, mostly
+# in WebKit's gstreamer stack; a deployment that only ever drives Chromium
+# deletes this block and the check that pairs with it, which is the only way
+# to get the bytes back -- purging in a derived layer would not.
+#
+# `install-deps` is Playwright's own per-distribution package mapping, taken
+# rather than hand-written for the reason `--with-deps` is used above. It is
+# not a `playwright-cli` subcommand -- that CLI installs browsers, not deps --
+# so this reaches for the playwright-core that @playwright/cli depends on. A
+# global npm install nests its dependencies under the package rather than
+# hoisting them, which is what fixes that path; /usr/local is named outright
+# because `npm root -g` answers with the agent's own prefix later in this file.
+#
+# --dry-run is the assertion, and it is here because the install without it
+# cannot fail loudly: a package renamed out from under the map is one apt
+# error in a wall of apt output. The dry run re-resolves the same list and
+# exits non-zero if anything is still missing. Before the lists are removed,
+# since it simulates with `apt-get install -s`.
+#
+# It is not the whole guard. Playwright's map is keyed by architecture and
+# carries only x64 today, so on arm64 both commands resolve an empty list,
+# say `Cannot install dependencies for ubuntu26.04-arm64` and exit 0 -- a
+# warning, not a failure, and the dry run agrees with it because nothing was
+# asked for. What catches that is the launch further down, which is also the
+# only thing that catches a library the map merely forgot.
+RUN pw=/usr/local/lib/node_modules/@playwright/cli/node_modules/.bin/playwright \
+ && "$pw" install-deps firefox webkit \
+ && "$pw" install-deps --dry-run firefox webkit \
  && rm -rf /var/lib/apt/lists/*
 
 # The environment's half of the CLI's configuration: which browser, and the two
@@ -395,6 +446,57 @@ RUN set -eu; \
     grep -qE 'button "Continue" \[ref=e[0-9]+\]' .playwright-cli/*.yml; \
     playwright-cli close; \
     rm -rf /tmp/index.html /tmp/.playwright /tmp/.playwright-cli
+
+# Firefox and WebKit do the same, the way a session would have to get them:
+# downloaded as the agent into the home volume, run from there, deleted again.
+#
+# This is the check the layer above exists for, and nothing cheaper stands in
+# for it. `install-deps` reports success for packages it installed, not for a
+# browser that starts, and the two differ exactly where it matters -- a
+# library Playwright's map forgot, one whose package apt satisfied with a
+# soname the build does not link against, or an architecture the map has no
+# entry for at all -- each of which shows up only when the process execs.
+#
+# Firefox sharpens that: Playwright publishes a WebKit built for 26.04 but no
+# Firefox, and points 26.04 at the 24.04 Firefox build instead. So the one
+# browser here running against libraries from a release it was not built on
+# is the one this most needs to try, and a future image bump that moves the
+# base off a release Playwright still maps stops here rather than in a
+# session.
+#
+# PLAYWRIGHT_BROWSERS_PATH is overridden to the location the README tells a
+# project to use, rather than the image's /opt/playwright, for two reasons:
+# that directory is what a session can actually write, so pointing at it is
+# what proves the documented route rather than a build-time-only one, and the
+# binaries are meant to leave with this RUN. Docker initialises a session's
+# home volume from this image once and never again, so anything still in
+# /home/agent/.cache at the end of the build is frozen into every session that
+# is ever created -- the same reason the toolchain caches below are removed.
+#
+# setContent rather than a served page: this is asking whether the browser
+# process starts and renders, which the check above already asks over http for
+# Chromium, and a second loopback server would only add a way for this to fail
+# that has nothing to do with browsers. playwright-core is required by path
+# for the reason install-deps was.
+RUN set -eu; \
+    export PLAYWRIGHT_BROWSERS_PATH=/home/agent/.cache/ms-playwright; \
+    deps=/usr/local/lib/node_modules/@playwright/cli/node_modules; \
+    "$deps/.bin/playwright" install firefox webkit; \
+    node -e ' \
+      const pw = require(process.argv[1]); \
+      (async () => { \
+        for (const name of ["firefox", "webkit"]) { \
+          const browser = await pw[name].launch(); \
+          const page = await browser.newPage(); \
+          await page.setContent("<title>t</title><button>Continue</button>"); \
+          const text = await page.textContent("button"); \
+          if (text !== "Continue") throw new Error(name + " rendered " + text); \
+          await browser.close(); \
+          console.log(name + " ok"); \
+        } \
+      })().catch((e) => { console.error(e); process.exit(1); }); \
+    ' "$deps/playwright-core"; \
+    rm -rf /home/agent/.cache
 
 # The toolchains build something, as the agent, with their caches where a
 # session will really put them.
