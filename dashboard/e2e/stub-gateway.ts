@@ -92,6 +92,16 @@ export interface StubGateway {
   release: () => void;
   /** Releases every held session/load, replay and all. */
   releaseLoad: () => void;
+  /**
+   * How many session/loads are parked, waiting to be released.
+   *
+   * Asked before releasing them, because a browser that has not sent its
+   * load yet cannot have it released: the release frees what is parked, and
+   * a load arriving a moment later parks behind it and stays there. A test
+   * that assumed otherwise waited out its own timeout for a window that had
+   * never opened.
+   */
+  loadsHeld: () => number;
   /** Sends one update to the sockets watching a thread, and records it. */
   emit: (update: SessionUpdate, threadId?: string) => void;
   close: () => void;
@@ -435,6 +445,7 @@ export function attachStubGateway(
     releaseLoad: () => {
       for (const go of heldLoads.splice(0)) go();
     },
+    loadsHeld: () => heldLoads.length,
     emit,
     close: () => {
       for (const ws of sockets.keys()) ws.close();

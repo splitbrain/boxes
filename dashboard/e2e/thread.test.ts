@@ -135,9 +135,7 @@ test('a prompt streams back and renders as it arrives', async () => {
     expect(stub.gateway.prompts).toEqual(['summarise the proxy']);
 
     await expect
-      .poll(() => page.getByText('resolved address.', { exact: false }).isVisible(), {
-        timeout: 5000,
-      })
+      .poll(() => page.getByText('resolved address.', { exact: false }).isVisible())
       .toBe(true);
     // Markdown, not literal asterisks.
     expect(await page.locator('strong', { hasText: 'vets' }).count()).toBe(1);
@@ -388,9 +386,7 @@ test('a second tab sees updates live', async () => {
 
     // The gateway broadcasts every update to every attached browser.
     await expect.poll(() => a.page.getByText('Shared answer.').isVisible()).toBe(true);
-    await expect
-      .poll(() => b.page.getByText('Shared answer.').isVisible(), { timeout: 5000 })
-      .toBe(true);
+    await expect.poll(() => b.page.getByText('Shared answer.').isVisible()).toBe(true);
     expect(a.errors).toEqual([]);
     expect(b.errors).toEqual([]);
   } finally {
@@ -445,8 +441,14 @@ test('a thread that has not been read yet shows a placeholder, then all of it at
 
   const { page, errors, close } = await openPage(stub.url, `/sessions/${SESSION.id}`);
   try {
-    // The load is held, which is the box still starting as far as this
-    // browser can tell: no history has arrived and none of it is on screen.
+    // The browser has asked for its history and the stub is sitting on the
+    // answer. Waited for rather than assumed: releasing frees the loads that
+    // are parked, so releasing before one arrives frees nothing and holds
+    // this browser for good.
+    await expect.poll(() => stub.gateway.loadsHeld()).toBe(1);
+
+    // Which is the box still starting as far as this browser can tell: no
+    // history has arrived and none of it is on screen.
     await expect.poll(() => page.locator('[data-slot="thread-loading"]').isVisible()).toBe(true);
 
     // Nothing to type into and nothing that claims the thread is empty. The
@@ -460,9 +462,7 @@ test('a thread that has not been read yet shows a placeholder, then all of it at
     // The placeholder goes when the conversation arrives, and what arrives is
     // the whole of it: the first exchange and the last are on screen in the
     // same breath, not one render apart.
-    await expect
-      .poll(() => page.locator('[data-slot="thread-loading"]').count(), { timeout: 5000 })
-      .toBe(0);
+    await expect.poll(() => page.locator('[data-slot="thread-loading"]').count()).toBe(0);
     expect(await page.getByText('asking about exchange number 0').count()).toBe(1);
     expect(await page.getByText('answering about exchange number 11').count()).toBe(1);
     // And now there is somewhere to type.
@@ -527,12 +527,8 @@ test('the header steps aside while reading down, and returns on the way back up'
 
     // Counted rather than seen: an assistant message below the fold is
     // render-skipped (globals.css), so it has no box to be visible in.
-    await expect
-      .poll(() => page.getByText('paragraph number 39').count(), { timeout: 10000 })
-      .toBe(1);
-    await expect
-      .poll(() => page.getByLabel('Stop generating').count(), { timeout: 5000 })
-      .toBe(0);
+    await expect.poll(() => page.getByText('paragraph number 39').count()).toBe(1);
+    await expect.poll(() => page.getByLabel('Stop generating').count()).toBe(0);
 
     // Reading from the top: the header is there to begin with.
     await viewport.hover();
@@ -605,7 +601,7 @@ test('a working turn is followed past the fold, with its prompt still anchored',
       const box = (await viewport.boundingBox())!;
       return Math.round(prompt.y - box.y);
     };
-    await expect.poll(promptTop, { timeout: 5000 }).toBeLessThan(96);
+    await expect.poll(promptTop).toBeLessThan(96);
 
     // And from there to the end of the turn, everything it writes is on
     // screen as it writes it. Sampled in the page rather than over the wire:
@@ -654,6 +650,7 @@ test('a reader who leaves the bottom during a turn is left there, and rejoins at
         match: () => true,
         gapMs: 200,
         updates: [...working(40), ...reply('and that is the answer')],
+        hold: true,
       },
     ],
   });
@@ -725,6 +722,9 @@ test('a reader who leaves the bottom during a turn is left there, and rejoins at
 
     expect(errors).toEqual([]);
   } finally {
+    // The turn is over when this test says so, and it has to say so: a held
+    // prompt outlives the page that asked for it.
+    stub.gateway.release();
     await close();
   }
 });
