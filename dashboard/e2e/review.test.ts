@@ -16,6 +16,10 @@ import {
  * open a file, comment on a line, and hand the review to the agent. Both
  * viewports, because the phone and the pointer arrangements are different
  * enough that one passing says little about the other.
+ *
+ * The fixture is a workspace, not a repository: two projects side by side and
+ * a loose directory beside them. That is the shape the review is designed
+ * around, so it is the one the browser walks.
  */
 
 const DIST = resolve(import.meta.dirname, '../dist');
@@ -44,20 +48,28 @@ afterAll(async () => {
 test('the tree is the whole screen on a phone, and a file replaces it', async () => {
   const { page, errors, close } = await openPage(stub.url, `/sessions/${SESSION}/review`);
   try {
-    await expect.poll(() => page.getByRole('button', { name: 'src' }).isVisible()).toBe(true);
-    // Status marks travel with the tree, in one response with it.
-    await expect.poll(() => page.getByLabel('untracked').isVisible()).toBe(true);
+    // The workspace's own top level: two repositories and a directory that is
+    // in neither. Every one of them is browsable, which is the whole change.
+    await expect.poll(() => page.getByRole('button', { name: 'app a git repository' }).isVisible()).toBe(true);
+    await expect.poll(() => page.getByRole('button', { name: 'lib a git repository' }).isVisible()).toBe(true);
+    await expect.poll(() => page.getByRole('button', { name: /^notes/ }).isVisible()).toBe(true);
+    // A repository root says it is one, so the boundaries are visible while
+    // scrolling across them.
+    expect(await page.getByLabel('a git repository').count()).toBe(2);
 
     // Directories start closed unless they are a single-child chain from the
     // top, which this fixture's three top-level entries are not.
+    await page.getByRole('button', { name: 'app a git repository' }).click();
     await page.getByRole('button', { name: 'src' }).click();
     await expect.poll(() => page.getByRole('button', { name: /app\.ts/ }).isVisible()).toBe(true);
+    // Status marks travel with the tree, in one response with it, and they
+    // come from whichever repository owns the path.
     await expect.poll(() => page.getByLabel('modified').isVisible()).toBe(true);
 
     await page.getByRole('button', { name: /app\.ts/ }).click();
 
     // The file is in the URL, so it is linkable and the back button works.
-    await expect.poll(() => new URL(page.url()).search).toContain('path=src%2Fapp.ts');
+    await expect.poll(() => new URL(page.url()).search).toContain('path=app%2Fsrc%2Fapp.ts');
     await expect.poll(() => page.getByText('import { boot }').isVisible()).toBe(true);
     await shoot(page, 'review-file-phone');
 
@@ -65,7 +77,7 @@ test('the tree is the whole screen on a phone, and a file replaces it', async ()
     // header's own button, the same control every other view goes back with.
     await page.getByLabel('Back to the file list').click();
     await expect.poll(() => new URL(page.url()).search).not.toContain('path=');
-    await expect.poll(() => page.getByRole('button', { name: 'src' }).isVisible()).toBe(true);
+    await expect.poll(() => page.getByRole('button', { name: 'app a git repository' }).isVisible()).toBe(true);
 
     // And from the list, the next step out is the thread.
     await expect.poll(() => page.getByLabel('Back to the thread').isVisible()).toBe(true);
@@ -79,16 +91,20 @@ test('the tree is the whole screen on a phone, and a file replaces it', async ()
 test('the tree is a column beside the pane on a desktop', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fboot.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fboot.ts`,
     'dark',
     'desktop',
   );
   try {
     await expect.poll(() => page.getByText('wire the router').isVisible()).toBe(true);
     // Both at once, which is the whole difference from the phone arrangement.
-    await expect.poll(() => page.getByRole('button', { name: 'src' }).isVisible()).toBe(true);
+    await expect.poll(() => page.getByRole('button', { name: 'app a git repository' }).isVisible()).toBe(true);
+    await page.getByRole('button', { name: 'app a git repository' }).click();
     await page.getByRole('button', { name: 'src' }).click();
     await expect.poll(() => page.getByRole('button', { name: /boot\.ts/ }).isVisible()).toBe(true);
+    // The header says which repository the open file belongs to, in place of
+    // a root the review no longer has.
+    await expect.poll(() => page.getByText(/· app/).isVisible()).toBe(true);
     // The list and the file are one view here, so there is no step between
     // the review and the thread: back leaves, with a file open or without.
     expect(await page.getByLabel('Back to the file list').count()).toBe(0);
@@ -103,7 +119,7 @@ test('the tree is a column beside the pane on a desktop', async () => {
 test('a pasted link opens straight to its file', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=README.md`,
+    `/sessions/${SESSION}/review?path=app%2FREADME.md`,
   );
   try {
     await expect.poll(() => page.getByText('A project the agent cloned.').isVisible()).toBe(true);
@@ -116,7 +132,7 @@ test('a pasted link opens straight to its file', async () => {
 test('the code is highlighted, and a line is addressable', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fapp.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fapp.ts`,
     'dark',
     'desktop',
   );
@@ -143,7 +159,7 @@ test('the code is highlighted, and a line is addressable', async () => {
 test('a gutter marker opens the hunk, deleted lines included', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fboot.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fboot.ts`,
   );
   try {
     await expect.poll(() => page.getByText('lines deleted here').isVisible()).toBe(true);
@@ -163,10 +179,10 @@ test('a gutter marker opens the hunk, deleted lines included', async () => {
 test('a file the change deleted is listed, and says it is gone', async () => {
   // Listed by its status alone: it is on no disk and in no ls-files, which is
   // exactly why it used to fall out of the tree the moment it mattered.
-  stub.state.reviews[SESSION]!.statuses['src/old.ts'] = 'deleted';
+  stub.state.reviews[SESSION]!.statuses['app/src/old.ts'] = 'deleted';
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fold.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fold.ts`,
     'dark',
     'desktop',
   );
@@ -175,6 +191,7 @@ test('a file the change deleted is listed, and says it is gone', async () => {
       .poll(() => page.getByText('This file was deleted, so there is nothing left to read.').isVisible())
       .toBe(true);
     // And it is in the tree, under the directory it was in.
+    await page.getByRole('button', { name: 'app a git repository' }).click();
     await page.getByRole('button', { name: 'src' }).click();
     await expect.poll(() => page.getByRole('button', { name: /old\.ts/ }).isVisible()).toBe(true);
     expect(errors).toEqual([]);
@@ -186,7 +203,7 @@ test('a file the change deleted is listed, and says it is gone', async () => {
 test('prev/next steps through the changes', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fboot.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fboot.ts`,
     'dark',
     'desktop',
   );
@@ -210,7 +227,7 @@ test('prev/next steps through the changes', async () => {
 test('commenting a line on a phone writes it through the API', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fboot.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fboot.ts`,
   );
   try {
     await expect.poll(() => page.getByLabel('Comment on line 2').isVisible()).toBe(true);
@@ -230,9 +247,9 @@ test('commenting a line on a phone writes it through the API', async () => {
     expect(stub.reviewCalls[0]).toMatchObject({
       method: 'PUT',
       sessionId: SESSION,
-      body: { path: 'src/boot.ts', line: 2, comment: 'this TODO needs an owner' },
+      body: { path: 'app/src/boot.ts', line: 2, comment: 'this TODO needs an owner' },
     });
-    expect(stub.state.reviews[SESSION]!.annotations['src/boot.ts']?.[2]?.comment).toBe(
+    expect(stub.state.reviews[SESSION]!.annotations['app/src/boot.ts']?.[2]?.comment).toBe(
       'this TODO needs an owner',
     );
 
@@ -247,7 +264,7 @@ test('commenting a line on a phone writes it through the API', async () => {
 test('commenting a line on a desktop uses the inline composer', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fapp.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fapp.ts`,
     'dark',
     'desktop',
   );
@@ -276,14 +293,14 @@ test('commenting a line on a desktop uses the inline composer', async () => {
 });
 
 test('a comment can be edited and deleted', async () => {
-  stub.state.reviews[SESSION]!.annotations['src/app.ts'] = {
+  stub.state.reviews[SESSION]!.annotations['app/src/app.ts'] = {
     2: { line: 2, comment: 'first thoughts', outdated: false },
   };
   stub.state.reviews[SESSION]!.hasReview = true;
 
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fapp.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fapp.ts`,
     'dark',
     'desktop',
   );
@@ -307,7 +324,7 @@ test('a comment can be edited and deleted', async () => {
       .toBe(true);
     await page.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect.poll(() => page.getByText('second thoughts').isVisible()).toBe(false);
-    expect(stub.state.reviews[SESSION]!.annotations['src/app.ts']).toBeUndefined();
+    expect(stub.state.reviews[SESSION]!.annotations['app/src/app.ts']).toBeUndefined();
     expect(errors).toEqual([]);
   } finally {
     await close();
@@ -315,14 +332,14 @@ test('a comment can be edited and deleted', async () => {
 });
 
 test('an outdated comment says the code moved', async () => {
-  stub.state.reviews[SESSION]!.annotations['src/app.ts'] = {
+  stub.state.reviews[SESSION]!.annotations['app/src/app.ts'] = {
     1: { line: 1, comment: 'about the old import', outdated: true },
   };
   stub.state.reviews[SESSION]!.hasReview = true;
 
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fapp.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fapp.ts`,
     'dark',
     'desktop',
   );
@@ -339,7 +356,7 @@ test('an outdated comment says the code moved', async () => {
 });
 
 test('handing the review to the agent stages a prompt, unsent', async () => {
-  stub.state.reviews[SESSION]!.annotations['src/app.ts'] = {
+  stub.state.reviews[SESSION]!.annotations['app/src/app.ts'] = {
     2: { line: 2, comment: 'please fix', outdated: false },
   };
   stub.state.reviews[SESSION]!.hasReview = true;
@@ -360,8 +377,10 @@ test('handing the review to the agent stages a prompt, unsent', async () => {
     // turn started: what to do with a review is the reviewer's call.
     await expect.poll(() => page.url()).toContain(`/sessions/${SESSION}/threads/th1`);
     await expect
-      .poll(() => page.getByText('Read project/REVIEW.md and address the comments in it.').isVisible())
+      .poll(() => page.getByText('Read REVIEW.md and address the comments in it.').isVisible())
       .toBe(true);
+    // One line, and the same one however many repositories the workspace
+    // holds: there is exactly one REVIEW.md, at the top of the workspace.
     await shoot(page, 'review-handoff-desktop');
     expect(errors).toEqual([]);
   } finally {
@@ -370,14 +389,14 @@ test('handing the review to the agent stages a prompt, unsent', async () => {
 });
 
 test('a new review clears every comment, behind a confirmation', async () => {
-  stub.state.reviews[SESSION]!.annotations['src/app.ts'] = {
+  stub.state.reviews[SESSION]!.annotations['app/src/app.ts'] = {
     2: { line: 2, comment: 'to be discarded', outdated: false },
   };
   stub.state.reviews[SESSION]!.hasReview = true;
 
   const { page, errors, close } = await openPage(
     stub.url,
-    `/sessions/${SESSION}/review?path=src%2Fapp.ts`,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fapp.ts`,
     'dark',
     'desktop',
   );
@@ -415,8 +434,13 @@ test('the base picker sets a revision and says which one is active', async () =>
 
     // The status line carries it, because it decides what every colour in the
     // tree and every marker in the gutter means.
-    await expect.poll(() => page.getByText(/vs main \(bbbbbbbb\)/).isVisible()).toBe(true);
+    await expect.poll(() => page.getByText(/vs main/).isVisible()).toBe(true);
     expect(stub.reviewCalls.at(-1)).toMatchObject({ method: 'PUT base', body: { rev: 'main' } });
+
+    // And the picker says where it landed in each repository, because one
+    // expression resolves separately in every one of them.
+    await page.getByRole('button', { name: /main/ }).click();
+    await expect.poll(() => page.getByText('00000000').isVisible()).toBe(true);
     await shoot(page, 'review-base-desktop');
     expect(errors).toEqual([]);
   } finally {
@@ -424,7 +448,31 @@ test('the base picker sets a revision and says which one is active', async () =>
   }
 });
 
-test('a revision that is not one is reported, not swallowed', async () => {
+test('a revision that names nothing in one repository is reported, not refused', async () => {
+  const { page, errors, close } = await openPage(
+    stub.url,
+    `/sessions/${SESSION}/review`,
+    'dark',
+    'desktop',
+  );
+  try {
+    await page.getByRole('button', { name: /HEAD/ }).click();
+    await page.getByRole('textbox', { name: 'Base revision' }).fill('only-app');
+    await page.getByRole('button', { name: 'Compare' }).click();
+
+    // Resolved in one repository and not in the other: an ordinary shape, not
+    // a failed request. The header counts it and the picker names the one
+    // that fell back to its own working tree.
+    await expect.poll(() => page.getByText(/vs only-app \(1 of 2\)/).isVisible()).toBe(true);
+    await page.getByRole('button', { name: /only-app/ }).click();
+    await expect.poll(() => page.getByText('working tree').isVisible()).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
+test('a revision that is not one anywhere is reported, not swallowed', async () => {
   const { page, errors, close } = await openPage(
     stub.url,
     `/sessions/${SESSION}/review`,
@@ -446,10 +494,9 @@ test('a revision that is not one is reported, not swallowed', async () => {
 
 // --- degraded shapes --------------------------------------------------------
 
-test('a workspace with no git still browses and comments', async () => {
+test('a workspace with no repository still browses and comments', async () => {
   stub.state.reviews[SESSION] = stubReview({
-    hasGit: false,
-    root: '',
+    repos: [],
     statuses: {},
     diffs: {},
     files: { 'notes.txt': 'just some notes\nnothing tracked\n' },
@@ -503,7 +550,7 @@ test('a session whose workspace cannot be read says what to do', async () => {
 });
 
 test('an empty workspace says so rather than showing nothing', async () => {
-  stub.state.reviews[SESSION] = stubReview({ files: {}, statuses: {}, diffs: {}, hasGit: false });
+  stub.state.reviews[SESSION] = stubReview({ files: {}, statuses: {}, diffs: {}, repos: [] });
 
   const { page, errors, close } = await openPage(stub.url, `/sessions/${SESSION}/review`);
   try {
@@ -523,6 +570,7 @@ test('each file remembers how far it was read, and a new one starts at the top',
       'long.ts': Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`).join('\n'),
       'short.ts': 'const one = 1;\n',
     },
+    repos: [{ path: '', name: 'workspace', head: 'a'.repeat(40), baseCommit: '' }],
     statuses: {},
     diffs: {},
   });
@@ -565,6 +613,7 @@ test('the review header steps aside while reading down a file, and ignores a jum
     files: {
       'long.ts': Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`).join('\n'),
     },
+    repos: [{ path: '', name: 'workspace', head: 'a'.repeat(40), baseCommit: '' }],
     statuses: {},
     diffs: {},
   });

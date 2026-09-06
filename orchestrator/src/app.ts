@@ -376,19 +376,12 @@ export function buildApp(
    * endpoint the whole file view.
    *
    * They also do not touch a session's activity timestamp. Reviewing is not the
-   * agent working, so polling a review must not hold off the reaper.
+   * agent working, so reading a review must not hold off the reaper.
+   *
+   * There is no fingerprint endpoint to poll: every one of these reads the
+   * filesystem on the spot, so a fetch is the freshness. See the review store
+   * in the dashboard for the three moments that refetch.
    */
-
-  /**
-   * Where the review view polls, which is the only thing it asks for while idle.
-   * `path` names the file the pane has open, so an edit to it is part of the
-   * fingerprint.
-   */
-  app.get('/api/sessions/:id/review/status', async (req) => {
-    const { id } = req.params as { id: string };
-    const { path } = req.query as { path?: string };
-    return review.status(id, path);
-  });
 
   app.get('/api/sessions/:id/review/tree', async (req) => {
     const { id } = req.params as { id: string };
@@ -428,7 +421,11 @@ export function buildApp(
     return { path, annotations } satisfies ReviewAnnotationsResponse;
   });
 
-  /** Sets the revision the review is compared against, or clears it back to HEAD. */
+  /**
+   * Sets the revision the whole review is compared against, or clears it back
+   * to each repository's working tree. The answer says where it landed, since
+   * one expression resolves separately in every repository.
+   */
   app.put('/api/sessions/:id/review/base', async (req) => {
     const { id } = req.params as { id: string };
     const body = req.body as ReviewBaseBody | undefined;

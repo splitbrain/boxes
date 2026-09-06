@@ -11,7 +11,7 @@ import type {
   ReviewAnnotation,
   ReviewAnnotationBody,
   ReviewFileResponse,
-  ReviewStatusResponse,
+  ReviewRepo,
   ReviewTreeResponse,
   SessionDetail,
   SessionSummary,
@@ -99,45 +99,55 @@ export function stubSession(over: Partial<SessionDetail> = {}): SessionDetail {
 /**
  * A session's review, as the stub keeps it.
  *
- * Enough of a model to answer all seven endpoints consistently — a comment
- * written through the API comes back in the next tree and file fetch, and moves
- * the poll fingerprint — without duplicating the orchestrator's own store,
- * whose byte-level behaviour is proven against the desktop tool's fixtures in
- * the orchestrator's tests.
+ * Enough of a model to answer all six endpoints consistently — a comment
+ * written through the API comes back in the next tree and file fetch — without
+ * duplicating the orchestrator's own store, whose byte-level behaviour is
+ * proven against the desktop tool's fixtures in the orchestrator's tests.
+ *
+ * The review is over the *workspace*, so `files` is keyed by
+ * workspace-relative path and `repos` says which repository each path belongs
+ * to. The default fixture holds two of them side by side plus a loose
+ * directory no repository claims, because that is the shape the single-root
+ * design could not show at all.
  */
 export interface StubReview {
-  /** Files, by path, with their content. The tree is built from these. */
+  /** Files, by workspace-relative path, with their content. */
   files: Record<string, string>;
   statuses: ReviewTreeResponse['statuses'];
   /** Diff markers per file path. Absent means no change. */
   diffs: Record<string, ReviewFileResponse['diff']>;
   /** Comments per file path, by line. */
   annotations: Record<string, Record<number, ReviewAnnotation>>;
-  root: string;
-  hasGit: boolean;
+  /** The repositories the workspace holds, sorted by path. */
+  repos: ReviewRepo[];
   base: ReviewTreeResponse['base'];
   /** True once a comment has been written, as REVIEW.md existing. */
   hasReview: boolean;
   started: string;
-  headCommit: string;
   truncated: boolean;
   /** A status to answer every review request with instead, for the error path. */
   fail: { status: number; error: string } | null;
 }
 
-/** A review with a small project in it, which is what the tests browse. */
+/**
+ * A review with two small projects in it and a loose note beside them, which
+ * is what the tests browse.
+ */
 export function stubReview(over: Partial<StubReview> = {}): StubReview {
   return {
     files: {
-      'src/app.ts': 'import { boot } from "./boot";\n\nboot();\n',
-      'src/boot.ts':
+      'app/src/app.ts': 'import { boot } from "./boot";\n\nboot();\n',
+      'app/src/boot.ts':
         'export function boot(): void {\n  // TODO: wire the router\n  console.log("up");\n}\n',
-      'README.md': '# demo\n\nA project the agent cloned.\n',
-      'notes.txt': 'plain text, no grammar\n',
+      'app/README.md': '# demo\n\nA project the agent cloned.\n',
+      'lib/index.ts': 'export const version = "1.0.0";\n',
+      // Outside every repository: no .gitignore has said what is noise here,
+      // so it shows, and it has no status and no diff.
+      'notes/todo.txt': 'plain text, no grammar\n',
     },
-    statuses: { 'src/boot.ts': 'modified', 'notes.txt': 'untracked' },
+    statuses: { 'app/src/boot.ts': 'modified', 'lib/index.ts': 'untracked' },
     diffs: {
-      'src/boot.ts': {
+      'app/src/boot.ts': {
         lines: { 2: 'added', 3: 'modified' },
         hunks: [
           {
@@ -150,12 +160,13 @@ export function stubReview(over: Partial<StubReview> = {}): StubReview {
       },
     },
     annotations: {},
-    root: 'project',
-    hasGit: true,
-    base: { rev: '', commit: '' },
+    repos: [
+      { path: 'app', name: 'app', head: 'a'.repeat(40), baseCommit: '' },
+      { path: 'lib', name: 'lib', head: 'b'.repeat(40), baseCommit: '' },
+    ],
+    base: { rev: '' },
     hasReview: false,
     started: '2026-08-31',
-    headCommit: 'a'.repeat(40),
     truncated: false,
     fail: null,
     ...over,
@@ -395,7 +406,7 @@ export async function startStubOrchestrator(
     }
     if (exec && req.method === 'GET') return json(res, 200, { records: execLog });
 
-    const review = /^\/api\/sessions\/([^/]+)\/review(?:\/(tree|file|status|annotations|base))?$/.exec(
+    const review = /^\/api\/sessions\/([^/]+)\/review(?:\/(tree|file|annotations|base))?$/.exec(
       url,
     );
     if (review) {
@@ -491,11 +502,11 @@ function sendBundle(res: import('node:http').ServerResponse, dir: string, path: 
 // --- the review endpoints ---------------------------------------------------
 
 /**
- * Answers the seven review routes from the stub's in-memory review.
+ * Answers the six review routes from the stub's in-memory review.
  *
  * The point of keeping real state rather than canned bodies: a comment written
- * through the API has to come back in the next tree and file fetch and move the
- * poll fingerprint, because that loop is what the browser tests are about.
+ * through the API has to come back in the next tree and file fetch, because
+ * that loop is what the browser tests are about.
  */
 function answerReview(
   req: import('node:http').IncomingMessage,
@@ -522,18 +533,27 @@ function answerReview(
     req.on('end', () => fn(JSON.parse(raw || '{}')));
   };
 
+  /** The repository a workspace-relative path belongs to, longest prefix first. */
+  const repoFor = (path: string): ReviewRepo | null =>
+    review.repos
+      .filter((repo) => repo.path === '' || path.startsWith(`${repo.path}/`))
+      .sort((a, b) => b.path.length - a.path.length)[0] ?? null;
+
   if (endpoint === 'tree' && req.method === 'GET') {
     const body: ReviewTreeResponse = {
-      root: review.root,
-      hasGit: review.hasGit,
+      repos: review.repos,
+      hasGit: review.repos.length > 0,
       // Files, plus the ones a status reports as deleted — they are on no
       // disk, and the real service puts them back the same way.
-      entries: buildStubTree([
-        ...Object.keys(review.files),
-        ...Object.entries(review.statuses)
-          .filter(([path, status]) => status === 'deleted' && !review.files[path])
-          .map(([path]) => path),
-      ]),
+      entries: markStubRepos(
+        buildStubTree([
+          ...Object.keys(review.files),
+          ...Object.entries(review.statuses)
+            .filter(([path, status]) => status === 'deleted' && !review.files[path])
+            .map(([path]) => path),
+        ]),
+        review.repos,
+      ),
       truncated: review.truncated,
       statuses: review.statuses,
       counts: Object.fromEntries(
@@ -556,6 +576,7 @@ function answerReview(
     if (content === undefined && review.statuses[path] === 'deleted') {
       return json(res, 200, {
         path,
+        repo: repoFor(path)?.path ?? null,
         content: '',
         truncated: false,
         binary: false,
@@ -571,6 +592,7 @@ function answerReview(
     if (content === undefined) return json(res, 404, { error: 'File not found' });
     const body: ReviewFileResponse = {
       path,
+      repo: repoFor(path)?.path ?? null,
       content,
       truncated: false,
       binary: false,
@@ -581,21 +603,6 @@ function answerReview(
       status: review.statuses[path] ?? null,
       diff: review.diffs[path] ?? { lines: {}, hunks: [], deletions: [] },
       annotations: annotationsOf(path),
-    };
-    return json(res, 200, body);
-  }
-
-  if (endpoint === 'status' && req.method === 'GET') {
-    const open = query.get('path') ?? '';
-    const body: ReviewStatusResponse = {
-      // Derived from the state so a mutation moves it, the way the real
-      // hashes would.
-      reviewHash: review.hasReview ? JSON.stringify(review.annotations).length.toString(16) : '',
-      headCommit: review.hasGit ? review.headCommit : '',
-      statusHash: review.hasGit ? JSON.stringify(review.statuses).length.toString(16) : '',
-      // The open file's own hash, which is what makes the pane follow an edit
-      // to a file git already calls modified.
-      fileHash: open === '' ? '' : (review.files[open]?.length ?? 0).toString(16),
     };
     return json(res, 200, body);
   }
@@ -629,10 +636,20 @@ function answerReview(
     return withBody((body) => {
       calls.push({ method: 'PUT base', sessionId, body });
       const { rev } = body as { rev: string | null };
-      if (rev === null || rev.trim() === '') review.base = { rev: '', commit: '' };
-      else if (rev === 'nope') return json(res, 400, { error: `unknown revision: ${rev}` });
-      else review.base = { rev: rev.trim(), commit: 'b'.repeat(40) };
-      return json(res, 200, review.base);
+      if (rev === 'nope') return json(res, 400, { error: `unknown revision: ${rev}` });
+      const wanted = rev === null ? '' : rev.trim();
+      review.base = { rev: wanted };
+      // One expression, resolved separately in each repository: `only-app`
+      // names a branch in the first and nothing in the second, which is the
+      // soft failure the picker has to report rather than refuse.
+      review.repos = review.repos.map((repo, index) => ({
+        ...repo,
+        baseCommit:
+          wanted === '' || (wanted === 'only-app' && index > 0)
+            ? ''
+            : `${index}`.repeat(8) + 'c'.repeat(32),
+      }));
+      return json(res, 200, { rev: wanted, repos: review.repos });
     });
   }
 
@@ -683,6 +700,25 @@ function buildStubTree(paths: string[]): ReviewTreeResponse['entries'] {
       .sort((a, b) => (a.isDir !== b.isDir ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name)));
 
   return collect(root);
+}
+
+/** Marks the directories the repositories are rooted at, the way the API does. */
+function markStubRepos(
+  entries: ReviewTreeResponse['entries'],
+  repos: ReviewRepo[],
+): ReviewTreeResponse['entries'] {
+  const roots = new Set(repos.map((repo) => repo.path));
+  const mark = (level: ReviewTreeResponse['entries']): ReviewTreeResponse['entries'] =>
+    level.map((entry) =>
+      entry.isDir
+        ? {
+            ...entry,
+            ...(roots.has(entry.path) ? { repo: true } : {}),
+            children: mark(entry.children ?? []),
+          }
+        : entry,
+    );
+  return mark(entries);
 }
 
 /** The language the real API would report, for the handful the stub serves. */

@@ -213,8 +213,13 @@ test('a deployment on the previous release upgrades cleanly', () => {
   try {
     const sessions = columns(upgraded, 'sessions');
     assert.ok(sessions.includes('workspace_dir'));
-    assert.ok(sessions.includes('review_root'));
-    assert.ok(sessions.includes('review_base_commit'));
+    // The review's base revision survives as the expression it always was.
+    assert.ok(sessions.includes('review_base_rev'));
+    // Its root and its resolved commit do not: the review is over the whole
+    // workspace now, and one expression resolves separately in every
+    // repository the workspace holds, so neither can mean anything.
+    assert.ok(!sessions.includes('review_root'));
+    assert.ok(!sessions.includes('review_base_commit'));
 
     // The migration that shipped first kept its index, so what it created is
     // still there and still holds its rows.

@@ -20,8 +20,6 @@ import {
   readTextFile,
   removeFile,
   resolveInRoot,
-  subdirectories,
-  textHash,
   validRelativePath,
   writeFileAtomic,
 } from './fs.ts';
@@ -255,11 +253,6 @@ describe('hashing', () => {
     writeFileSync(path, 'two');
     assert.notEqual(fileHash(path), first);
   });
-
-  test('a text hash is stable and distinguishes its input', () => {
-    assert.equal(textHash('a'), textHash('a'));
-    assert.notEqual(textHash('a'), textHash('b'));
-  });
 });
 
 describe('directory probes', () => {
@@ -269,14 +262,5 @@ describe('directory probes', () => {
     assert.equal(isDirectory(join(root, 'sub')), true);
     assert.equal(isDirectory(join(root, 'a.txt')), false);
     assert.equal(isDirectory(join(root, 'nosuch')), false);
-  });
-
-  test('subdirectories lists only directories', () => {
-    mkdirSync(join(root, 'project'));
-    writeFileSync(join(root, 'notes.txt'), 'x');
-    // This is what root resolution asks: "does the workspace hold exactly one
-    // directory, and is that the repository?"
-    assert.deepEqual(subdirectories(root), ['project']);
-    assert.deepEqual(subdirectories(join(root, 'nosuch')), []);
   });
 });

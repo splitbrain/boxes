@@ -1,7 +1,7 @@
 import { ArrowLeft, FilePlus2, Send } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import type { ReviewDiffHunk } from '../../../shared/types.ts';
+import type { ReviewDiffHunk, ReviewRepo } from '../../../shared/types.ts';
 import { Notice } from '@/components/Notice';
 import { Shelf } from '@/components/Shelf';
 import { BasePicker } from '@/components/review/BasePicker';
@@ -27,9 +27,9 @@ import {
   loadTree,
   newReview,
   open as openReview,
+  refreshOnReturn,
   saveComment,
   setBase,
-  startPolling,
   useReview,
 } from '../stores/review.ts';
 
@@ -38,12 +38,11 @@ import {
  *
  * One line, because that is the whole point: the review lives in the
  * workspace, so pointing the agent at it needs no export, no paste, and no
- * copy of the comments anywhere.
+ * copy of the comments anywhere. And it is the same line however many
+ * repositories the workspace holds, because there is exactly one REVIEW.md and
+ * it is at the top of the workspace the agent works in.
  */
-function handoffPrompt(root: string): string {
-  const where = root === '' ? 'REVIEW.md' : `${root}/REVIEW.md`;
-  return `Read ${where} and address the comments in it.`;
-}
+const HANDOFF_PROMPT = 'Read REVIEW.md and address the comments in it.';
 
 /**
  * Reviewing a session's code, at `/sessions/:id/review`.
@@ -114,12 +113,17 @@ export function SessionReview() {
    */
   const wide = useMediaQuery('(min-width: 768px)');
 
-  // Point the store at this session and start the fingerprint poll. The store
-  // is a singleton, so re-entering the same session keeps what is loaded.
+  // Point the store at this session and load it. The store is a singleton, so
+  // re-entering the same session paints instantly from what is already there
+  // and updates when the fetch lands.
+  //
+  // The mount is one of the three moments a review refetches; coming back to
+  // the tab is the second, and closing a file back to the tree is the third.
+  // There is no poll, so nothing costs anything while this sits open.
   useEffect(() => {
     openReview(id);
     void loadTree();
-    return startPolling();
+    return refreshOnReturn();
   }, [id]);
 
   // The URL is the source of truth for which file is open, so a back button, a
@@ -147,6 +151,9 @@ export function SessionReview() {
       params.delete('path');
       return params;
     });
+    // File → tree does not remount, so without this nothing would refetch and
+    // the tree would keep the statuses and counts it was painted with.
+    void loadTree();
   }, [setParams]);
 
   /** Deletion markers by the line they sit after, for the pane. */
@@ -286,13 +293,18 @@ export function SessionReview() {
             </span>
             <span className="truncate text-xs text-muted-foreground">
               {name}
-              {tree?.root ? ` · ${tree.root}` : ''}
+              {/* Which repository the open file belongs to, rather than a root
+                  the review no longer has. A file no repository claims says
+                  so, since that is why it has no statuses and no markers. */}
+              {file ? ` · ${whichRepo(file.repo, tree?.repos ?? [])}` : ''}
               {tree && !tree.hasGit ? ' · no git' : ''}
               {/* Which base is active belongs in the status line, the way the
                   desktop tool's does: it changes what every colour in the tree
-                  and every marker in the gutter means. */}
-              {tree?.base.commit
-                ? ` · vs ${tree.base.rev} (${tree.base.commit.slice(0, 8)})`
+                  and every marker in the gutter means. One expression resolves
+                  separately in each repository, so where it landed is part of
+                  what it means. */}
+              {tree?.base.rev
+                ? ` · vs ${tree.base.rev}${resolvedIn(tree.repos)}`
                 : tree?.hasGit
                   ? ' · vs working tree'
                   : ''}
@@ -301,7 +313,12 @@ export function SessionReview() {
 
           {/* Only where there is a repository to compare in. */}
           {tree?.hasGit ? (
-            <BasePicker base={tree.base} busy={saving} onSet={(rev) => void setBase(rev)} />
+            <BasePicker
+              base={tree.base}
+              repos={tree.repos}
+              busy={saving}
+              onSet={(rev) => void setBase(rev)}
+            />
           ) : null}
 
           {/* The reason this feature belongs inside Boxes at all: the review is
@@ -316,7 +333,7 @@ export function SessionReview() {
               className="shrink-0"
               onClick={() =>
                 void navigate(thread ? `/sessions/${id}/threads/${thread}` : `/sessions/${id}`, {
-                  state: { prefill: handoffPrompt(tree.root) },
+                  state: { prefill: HANDOFF_PROMPT },
                 })
               }
               title="Open the thread with a prompt to address these comments"
@@ -472,6 +489,25 @@ function Empty({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   );
+}
+
+/**
+ * What to call the repository an open file belongs to.
+ *
+ * A file outside every repository is not a failure — it is the workspace's own
+ * loose files, or a directory nobody cloned — but it is worth saying, because
+ * it explains a pane with no gutter markers in it.
+ */
+function whichRepo(repo: string | null, repos: ReviewRepo[]): string {
+  if (repo === null) return 'no repository';
+  return repos.find((r) => r.path === repo)?.name ?? repo;
+}
+
+/** " (2 of 3)" when a base landed in some repositories but not all of them. */
+function resolvedIn(repos: ReviewRepo[]): string {
+  if (repos.length <= 1) return '';
+  const landed = repos.filter((repo) => repo.baseCommit !== '').length;
+  return landed === repos.length ? '' : ` (${landed} of ${repos.length})`;
 }
 
 /**

@@ -136,12 +136,11 @@ orchestrator handlers and the dashboard's `api.ts` import.
 | `GET /api/sessions/:id/attachments/:name` | Serves one back; images and PDFs as themselves, everything else as a download |
 | `POST /api/sessions/:id/exec` | Runs one command in the container, streaming its output |
 | `GET /api/sessions/:id/exec` | Commands already run in this session |
-| `GET /api/sessions/:id/review/tree` | Tree, git status per path, comment counts, the resolved root and base — the whole left panel |
-| `GET /api/sessions/:id/review/file?path=` | Content, diff markers and comments — the whole file view |
+| `GET /api/sessions/:id/review/tree` | Tree, git status per path, comment counts, the workspace's repositories and the base — the whole left panel |
+| `GET /api/sessions/:id/review/file?path=` | Content, diff markers, the owning repository and comments — the whole file view |
 | `PUT /api/sessions/:id/review/annotations` | Creates or replaces one line's comment |
 | `DELETE /api/sessions/:id/review/annotations?path=&line=` | Deletes one comment |
-| `GET /api/sessions/:id/review/status` | The poll fingerprint: three cheap local hashes |
-| `PUT /api/sessions/:id/review/base` | Sets the revision the review is compared against, or clears it |
+| `PUT /api/sessions/:id/review/base` | Sets the revision the review is compared against, or clears it; answers with where it resolved in each repository |
 | `DELETE /api/sessions/:id/review` | Deletes `REVIEW.md` — "New review" |
 | `GET /api/agent-sets` | Every agent set, the global one first |
 | `POST /api/agent-sets` | Adds a set |
@@ -1139,14 +1138,15 @@ to the global set alone at their next start.
 ## Code review
 
 The review surface browses a session's workspace, shows a file highlighted,
-takes a comment on a line, and writes all of it to a `REVIEW.md` at the review
-root. The format is the desktop [`review`](https://github.com/splitbrain/review)
-tool's, byte for byte, so a review started in one is continued in the other —
+takes a comment on a line, and writes all of it to `/workspace/REVIEW.md`. The
+format is the desktop [`review`](https://github.com/splitbrain/review) tool's —
 `orchestrator/src/review/fixtures/` holds files that tool wrote, and the tests
-assert the bytes.
+assert the bytes — though byte compatibility is no longer a design constraint:
+the paths in it are workspace-relative, and the file sits above any repository
+rather than inside one.
 
 What it buys over running that tool separately is that the review lives where
-the agent works. `REVIEW.md` is a file of the project under review, so
+the agent works. `REVIEW.md` is a file of the workspace under review, so
 "address the comments in REVIEW.md" is a one-line prompt, and the review view
 and the thread close a loop rather than being two applications.
 
@@ -1158,24 +1158,92 @@ thing is re-read and re-applied once. A lost race costs one visible refresh
 rather than data, because every write re-serializes the whole parsed file. What
 is written is chowned to uid 1000, so the agent can edit or delete it.
 
-**Where the review roots.** `/workspace` starts empty and an agent usually
-clones into a subdirectory, so the workspace itself is frequently not the
-repository. At review open: the workspace if it is itself a git work tree; else
-the single directory it holds if that is one, which is the common shape; else
-the workspace with the git features off, the way the desktop tool degrades
-outside a repository. The answer is cached on the session row and re-validated,
-since the agent can delete the directory it named.
+**The workspace is the review.** A session's workspace is not one repository:
+the agent clones what it was pointed at, forks and clones a second thing to
+compare against, checks a dependency out beside it, and sometimes ends up with
+a repository inside a repository. So the root is always `/workspace`, there is
+nothing to pick and nothing to switch between, and every file under it is
+browsable in one tree. A repository is an attribute of a *path* rather than the
+unit of the thing being reviewed: each file is shown with the status and diff
+of the closest enclosing one.
+
+That whole mechanism is a longest-prefix lookup over the discovered
+repositories (`review/repos.ts`):
+
+    repoFor('repo-a/src/x.ts')    -> repo-a
+    repoFor('repo-a/inner/b.txt') -> repo-a/inner   (nested wins)
+    repoFor('notes/todo.md')      -> null           (no repository)
+
+A nested repository needs no special case — it is a longer prefix that wins —
+and a file no repository claims is shown without git, which is the old
+no-git-for-the-whole-session behaviour narrowed to the one file.
+
+**Discovery** walks the workspace pruning the same ignore list the tree uses,
+never following a symlink, bounded by a depth limit and a cap on directories
+scanned. A directory holding a `.git` entry — file *or* directory, so
+submodules and linked worktrees count — is a candidate, confirmed by comparing
+`rev-parse --show-toplevel` **realpath to realpath**: git resolves symlinks, so
+comparing its answer against a raw path silently loses git for every session of
+any deployment whose workspace path has a linked component. Pruning the ignore
+list means a repository deliberately cloned into `vendor/` is not found, which
+is the right trade against an agent's `npm install`. The map is cached per
+session and rediscovered by the tree fetch.
+
+**The tree** is merged from each repository's `ls-files` with its own prefix
+prepended, a walk of the space no repository claims, and the files each
+repository's status reports as deleted. One filter runs over all of it: an
+entry contributed by repository `P` for path `p` is dropped when
+`repoFor(P + '/' + p) !== P`. That single rule makes the repositories a
+partition of the workspace rather than overlapping views of it — it is what
+stops an outer repository's `--others` reporting an inner work tree as one
+nameless `inner/` row, and what stops the duplicate once the inner repository
+contributes the same files. The merged list is sorted before the entry cap, so
+a truncated tree is deterministic rather than "whichever repository was read
+first". Ignored files stay hidden inside repositories and loose files all show
+outside them: inside one the project has said what is noise, outside one nobody
+has.
+
+**One base expression, resolved per repository.** `main` means main-in-each,
+through the merge base with that repository's own HEAD. A repository the
+revision names nothing in falls back to its own working tree rather than
+failing the request; a 400 comes back only when it resolves nowhere. Only the
+expression is stored — what it resolves to is a different commit in each
+repository and in some of them none, so it is derived.
+
+**`REVIEW.md` is at `/workspace`**, outside every repository, so it cannot be
+accidentally committed or show up in a repository's own status, and "address
+the comments in REVIEW.md" stays one line however many repositories there are.
+Its paths are workspace-relative (`repo-a/src/x.ts`). Byte compatibility with
+the desktop tool's format is kept but is no longer a design constraint.
 
 **Nothing here starts a container.** Reads and git both run in the
 orchestrator, so the natural moment to review — the agent is done, the box has
 idled out — costs nothing, and none of these endpoints touches a session's
 activity timestamp: polling a review must not hold off the reaper.
 
-**Freshness is polling**, the pattern the session list already uses: the view
-asks `review/status` every 5 s while its tab is visible and refetches only when
-one of three hashes moved. With the files local that costs three hashes rather
-than three execs. Push — an fs watcher and a `/ws/sessions/:id/review` upgrade
-beside the ACP gateway — is an additive later stage that nothing depends on.
+**Freshness is the fetch.** There is no poll and no fingerprint endpoint. Every
+review fetch already reads the filesystem on the spot — the tree endpoint runs
+`ls-files` and `status` per request, the file endpoint reads the file, and
+drift recomputes on both — so what matters is being fresh *on arrival*, and
+arrival is three moments: the view mounting, a file closing back to the tree,
+and the tab becoming visible again. The last of those is skipped while a
+composer is open or a write is in flight, which is the one piece of the poll's
+logic worth keeping.
+
+The poll it replaced was described here as three cheap local hashes; it was
+three git processes, and under a merged tree it would have been roughly
+`1 + 2N` for N repositories every five seconds per open review. More to the
+point, a poll keeps a view fresh *while the reviewer sits on it*, which is the
+desktop tool's situation — Boxes is driven from a phone and the reviewer is in
+the thread or in the review, not both. Idle cost is now zero.
+
+The residual is that a background task can be working while the review is open.
+Drift already covers the consequence: a comment whose code moved follows it, and
+one whose code is gone is marked `(outdated)`. If that ever proves insufficient
+the answer is a refresh button, not a watcher — Node's recursive `fs.watch` on
+Linux is one inotify watch per directory, `fs.inotify.max_user_watches` is a
+host sysctl a container cannot raise, and an agent running `npm install` makes
+tens of thousands of directories.
 
 **Drift** ports from the desktop tool as-is: each annotation stores three lines
 of context above and below the annotated line, and a check compares the stored
@@ -1187,15 +1255,19 @@ annotated file, on a tree fetch.
 the agent controls:
 
 - Symlink containment lives in `review/fs.ts`. Every client path resolves
-  through `realpath` and must land under the root's own realpath; a symlink
+  through `realpath` and must land under the workspace's own realpath; a symlink
   final component is refused outright, since what it points at can change after
-  the tree was listed. The residual `realpath`/open race is documented where the
-  check is, along with what closing it would cost.
+  the tree was listed. The rule is unchanged by the review spanning a whole
+  workspace — what changes is that a contained path may now be in any
+  repository, or in none. The residual `realpath`/open race is documented where
+  the check is, along with what closing it would cost.
 - Git hardening lives in `review/git.ts`. Repo-local config executes commands
   on exactly the operations review runs — `core.fsmonitor` on status, external
   diff drivers and `textconv` on diff. Every invocation takes its argv prefix
   and environment from one builder there, and a test plants both configs in a
-  repository and asserts the hook never ran.
+  repository and asserts the hook never ran. The prefix is built per
+  invocation, so `safe.directory` is scoped to the repository being asked
+  rather than to one root.
 
 ### The review view
 
@@ -1215,10 +1287,12 @@ replaces it is one set of components in two arrangements rather than two
 parallel UIs:
 
 - **The tree** is a column from `md` up and the screen before the file below
-  it. Same component, same status colours and comment badges. Below `md` it is
-  a step of the stack rather than a drawer over the file: a drawer would be a
-  second door to the screen back already reaches, and the two disagree about
-  where you are.
+  it. Same component, same status colours and comment badges. It is one tree
+  over the whole workspace with the repository roots marked, so the boundaries
+  are visible while scrolling across them; the header says which repository the
+  open file belongs to. Below `md` it is a step of the stack rather than a
+  drawer over the file: a drawer would be a second door to the screen back
+  already reaches, and the two disagree about where you are.
 - **Comments are inline**, GitHub-style, on every screen size. There is no
   right-hand sidebar to reflow away.
 - **Tap replaces hover.** Tapping a line's gutter is how a comment starts;
@@ -1478,12 +1552,13 @@ orchestrator/src/
   agents.ts             Agent sets: AGENTS.md, skills, commands; the merge and the materialized bundle
   docker.ts             Containers, networks, volumes, the adapter exec
   review/
-    service.ts          Per-session façade: root, the REVIEW.md read-modify-write, the fingerprint
+    service.ts          Per-session façade: the repo map, the REVIEW.md read-modify-write, the routing
+    repos.ts            Which repositories the workspace holds, and which owns a path
     store.ts            REVIEW.md: parse, serialize, mutate, drift (pure)
-    gitstatus.ts        Porcelain and name-status parsing, base resolution
+    gitstatus.ts        Porcelain and name-status parsing, base resolution, the merged workspace layer
     difflines.ts        Unified diff to line markers, hunks and deletion markers (pure)
-    tree.ts             git ls-files or a walk into a tree, and the ignore lists
-    fs.ts               Contained reads and writes under one root: the symlink invariant
+    tree.ts             Per-repository ls-files plus a walk of what none of them claims, merged
+    fs.ts               Contained reads and writes under the workspace: the symlink invariant
     git.ts              The one place a git process is spawned: fixed argv, scrubbed env
   subnet.ts             Per-session /24 allocation
   reaper.ts             The idle reaper and the proxy reconciler

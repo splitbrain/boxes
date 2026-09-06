@@ -373,22 +373,54 @@ export type ReviewLineChange = 'added' | 'modified';
 /** One file or directory of the review tree. */
 export interface ReviewTreeEntry {
   name: string;
-  /** Path relative to the review root, slash-separated. */
+  /** Path relative to the workspace, slash-separated. */
   path: string;
   isDir: boolean;
   /** Absent on files, which are the bulk of a tree. */
   children?: ReviewTreeEntry[];
+  /**
+   * True on the directory a repository is rooted at, so the boundaries are
+   * visible while scrolling across them. Absent everywhere else.
+   */
+  repo?: boolean;
 }
 
 /**
- * The revision a review is compared against. Both fields empty means the
- * working tree's HEAD, which is the default.
+ * One repository the workspace holds.
+ *
+ * A review is over the workspace, not over a repository in it, so these are an
+ * attribute of the paths in the tree rather than a thing to pick between.
+ */
+export interface ReviewRepo {
+  /**
+   * Where it sits relative to the workspace, slash-separated. Empty when the
+   * workspace is itself the repository.
+   */
+  path: string;
+  /** What to call it: its own directory name. */
+  name: string;
+  /** The commit its HEAD names, or '' before its first commit. */
+  head: string;
+  /**
+   * What the review's base revision resolved to here, or '' when there is no
+   * base or the revision names nothing in this repository — in which case it
+   * is compared against its own working tree.
+   */
+  baseCommit: string;
+}
+
+/**
+ * The revision a review is compared against: one expression for the whole
+ * workspace, resolved independently in each repository. `main` means
+ * main-in-each, through the merge base with that repository's own HEAD.
+ *
+ * Empty means each repository's own working tree, which is the default. Where
+ * it landed is on {@link ReviewRepo.baseCommit}, because it is a different
+ * commit in every repository and in some of them none.
  */
 export interface ReviewBase {
   /** What the user asked for: a branch, a tag, a short id. */
   rev: string;
-  /** What that resolved to, through the merge base with HEAD. */
-  commit: string;
 }
 
 /**
@@ -396,18 +428,14 @@ export interface ReviewBase {
  * trip per screen rather than one per piece of it.
  */
 export interface ReviewTreeResponse {
-  /**
-   * The review root, relative to the workspace. Empty when the workspace
-   * itself is the root — `/workspace` starts empty and an agent usually clones
-   * into a subdirectory, so it usually names that.
-   */
-  root: string;
-  /** False when the root is no git repository, which turns the git features off. */
+  /** Every repository the workspace holds, sorted by path. */
+  repos: ReviewRepo[];
+  /** False when the workspace holds no repository at all. */
   hasGit: boolean;
   entries: ReviewTreeEntry[];
   /** True when the tree hit the entry cap and was cut short. */
   truncated: boolean;
-  /** Git status per path. Empty without git. */
+  /** Git status per workspace-relative path. Empty without any repository. */
   statuses: Record<string, ReviewFileStatus>;
   /** How many comments each annotated file has. */
   counts: Record<string, number>;
@@ -455,7 +483,13 @@ export interface ReviewFileDiff {
 
 /** The whole file view in one response. */
 export interface ReviewFileResponse {
+  /** The file's path, relative to the workspace. */
   path: string;
+  /**
+   * The path of the repository this file belongs to, or null when no
+   * repository claims it — in which case it has no status and no diff.
+   */
+  repo: string | null;
   /** Plain text. The browser tokenizes it; nothing here is render markup. */
   content: string;
   /** True when the file was longer than the cap and the rest was dropped. */
@@ -486,25 +520,6 @@ export interface ReviewAnnotationsResponse {
   annotations: ReviewAnnotation[];
 }
 
-/**
- * The poll fingerprint. Local hashes rather than execs, and the only thing the
- * review view asks for while nothing is happening.
- */
-export interface ReviewStatusResponse {
-  /** Hash of REVIEW.md, or '' when there is none. */
-  reviewHash: string;
-  /** The commit HEAD names, or '' outside a repository. */
-  headCommit: string;
-  /** Hash of the whole status map, so a file's status changing moves it. */
-  statusHash: string;
-  /**
-   * Hash of the file the pane has open, or '' when it has none. An edit to an
-   * already-modified file moves nothing else, and this is what makes the open
-   * file follow the agent's work.
-   */
-  fileHash: string;
-}
-
 /** Body of a create-or-update annotation request. */
 export interface ReviewAnnotationBody {
   path: string;
@@ -512,9 +527,19 @@ export interface ReviewAnnotationBody {
   comment: string;
 }
 
-/** Body of a set-base request. Null clears the base back to HEAD. */
+/** Body of a set-base request. Null clears the base back to the working tree. */
 export interface ReviewBaseBody {
   rev: string | null;
+}
+
+/**
+ * What setting a base answers with: the expression, and where it landed in
+ * each repository — a revision can resolve in one and name nothing in another,
+ * and the picker says so.
+ */
+export interface ReviewBaseResponse {
+  rev: string;
+  repos: ReviewRepo[];
 }
 
 // --- agent configuration ----------------------------------------------------

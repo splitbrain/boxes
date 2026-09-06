@@ -1,6 +1,7 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gitOut } from './git.ts';
+import { inWorkspace, type RepoMap } from './repos.ts';
 
 /**
  * The file tree a review browses.
@@ -10,12 +11,16 @@ import { gitOut } from './git.ts';
  * an agent's `node_modules` at a depth no ignore list anticipated, and a phone
  * on a slow link is the client.
  *
- * `buildTree` is pure and takes a flat path list. `walkTree` is the one
- * function here that touches the filesystem, and it is only reached where there
- * is no git repository to ask.
+ * `buildTree` is pure and takes a flat path list. `walkPaths` is the one
+ * function here that touches the filesystem, and it walks only the space no
+ * repository claims.
+ *
+ * The tree is over the *workspace*, not over a repository in it, so it is
+ * merged from as many sources as the workspace has repositories, plus one walk
+ * of what is left over. See `repos.ts` for why.
  */
 
-/** The annotation file, written at the review root. Not part of the review. */
+/** The annotation file, written at the workspace root. Not part of the review. */
 export const REVIEW_FILE = 'REVIEW.md';
 
 /**
@@ -23,7 +28,7 @@ export const REVIEW_FILE = 'REVIEW.md';
  * from a walk. Version-control metadata is here because its contents are not
  * source code anybody reviews.
  */
-const IGNORED_DIRS = new Set([
+export const IGNORED_DIRS = new Set([
   // Boxes' own scratch inside a workspace: the files the user attached to a
   // prompt. They are input to the conversation, not source anybody reviews.
   '.boxes',
@@ -63,11 +68,16 @@ export const MAX_ENTRIES = 20_000;
 /** One file or directory in the tree. */
 export interface TreeEntry {
   name: string;
-  /** Path relative to the review root, slash-separated. */
+  /** Path relative to the workspace, slash-separated. */
   path: string;
   isDir: boolean;
   /** Absent for files, which are the bulk of a tree. */
   children?: TreeEntry[];
+  /**
+   * True on the directory a repository is rooted at, so the boundaries are
+   * visible while scrolling across them. Absent everywhere else.
+   */
+  repo?: boolean;
 }
 
 /** A built tree, and whether the entry cap cut it short. */
@@ -152,6 +162,11 @@ function collect(node: Node): TreeEntry[] {
  * other special characters comes back verbatim rather than in git's C-style
  * quoted form. Returns null when the directory is no repository, which is what
  * sends the caller to the walk.
+ *
+ * The paths are the repository's own. REVIEW.md is not filtered here, because
+ * which one is the review's is a question about the workspace: only
+ * `/workspace/REVIEW.md` is, and a `repo-a/REVIEW.md` is a file of that
+ * project like any other.
  */
 export async function gitFiles(root: string): Promise<string[] | null> {
   const out = await gitOut(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
@@ -160,25 +175,33 @@ export async function gitFiles(root: string): Promise<string[] | null> {
     // alone, and both answers lead to the same place.
     return null;
   }
-  return out
-    .split('\0')
-    .filter((path) => path !== '' && path !== REVIEW_FILE && !ignored(path));
+  return out.split('\0').filter((path) => path !== '' && !ignored(path));
 }
 
 /**
- * Walks a directory into a path list, for a root that is no git repository.
+ * Walks a directory into a path list, for the space no repository claims.
+ *
+ * `skipDir` is asked about every directory before it is descended into, the
+ * root included, and is what keeps the walk out of the repositories: inside
+ * one, `git ls-files` is the better answer, because it knows what the project
+ * called noise. Outside one nobody has said, so loose files all show — an
+ * asymmetry that is intended.
  *
  * Directories are read with `withFileTypes`, and a symlink is skipped rather
  * than followed: the tree is agent-controlled, and a link to `/` would
  * otherwise be walked. Reading the file it points at is fs.ts's decision, and
  * it refuses.
  */
-export function walkPaths(root: string, cap: number = MAX_ENTRIES): { paths: string[]; truncated: boolean } {
+export function walkPaths(
+  root: string,
+  cap: number = MAX_ENTRIES,
+  skipDir: (relDir: string) => boolean = () => false,
+): { paths: string[]; truncated: boolean } {
   const paths: string[] = [];
   let truncated = false;
 
   const walk = (absDir: string, relDir: string): void => {
-    if (truncated) return;
+    if (truncated || skipDir(relDir)) return;
     let entries;
     try {
       entries = readdirSync(absDir, { withFileTypes: true });
@@ -213,19 +236,66 @@ export function walkPaths(root: string, cap: number = MAX_ENTRIES): { paths: str
 }
 
 /**
- * The tree of a review root: from git where there is a repository, and from a
- * filesystem walk where there is not.
+ * One workspace-relative tree, merged from every repository the workspace
+ * holds and a walk of what none of them claims.
+ *
+ * The merge runs one filter over all of it: an entry contributed by repository
+ * `P` for path `p` is dropped when the closest repository to `P/p` is not `P`.
+ * That single rule is what kills the nameless `inner/` row an outer
+ * repository's `ls-files --others` reports for a work tree inside it, *and*
+ * the duplicate that would otherwise appear once the inner repository
+ * contributes its own files under the same prefix. It is also what makes the
+ * repositories a partition of the workspace rather than overlapping views of
+ * it.
+ *
+ * The merged list is sorted before the cap is applied, so a truncated tree is
+ * deterministic rather than "whichever repository was read first".
  */
-export async function reviewTree(root: string, hasGit: boolean): Promise<Tree> {
-  if (hasGit) {
-    const files = await gitFiles(root);
-    if (files) {
-      const truncated = files.length > MAX_ENTRIES;
-      return { entries: buildTree(truncated ? files.slice(0, MAX_ENTRIES) : files), truncated };
-    }
+export async function reviewTree(map: RepoMap): Promise<Tree> {
+  const claimed = await Promise.all(
+    map.repos.map(async (repo) => {
+      const files = (await gitFiles(repo.absolute)) ?? [];
+      return files
+        .map((path) => inWorkspace(repo, path))
+        .filter((path) => map.repoFor(path)?.path === repo.path);
+    }),
+  );
+
+  // Everything outside every repository, which is the current no-git
+  // behaviour moved from being a property of the session to being a property
+  // of the file.
+  const unclaimed = walkPaths(map.workspace, MAX_ENTRIES, (relDir) => map.at(relDir) !== null);
+
+  const paths = [...claimed.flat(), ...unclaimed.paths]
+    .filter((path) => path !== REVIEW_FILE)
+    // A trailing slash is git naming a directory rather than a file, which
+    // `buildTree` would turn into a row with an empty name that 404s when it
+    // is tapped. The closest-repo filter already drops the one case that
+    // produces them; this is the guard that they can never reach the tree.
+    .filter((path) => !path.endsWith('/'))
+    .sort();
+  const truncated = unclaimed.truncated || paths.length > MAX_ENTRIES;
+  return {
+    entries: buildTree(truncated ? paths.slice(0, MAX_ENTRIES) : paths),
+    truncated,
+  };
+}
+
+/**
+ * Marks the directories repositories are rooted at, in place.
+ *
+ * Separate from building the tree because {@link withDeleted} rebuilds it, and
+ * a mark that had to survive a rebuild would have to be threaded through
+ * `buildTree` — which is pure, takes paths, and is the better for knowing
+ * nothing about repositories.
+ */
+export function markRepoRoots(entries: TreeEntry[], map: RepoMap): TreeEntry[] {
+  for (const entry of entries) {
+    if (!entry.isDir) continue;
+    if (map.at(entry.path) !== null) entry.repo = true;
+    markRepoRoots(entry.children ?? [], map);
   }
-  const { paths, truncated } = walkPaths(root);
-  return { entries: buildTree(paths), truncated };
+  return entries;
 }
 
 /**

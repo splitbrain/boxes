@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, File, MessageSquare } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, GitBranch, MessageSquare } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type {
   ReviewFileStatus,
@@ -10,6 +10,12 @@ import { cn } from '@/lib/utils';
 
 /**
  * The workspace's files, with git status and comment counts on them.
+ *
+ * One tree over the whole workspace, not over one repository in it: paths are
+ * workspace-relative, and the directory a repository is rooted at is marked,
+ * so the boundaries are visible while scrolling across them. Which repository
+ * a file belongs to is what decides its status letter and its gutter markers,
+ * and there is nothing to switch between.
  *
  * One component for both arrangements: a collapsible left column from `md` up
  * and a Sheet below it. The desktop tool's three panels do not survive a
@@ -164,11 +170,24 @@ function Level({
                 <File className="size-3.5 shrink-0 text-muted-foreground" />
               )}
               <span
-                className={cn('min-w-0 flex-1 truncate', status && STATUS[status].className)}
+                className={cn(
+                  'min-w-0 flex-1 truncate',
+                  status && STATUS[status].className,
+                  // A repository root reads as a heading rather than a folder:
+                  // it is where one project's statuses and diffs stop meaning
+                  // anything and the next one's start.
+                  entry.repo && 'font-medium',
+                )}
                 title={entry.path}
               >
                 {entry.name}
               </span>
+              {entry.repo ? (
+                <GitBranch
+                  className="size-3 shrink-0 text-muted-foreground"
+                  aria-label="a git repository"
+                />
+              ) : null}
               {status ? (
                 <span
                   aria-label={STATUS[status].label}

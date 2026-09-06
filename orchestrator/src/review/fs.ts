@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import {
   lstatSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   renameSync,
   statSync,
@@ -13,7 +12,8 @@ import { isAbsolute, resolve, sep } from 'node:path';
 import { chownToAgent } from '../workspaces.ts';
 
 /**
- * Contained reads and writes under one review root.
+ * Contained reads and writes under one root, which for a review is the
+ * session's whole workspace.
  *
  * This file holds the symlink-containment invariant, and it holds it alone, so
  * that it stays reviewable. A review serves a whole source tree that an agent
@@ -23,7 +23,9 @@ import { chownToAgent } from '../workspaces.ts';
  *
  * The rule is: resolve the client's path with `realpath`, require the result to
  * be at or under the root's own realpath, and refuse a final component that is
- * a symlink at all.
+ * a symlink at all. The review being over the workspace rather than over one
+ * repository in it does not change the rule; what changes is that a contained
+ * path may now be in any repository, or in none.
  *
  * Accepted residual: a determined agent can race the check against the open,
  * because Node exposes no way to open a file beneath a directory atomically
@@ -200,8 +202,9 @@ export function removeFile(path: string): boolean {
 /**
  * A hash of a file's content, or '' when there is no file.
  *
- * This is the review poll's whole cost on the server: three of these instead of
- * three `docker exec`s. What it is compared against is a previous value of
+ * Used as a guard rather than as a fingerprint: every REVIEW.md mutation reads
+ * it before and after applying, so an edit the agent made in between is caught
+ * instead of overwritten. What it is compared against is a previous value of
  * itself, so the algorithm matters only in being cheap and stable.
  */
 export function fileHash(path: string): string {
@@ -212,32 +215,11 @@ export function fileHash(path: string): string {
   }
 }
 
-/** A hash of any string, for fingerprinting a computed answer. */
-export function textHash(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32);
-}
-
 /** Whether a path is a directory this process can read. */
 export function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
   } catch {
     return false;
-  }
-}
-
-/**
- * The immediate subdirectories of a directory, ignoring links.
- *
- * Used by root resolution, where "the workspace holds exactly one directory and
- * that is the repository" is the shape a cloned project actually takes.
- */
-export function subdirectories(path: string): string[] {
-  try {
-    return readdirSync(path, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch {
-    return [];
   }
 }
