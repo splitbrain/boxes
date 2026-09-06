@@ -56,7 +56,7 @@ export class Broadcast {
       sessionId: acpThreadId,
       active: this.isPrompting(acpThreadId),
       speaking: false,
-      background: [],
+      background: false,
     }),
   ) {}
 

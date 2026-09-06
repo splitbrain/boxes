@@ -129,7 +129,7 @@ export function SessionThread() {
    */
   const tabState: TabState =
     state.awaiting ??
-    (state.isRunning ? 'running' : state.background.length > 0 ? 'waiting' : 'idle');
+    (state.isRunning ? 'running' : state.background ? 'waiting' : 'idle');
   useDocumentTitle(threadTitle(tabState, session?.name ?? id, threadLabel));
 
   // The thread's viewport is the only scroller this route has; the document
@@ -323,7 +323,7 @@ export function SessionThread() {
                 <Thread
                   aboveComposer={
                     <BackgroundBar
-                      tasks={state.background}
+                      busy={state.background}
                       // Nothing to stop it with while the store is being
                       // built; the bar drops the button rather than offering
                       // one that does nothing.

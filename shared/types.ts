@@ -13,30 +13,6 @@ export type SessionStatus =
 /** What Docker reports right now, independent of what the DB believes. */
 export type DockerState = 'running' | 'exited' | 'missing' | 'unknown';
 
-/**
- * One piece of work a session left running in the background: a command told
- * to run there, a monitor watching something, a subagent.
- *
- * What the orchestrator believes is running now, rather than a record of
- * anything — the entries are held in memory beside the adapter that owns the
- * work, and both go together (`orchestrator/src/gateway/background.ts`). It
- * is a list rather than a count because "1 task" and "npm run build" are
- * different answers to the question a reader is actually asking, and the tool
- * call that started the work already carries the words.
- */
-export interface BackgroundTask {
-  /**
-   * The tool call that started it, which is also what a report names — so
-   * this is the id that correlates the two. ACP's `toolCallId`.
-   */
-  toolCallId: string;
-  /** The tool running it: `Bash`, `Monitor`, `Workflow`, or a later one. */
-  tool: string | null;
-  /** What the call was called — "npm run build" — or null when it said none. */
-  title: string | null;
-  /** When the call was first seen, in epoch milliseconds. */
-  startedAt: number;
-}
 
 /** One conversation of a session, as the API reports it. */
 export interface ThreadSummary {
@@ -70,8 +46,6 @@ export interface ThreadSummary {
    * with one. See `orchestrator/src/gateway/activity.ts`.
    */
   speaking: boolean;
-  /** What this thread has left running in the background; usually empty. */
-  background: BackgroundTask[];
   /** Permission requests from this thread waiting for a browser to answer. */
   pendingCount: number;
   createdAt: number;
@@ -95,10 +69,15 @@ export interface SessionSummary {
   /** True while the agent is producing output on any of them. */
   speaking: boolean;
   /**
-   * How many background tasks the session is believed to have running, across
-   * every thread. The threads carry what each one is.
+   * Whether the box still has work running in it — a command left running, a
+   * monitor watching something — with no turn to say so.
+   *
+   * A boolean rather than a list of what: it is read from the processes alive
+   * in the container, which carry the shell the harness wrapped a command in
+   * rather than the words the agent chose for it. See
+   * `orchestrator/src/gateway/background.ts`.
    */
-  backgroundCount: number;
+  backgroundBusy: boolean;
   /** Permission requests waiting for a browser to answer them, on any thread. */
   pendingCount: number;
   /**
@@ -671,6 +650,6 @@ export interface TurnStateParams {
   active: boolean;
   /** True while the agent is producing output on that thread, now. */
   speaking: boolean;
-  /** What the thread has left running in the background; usually empty. */
-  background: BackgroundTask[];
+  /** Whether the box this thread is in still has work running in it. */
+  background: boolean;
 }

@@ -199,7 +199,7 @@ docker exec -it session-<id> claude /login
 | `SESSION_CPUS` | `2` | Per-session CPU cap |
 | `SESSION_PIDS_LIMIT` | `512` | Per-session pids cap |
 | `IDLE_STOP_MINUTES` | `30` | Idle time before a session container is stopped |
-| `BACKGROUND_TASK_MAX_MINUTES` | `240` | Longest a background task holds that stop off |
+| `BACKGROUND_POLL_SECONDS` | `20` | How often a box is asked whether work is still running in it |
 | `AGENT_QUIET_SECONDS` | `3` | Silence after which the agent counts as having stopped talking |
 | `AGENT_SETTLE_SECONDS` | `30` | Silence after which you are told the turn is over |
 | `MAX_ATTACHMENT_MB` | `25` | Largest single file a prompt may carry into a workspace |
@@ -385,13 +385,14 @@ too, so the agent's work and the thread history go with it.
 Idle sessions — no turn on any thread, no waiting request, no attached browser
 — are stopped after `IDLE_STOP_MINUTES`. They are never deleted. Work left
 running in the background counts as not idle: a command still going or a
-monitor still watching holds the stop off, for up to
-`BACKGROUND_TASK_MAX_MINUTES` from the call that started it. So backgrounding
-a long build and closing the tab is safe, and a box whose task ended without
-saying so is stopped late rather than never.
+monitor still watching holds the stop off. The box is asked what is running in
+it rather than told, every `BACKGROUND_POLL_SECONDS`, so backgrounding a long
+build and closing the tab is safe, and a task that ends without reporting —
+killed, crashed, or simply quiet — stops holding the box the moment it is
+actually gone.
 
-**Work still running says so.** A thread with something left going shows it
-above the composer, with what each task is and how long it has been at it, and
+**Work still running says so.** A thread in a box with something left going
+says so above the composer, and
 the session list carries the same count. That is the difference between a
 thread that has finished and one that is waiting for you with a build still
 in it — and the composer is yours in both, because a turn the adapter is

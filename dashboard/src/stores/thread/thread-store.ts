@@ -9,7 +9,6 @@ import type {
   SessionModeState,
   SessionNotification,
 } from './acp-types.ts';
-import type { BackgroundTask } from '../../../../shared/types.ts';
 import { AcpClient, type ConnectionState } from './acp-client.ts';
 import { BANG, listExec, runExec } from './exec.ts';
 import {
@@ -55,11 +54,11 @@ export interface ThreadSnapshot {
    */
   isRunning: boolean;
   /**
-   * What this thread has left running in the background: a command, a
-   * monitor, a subagent. Usually empty, and while it is not, a quiet thread
-   * is quiet with something still going on in it.
+   * Whether the box this thread is in still has work running in it — a
+   * command left running, a monitor watching something. Usually false, and
+   * while it is not, a quiet thread is quiet with something still going on.
    */
-  background: readonly BackgroundTask[];
+  background: boolean;
   /** What the thread is waiting for an answer to, or null. */
   awaiting: Awaiting | null;
   connection: ConnectionState;
@@ -120,7 +119,7 @@ export class ThreadStore {
    * again on every transition.
    */
   private speakingUpstream = false;
-  private backgroundUpstream: readonly BackgroundTask[] = [];
+  private backgroundUpstream = false;
   private nextApprovalId = 1;
   private nextExecId = 1;
   /** Exec records already replayed, so a re-attach does not double them. */
@@ -144,7 +143,7 @@ export class ThreadStore {
     this.snapshot = {
       messages: [],
       isRunning: false,
-      background: [],
+      background: false,
       awaiting: null,
       connection: 'connecting',
       modes: null,
@@ -297,7 +296,7 @@ export class ThreadStore {
     // what is still running in the background, which is the only way this
     // browser can learn it.
     this.speakingUpstream = false;
-    this.backgroundUpstream = [];
+    this.backgroundUpstream = false;
     this.failOpenApprovals();
     this.replaying = true;
     // A snapshot with no patch: what the thread is doing is re-derived — the

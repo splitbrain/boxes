@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
   GLOBAL_AGENT_SET,
-  type BackgroundTask,
   type CreateSessionBody,
   type CreateThreadBody,
   type SessionDetail,
@@ -726,14 +725,12 @@ export class SessionManager {
       // one.
       turnActive,
       speaking: speaking.size > 0,
-      backgroundCount: upstream?.backgroundCount ?? 0,
+      backgroundBusy: upstream?.backgroundActive ?? false,
       pendingCount,
       attachedCount: upstream?.attachedCount ?? 0,
       wsToken: this.cfg.WS_AUTH_TOKEN,
       threads: listThreads(this.db, row.id).map((thread) =>
-        toThreadSummary(thread, pendingByThread, speaking, (acpThreadId) =>
-          upstream?.backgroundFor(acpThreadId) ?? [],
-        ),
+        toThreadSummary(thread, pendingByThread, speaking),
       ),
       currentThreadId: row.current_thread_id,
       // False until the adapter has been reached and has advertised it. The
@@ -897,7 +894,6 @@ function toThreadSummary(
   row: ThreadRow,
   pendingByThread: Map<string, number> = new Map(),
   speaking: ReadonlySet<string> = new Set(),
-  backgroundFor: (acpThreadId: string) => BackgroundTask[] = () => [],
 ): ThreadSummary {
   const acp = row.acp_session_id;
   return {
@@ -910,7 +906,6 @@ function toThreadSummary(
     // thread the adapter has forgotten has nothing running in it and nobody
     // talking on it, by definition.
     speaking: acp ? speaking.has(acp) : false,
-    background: acp ? backgroundFor(acp) : [],
     pendingCount: acp ? (pendingByThread.get(acp) ?? 0) : 0,
     createdAt: row.created_at,
     lastActiveAt: row.last_active_at,

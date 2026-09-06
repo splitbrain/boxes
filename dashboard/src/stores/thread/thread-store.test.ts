@@ -7,7 +7,7 @@ import type {
   SessionModeState,
   SessionUpdate,
 } from './acp-types.ts';
-import type { BackgroundTask, TurnStateParams } from '../../../../shared/types.ts';
+import type { TurnStateParams } from '../../../../shared/types.ts';
 import type { AcpClient, AcpClientHandlers } from './acp-client.ts';
 import { ThreadStore, type ThreadStoreDeps } from './thread-store.ts';
 import { convertMessage } from './convert.ts';
@@ -154,12 +154,7 @@ test('subscribers are woken on every update', () => {
 
 /** What the gateway says about a thread, defaulting to a quiet one. */
 function threadState(patch: Partial<TurnStateParams> = {}): TurnStateParams {
-  return { sessionId: 'acp-1', active: false, speaking: false, background: [], ...patch };
-}
-
-/** One background task, as the gateway reports it. */
-function task(toolCallId: string, title: string): BackgroundTask {
-  return { toolCallId, tool: 'Bash', title, startedAt: 1_000 };
+  return { sessionId: 'acp-1', active: false, speaking: false, background: false, ...patch };
 }
 
 test('a prompt of this browser\'s own does not claim the agent is talking', async () => {
@@ -208,19 +203,16 @@ test('a thread that has stopped talking with work still in it is not running', (
   // The state this whole vocabulary exists for: the agent has finished, the
   // composer is yours, and a build is still going in the box.
   client.handlers.onTurnState(
-    threadState({ active: true, speaking: false, background: [task('toolu_1', 'npm run build')] }),
+    threadState({ active: true, speaking: false, background: true }),
   );
   assert.equal(store.getSnapshot().isRunning, false);
-  assert.deepEqual(
-    store.getSnapshot().background.map((t) => t.title),
-    ['npm run build'],
-  );
+  assert.equal(store.getSnapshot().background, true);
 });
 
 test('a replay drops the turn state it was told before it', () => {
   const { store, client } = makeStore();
   client.handlers.onTurnState(
-    threadState({ speaking: true, background: [task('toolu_1', 'watch the log')] }),
+    threadState({ speaking: true, background: true }),
   );
   assert.equal(store.getSnapshot().isRunning, true);
 
@@ -229,7 +221,7 @@ test('a replay drops the turn state it was told before it', () => {
   // and a task nobody has said is still running.
   client.handlers.onResetThread();
   assert.equal(store.getSnapshot().isRunning, false);
-  assert.deepEqual(store.getSnapshot().background, []);
+  assert.equal(store.getSnapshot().background, false);
 });
 
 test('cancel stops a turn this browser did not start', () => {

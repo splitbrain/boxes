@@ -105,6 +105,17 @@ class FakeAdapter extends Duplex {
  * what a respawn needs: killing an exec destroys its stream, so an adapter
  * that has been torn down cannot answer the connection that replaces it.
  */
+/**
+ * What `docker top` reports for the fake box, which is how the gateway learns
+ * whether anything is still running in it. Written parent-first: the adapter
+ * Boxes launched, an agent under it, and whatever the agent is running.
+ */
+let processes: string[][] = [
+  ['1', '0', '/sbin/docker-init'],
+  ['19', '1', 'node /usr/local/bin/claude-agent-acp'],
+  ['100', '19', 'claude --output-format stream-json'],
+];
+
 function fakeDocker(adapter: FakeAdapter | (() => FakeAdapter)): void {
   const spawn = typeof adapter === 'function' ? adapter : () => adapter;
   const modem = new Docker({ socketPath: '/var/run/docker.sock' }).modem;
@@ -113,6 +124,7 @@ function fakeDocker(adapter: FakeAdapter | (() => FakeAdapter)): void {
     getContainer: () => ({
       start: async () => undefined,
       inspect: async () => ({ State: { Running: true } }),
+      top: async () => ({ Titles: ['PID', 'PPID', 'COMMAND'], Processes: processes }),
       exec: async () => ({
         start: async () => spawn(),
         inspect: async () => ({ ExitCode: 0 }),
@@ -1027,7 +1039,7 @@ test('a turn that finishes with nobody watching is announced, naming the thread'
       threadName: 'Thread 1',
       // Nothing was left running, which is what makes this a turn somebody
       // can come back to at their leisure.
-      background: 0,
+      background: false,
     },
   ]);
 });
@@ -1081,7 +1093,7 @@ test('a queued permission request is announced as one', async () => {
     sessionName: 'test',
     threadId: 't2',
     threadName: 'Thread 2',
-    background: 0,
+    background: false,
   });
 });
 
@@ -1140,42 +1152,26 @@ test('work the agent leaves running in the background holds the reaper off', asy
 
   const up = manager.upstream('s1');
   await up.ensureStarted();
+  await up.refreshBackgroundForTests();
   assert.equal(up.backgroundActive, false);
 
   // The turn backgrounds a command and ends. Nothing else about the session
-  // says so: no browser is attached and no turn is running.
-  adapter.notify('session/update', {
-    sessionId: 'acp-gone',
-    update: {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'toolu_1',
-      title: 'npm run build',
-      status: 'completed',
-      rawInput: { command: 'npm run build', run_in_background: true },
-      _meta: { claudeCode: { toolName: 'Bash' } },
-    },
-  });
-  await expect.poll(() => up.backgroundActive).toBe(true);
+  // says so: no browser is attached and no turn is running, and the harness
+  // tells the orchestrator nothing either. What says so is the shell, which
+  // is still there.
+  processes = [
+    ...processes,
+    ['200', '100', "/bin/bash -c source ~/.claude/shell-snapshots/s.sh && eval 'npm run build'"],
+  ];
+  await up.refreshBackgroundForTests();
+  assert.equal(up.backgroundActive, true);
 
-  // An hour later the build reports in, and the box is idle again.
-  adapter.notify('session/update', {
-    sessionId: 'acp-gone',
-    update: {
-      sessionUpdate: 'user_message_chunk',
-      content: {
-        type: 'text',
-        text: [
-          '<task-notification>',
-          '<task-id>bm74el4o7</task-id>',
-          '<tool-use-id>toolu_1</tool-use-id>',
-          '<status>completed</status>',
-          '<summary>Background command "npm run build" completed (exit code 0)</summary>',
-          '</task-notification>',
-        ].join('\n'),
-      },
-    },
-  });
-  await expect.poll(() => up.backgroundActive).toBe(false);
+  // An hour later the build is over. Nothing reported it — this is the case
+  // the old tally could not see, because it waited to be told — and the box
+  // is idle again on the next reading.
+  processes = processes.filter((p) => p[0] !== '200');
+  await up.refreshBackgroundForTests();
+  assert.equal(up.backgroundActive, false);
 });
 
 test('a prompt held open for background work is not the agent still talking', async () => {
@@ -1232,17 +1228,14 @@ test('a prompt held open for background work is not the agent still talking', as
   await expect.poll(() => up.threadState('acp-gone').speaking, { timeout: 5000 }).toBe(false);
   const state = up.threadState('acp-gone');
   assert.equal(state.active, true);
-  assert.deepEqual(
-    state.background.map((task) => [task.tool, task.title]),
-    [['Bash', 'npm run build']],
-  );
+  assert.equal(state.background, false);
 
   // The browser watching was told all of it, without asking.
   const told = watcher.told.filter(
     (params) => typeof (params as { speaking?: unknown }).speaking === 'boolean',
   ) as TurnStateParams[];
   assert.equal(told.at(-1)?.speaking, false);
-  assert.deepEqual(told.at(-1)?.background.map((t) => t.title), ['npm run build']);
+  assert.equal(told.at(-1)?.background, false);
   // Nobody was notified: somebody is looking at this thread.
   assert.deepEqual(announced, []);
 

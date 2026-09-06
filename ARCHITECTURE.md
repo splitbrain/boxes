@@ -807,23 +807,38 @@ awake by talking, because every adapter update marks the session active. What
 was left was the quiet task: a command compiling for two hours, or a monitor
 watching a log that says nothing.
 
-`gateway/background.ts` reads the same updates the browsers get and holds the
-reaper off while it believes something is still running. A tool call starts an
-entry when its input asks for the background or its tool only ever runs there
-(`Monitor`, `Workflow`); the notification the harness sends when a task is over
-ends it, matched on the tool call id the block carries as `<tool-use-id>` —
-which is ACP's `toolCallId`, so the report and the call that started the work
-name the same thing. A report naming no call ends nothing, because guessing
-which entry a nameless one meant would stop a box for the sake of tidying a
-map.
+`gateway/background.ts` asks the box what is running in it. `docker top` over
+the session's container, every `BACKGROUND_POLL_SECONDS`: the adapter Boxes
+launched is in there by the command Boxes gave it, one agent process per
+conversation sits under it, and the shells the agent's tool calls run in sit
+under those. Anything at that depth is work, and the answer is the boolean the
+reaper and a reader both want.
 
-Held off, not disabled. Both ends of this are the harness's conventions rather
-than anything ACP promises, so an entry expires after
-`BACKGROUND_TASK_MAX_MINUTES` whatever happens: a missed ending costs a box
-that stops later than it should rather than one that never stops at all. The
-state is deliberately in memory — a background task is a child of the adapter,
-the adapter is a docker exec this process owns, and both die with it, so an
-orchestrator that has forgotten a task is one whose task is already gone.
+Foreground and background calls are the same shell with the same ancestry, and
+they do not need telling apart. A foreground command cannot outlive the turn
+waiting on it, and both callers ask this only of a session with no turn
+running — the reaper tests that first, and a thread that is mid-turn already
+says so without help.
+
+This was a tally once, kept from the adapter's own updates: a tool call that
+backgrounded something added an entry, and the harness's `<task-notification>`
+block removed it again, matched on `<tool-use-id>`. The adding worked. The
+removing never ran once in production, because the harness delivers that block
+as a queued *prompt* and the ACP adapter drops a queued turn's echo from the
+feed as something the client already knows about — true of a prompt the client
+sent, false of one the harness injected. The block never crossed ACP, live or
+on replay, so nothing was ever removed and a box that had run one background
+command was held awake until a four-hour cap let go of it.
+
+The difference is an edge against a level. A count of transitions is wrong
+forever after one is missed; a reading of what is running now cannot drift,
+cannot wedge, and needs nothing reported at all — a task killed with no
+notification, an adapter restarted, a frame lost, all answer correctly on the
+next reading. The price is that a process carries the shell the harness wrapped
+a command in rather than the words the agent chose, so what the work *is* is
+not recoverable and the answer is only that there is some. A container that
+cannot be read at all answers "busy": stopping a box late is recoverable, and
+stopping one with a two-hour build in it is not.
 
 ### Is the agent talking, or is it your turn
 
@@ -858,8 +873,8 @@ Which calls hold a prompt open is the adapter's rule, not a guess: it defers a
 turn's settlement for the **subagents** it spawned and for nothing else — a
 backgrounded command or a monitor never holds one. A prompt sent into a
 deferred turn is accepted and hands the held turn off, so the composer is safe
-to offer send there. Both were read out of `claude-agent-acp` 0.70.0; `IDLE.md`
-§4 records where.
+to offer send there. Both were read out of `claude-agent-acp` 0.70.0, in
+`dist/acp-agent.js`, rather than inferred from behaviour.
 
 Two thresholds, because the two readers want opposite things. The screen flips
 at `AGENT_QUIET_SECONDS` and can afford to be wrong for a moment: an early

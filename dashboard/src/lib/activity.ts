@@ -1,4 +1,3 @@
-import type { BackgroundTask } from '../../../shared/types.ts';
 
 /**
  * Words for the work a thread has left running, wherever it is shown.
@@ -17,12 +16,14 @@ import type { BackgroundTask } from '../../../shared/types.ts';
  * exactly one of them.
  */
 
-/** What one background task is called: what the agent called it, or its tool. */
-export function taskName(task: BackgroundTask): string {
-  return task.title?.trim() || task.tool || 'Background task';
-}
-
-/** "2 tasks running", for the places that have room for a phrase and no list. */
-export function tasksRunning(count: number): string {
-  return count === 1 ? '1 task running' : `${count} tasks running`;
-}
+/**
+ * What a box with work still in it is called, wherever there is room to say
+ * so.
+ *
+ * No count and no names: the orchestrator reads this from the processes alive
+ * in the container, which carry the shell a command was wrapped in rather than
+ * the words the agent chose for it. "Something is still running" is the whole
+ * of what can honestly be said, and it is also the whole of what the question
+ * — is this thread finished? — needs answering.
+ */
+export const STILL_RUNNING = 'still running';
