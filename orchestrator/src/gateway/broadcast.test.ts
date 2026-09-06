@@ -19,9 +19,11 @@ function fakeDownstream(
   id: number,
   acpThreadId: string | null = T1,
   lastActiveAt = 0,
-): DownstreamHandle & { sent: unknown[]; turns: boolean[] } {
+): DownstreamHandle & { sent: unknown[]; turns: boolean[]; states: TurnStateParams[] } {
   const sent: unknown[] = [];
-  /** Every turn state this browser was told, in order. */
+  /** Every thread state this browser was told, in order. */
+  const states: TurnStateParams[] = [];
+  /** The prompt-open half of each, which most of these tests are about. */
   const turns: boolean[] = [];
   return {
     id,
@@ -29,8 +31,10 @@ function fakeDownstream(
     lastActiveAt,
     sent,
     turns,
+    states,
     notify: (method, params) => {
       if (method === TURN_STATE_METHOD) {
+        states.push(params as TurnStateParams);
         turns.push((params as TurnStateParams).active);
         return;
       }
@@ -429,25 +433,42 @@ test('a browser can be told its own thread state, and only its own', () => {
   b.add(a);
   b.add(other);
 
-  b.turnStateTo(a, true);
-  assert.deepEqual(a.turns, [true]);
+  b.threadStateTo(a);
+  assert.deepEqual(a.turns, [false]);
   assert.deepEqual(other.turns, []);
 
   // A connection whose thread has not been settled yet is told nothing;
   // it has not asked for anything either.
   const unpinned = fakeDownstream(3, null);
   b.add(unpinned);
-  b.turnStateTo(unpinned, true);
+  b.threadStateTo(unpinned);
   assert.deepEqual(unpinned.turns, []);
 });
 
-test('clearing the turns says so on every watched thread', () => {
+test('re-stating every thread reaches every watched one', () => {
   const b = new Broadcast('s1');
   const [a, other] = [fakeDownstream(1), fakeDownstream(2, T2)];
   b.add(a);
   b.add(other);
 
-  b.clearTurnStates();
+  b.refreshThreadStates();
   assert.deepEqual(a.turns, [false]);
   assert.deepEqual(other.turns, [false]);
+});
+
+test('the state a browser is told is the one the gateway supplies', () => {
+  // What the gateway knows and this class does not: the agent is talking on
+  // T1, and it has a build running in it.
+  const b = new Broadcast('s1', (thread) => ({
+    sessionId: thread,
+    active: false,
+    speaking: thread === T1,
+    background: thread === T1 ? [{ toolCallId: 'toolu_1', tool: 'Bash', title: 'npm run build', startedAt: 5 }] : [],
+  }));
+  const a = fakeDownstream(1);
+  b.add(a);
+
+  b.threadState(T1);
+  assert.deepEqual(a.states.at(-1)?.background.map((t) => t.title), ['npm run build']);
+  assert.equal(a.states.at(-1)?.speaking, true);
 });

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import type { SessionDetail, ThreadSummary } from '../../../shared/types.ts';
 import { Thread } from '@/components/assistant-ui/elements/thread.aui';
+import { BackgroundBar } from '@/components/BackgroundBar';
 import { Notice } from '@/components/Notice';
 import { SlashCommandsProvider } from '@/components/SlashCommands';
 import { TokenWarning } from '@/components/TokenWarning';
@@ -122,9 +123,13 @@ export function SessionThread() {
    *
    * A question outranks a running turn because it is the one that stopped:
    * the two cannot both be true anyway — a thread waiting on an answer is not
-   * running, which is the whole point of the request.
+   * running, which is the whole point of the request. Below those, a thread
+   * that has stopped talking with work still running in it is its own state:
+   * it is your turn, and it is not over.
    */
-  const tabState: TabState = state.awaiting ?? (state.isRunning ? 'running' : 'idle');
+  const tabState: TabState =
+    state.awaiting ??
+    (state.isRunning ? 'running' : state.background.length > 0 ? 'waiting' : 'idle');
   useDocumentTitle(threadTitle(tabState, session?.name ?? id, threadLabel));
 
   // The thread's viewport is the only scroller this route has; the document
@@ -315,7 +320,17 @@ export function SessionThread() {
                 // piece when it has been read. See ThreadLoading.
                 <ThreadLoading />
               ) : (
-                <Thread />
+                <Thread
+                  aboveComposer={
+                    <BackgroundBar
+                      tasks={state.background}
+                      // Nothing to stop it with while the store is being
+                      // built; the bar drops the button rather than offering
+                      // one that does nothing.
+                      onStop={store ? () => store.cancel() : undefined}
+                    />
+                  }
+                />
               )}
             </div>
           </div>

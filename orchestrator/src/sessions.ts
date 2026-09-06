@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   GLOBAL_AGENT_SET,
+  type BackgroundTask,
   type CreateSessionBody,
   type CreateThreadBody,
   type SessionDetail,
@@ -709,6 +710,13 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const dockerState = await dk.containerState(row.container_id);
     const pendingByThread = this.pending.countsByThread(row.id);
+    // What the gateway believes about the box right now, which lives in
+    // memory beside the adapter rather than in the database: the agent is
+    // talking on these threads, and these tasks are still running in them.
+    // Read once here so every thread of one summary answers from the same
+    // moment. `upstreams.get` rather than `upstream()`, which would start one.
+    const upstream = this.upstreams.get(row.id);
+    const speaking = new Set(upstream?.speakingThreads ?? []);
     return {
       id: row.id,
       name: row.name,
@@ -719,16 +727,20 @@ export class SessionManager {
       // on a conversation, and the session's answer is that any of them has
       // one.
       turnActive,
+      speaking: speaking.size > 0,
+      backgroundCount: upstream?.backgroundCount ?? 0,
       pendingCount,
-      attachedCount: this.upstreams.get(row.id)?.attachedCount ?? 0,
+      attachedCount: upstream?.attachedCount ?? 0,
       wsToken: this.cfg.WS_AUTH_TOKEN,
       threads: listThreads(this.db, row.id).map((thread) =>
-        toThreadSummary(thread, pendingByThread),
+        toThreadSummary(thread, pendingByThread, speaking, (acpThreadId) =>
+          upstream?.backgroundFor(acpThreadId) ?? [],
+        ),
       ),
       currentThreadId: row.current_thread_id,
       // False until the adapter has been reached and has advertised it. The
       // capability is unstable, so an absent one is taken at face value.
-      canFork: this.upstreams.get(row.id)?.canFork ?? false,
+      canFork: upstream?.canFork ?? false,
       agentSetId: row.agent_set_id,
       agentSetName: this.agents.nameOf(row.agent_set_id),
       createdAt: row.created_at,
@@ -886,14 +898,22 @@ export class SessionManager {
 function toThreadSummary(
   row: ThreadRow,
   pendingByThread: Map<string, number> = new Map(),
+  speaking: ReadonlySet<string> = new Set(),
+  backgroundFor: (acpThreadId: string) => BackgroundTask[] = () => [],
 ): ThreadSummary {
+  const acp = row.acp_session_id;
   return {
     id: row.id,
-    acpSessionId: row.acp_session_id,
+    acpSessionId: acp,
     title: row.title,
     ordinal: row.ordinal,
     turnActive: row.turn_active === 1,
-    pendingCount: row.acp_session_id ? (pendingByThread.get(row.acp_session_id) ?? 0) : 0,
+    // Both of these are the live gateway's, keyed by the adapter's own id: a
+    // thread the adapter has forgotten has nothing running in it and nobody
+    // talking on it, by definition.
+    speaking: acp ? speaking.has(acp) : false,
+    background: acp ? backgroundFor(acp) : [],
+    pendingCount: acp ? (pendingByThread.get(acp) ?? 0) : 0,
     createdAt: row.created_at,
     lastActiveAt: row.last_active_at,
   };

@@ -9,6 +9,7 @@ import type {
   SessionModeState,
   SessionNotification,
 } from './acp-types.ts';
+import type { BackgroundTask } from '../../../../shared/types.ts';
 import { AcpClient, type ConnectionState } from './acp-client.ts';
 import { BANG, listExec, runExec } from './exec.ts';
 import {
@@ -41,8 +42,24 @@ export type Awaiting = 'permission' | 'question';
 /** What the view renders. Every field is replaced, never mutated. */
 export interface ThreadSnapshot {
   messages: readonly Message[];
-  /** True while a prompt is in flight upstream. */
+  /**
+   * True while the agent is producing output: text, thinking, a tool call of
+   * its own.
+   *
+   * Not "a prompt is open", which is what it used to be and what background
+   * work made useless. The adapter holds a prompt open until the subagents a
+   * turn spawned settle, so a thread can be waiting for its reader for an
+   * hour with a prompt still in flight; and a thread the harness wakes to
+   * report a task has no prompt open while it works. The gateway decides
+   * this — see orchestrator/src/gateway/activity.ts.
+   */
   isRunning: boolean;
+  /**
+   * What this thread has left running in the background: a command, a
+   * monitor, a subagent. Usually empty, and while it is not, a quiet thread
+   * is quiet with something still going on in it.
+   */
+  background: readonly BackgroundTask[];
   /** What the thread is waiting for an answer to, or null. */
   awaiting: Awaiting | null;
   connection: ConnectionState;
@@ -92,17 +109,18 @@ export class ThreadStore {
   private readonly listeners = new Set<() => void>();
   private readonly approvals = new Map<string, OpenApproval>();
   private client: AcpClient | null = null;
-  private promptsInFlight = 0;
   /**
-   * Whether the gateway says a turn is running on this thread, which is not
-   * the same question as whether this browser sent one.
+   * What the gateway says this thread is doing, which is not the same
+   * question as what this browser sent.
    *
    * A store lives for as long as the view is on screen, so stepping into the
    * review and back builds a fresh one with nothing in flight — while the
    * turn it left behind is still going, because the orchestrator is the ACP
-   * client of record. This is what the gateway tells it after the replay.
+   * client of record. This is what the gateway tells it after the replay, and
+   * again on every transition.
    */
-  private turnUpstream = false;
+  private speakingUpstream = false;
+  private backgroundUpstream: readonly BackgroundTask[] = [];
   private nextApprovalId = 1;
   private nextExecId = 1;
   /** Exec records already replayed, so a re-attach does not double them. */
@@ -126,6 +144,7 @@ export class ThreadStore {
     this.snapshot = {
       messages: [],
       isRunning: false,
+      background: [],
       awaiting: null,
       connection: 'connecting',
       modes: null,
@@ -152,13 +171,21 @@ export class ThreadStore {
       ...this.snapshot,
       ...patch,
       isRunning: this.running,
+      background: this.backgroundUpstream,
       awaiting: this.awaiting,
     };
     for (const l of this.listeners) l();
   }
 
   /**
-   * Whether a turn is actually progressing.
+   * Whether the agent is actually saying anything.
+   *
+   * The gateway's answer, not this browser's: it marks a thread as working
+   * the moment it forwards a prompt — so the browser that sent one has its
+   * spinner in a single hop — and stops when the agent has gone quiet, which
+   * is a thing only something watching the whole stream can see. A prompt of
+   * our own still in flight proves nothing either way once the adapter starts
+   * holding turns open for background work, so it is not consulted here.
    *
    * A turn blocked on a permission request is not running, it is waiting for
    * the user — which is the whole point of the request. Saying otherwise
@@ -168,7 +195,7 @@ export class ThreadStore {
    * spinner where the buttons belong and deadlock the turn.
    */
   private get running(): boolean {
-    return (this.promptsInFlight > 0 || this.turnUpstream) && this.approvals.size === 0;
+    return this.speakingUpstream && this.approvals.size === 0;
   }
 
   /**
@@ -230,8 +257,9 @@ export class ThreadStore {
         this.flushReplay();
       },
       onState: (connection) => this.emit({ connection }),
-      onTurnState: (active) => {
-        this.turnUpstream = active;
+      onTurnState: (state) => {
+        this.speakingUpstream = state.speaking;
+        this.backgroundUpstream = state.background;
         this.emit();
       },
       onResetThread: () => this.reset(),
@@ -264,9 +292,12 @@ export class ThreadStore {
     this.model.configOptions = configOptions;
     this.views = new Map();
     this.replayedExec.clear();
-    // Whatever was said about the turn belonged to the connection that is
-    // being replaced. The gateway says it again after this replay.
-    this.turnUpstream = false;
+    // Whatever was said about the thread belonged to the connection that is
+    // being replaced. The gateway says it again after this replay — including
+    // what is still running in the background, which is the only way this
+    // browser can learn it.
+    this.speakingUpstream = false;
+    this.backgroundUpstream = [];
     this.failOpenApprovals();
     this.replaying = true;
     // A snapshot with no patch: what the thread is doing is re-derived — the
@@ -408,7 +439,6 @@ export class ThreadStore {
     if (!sessionId) throw new Error('no ACP thread yet');
     if (blocks.length === 0) return;
 
-    this.promptsInFlight++;
     this.emit({ error: null });
     try {
       await client.request('session/prompt', {
@@ -419,9 +449,9 @@ export class ThreadStore {
       this.emit({ error: (err as Error).message });
       throw err;
     } finally {
-      // Never below zero: cancel() clears the count, and this finally still
-      // runs when the cancelled prompt's request comes back.
-      this.promptsInFlight = Math.max(0, this.promptsInFlight - 1);
+      // Nothing here is counted any more: whether the agent is working is the
+      // gateway's answer, and a prompt of this browser's own coming back says
+      // only that the request is over.
       this.emit();
     }
   }
@@ -513,10 +543,12 @@ export class ThreadStore {
     if (!client || !sessionId) return;
     client.notify('session/cancel', { sessionId });
     // The prompt request resolves on its own afterwards; this only stops the
-    // view from claiming a turn is still going. Both counts, because the turn
-    // being cancelled may be one another browser started.
-    this.promptsInFlight = 0;
-    this.turnUpstream = false;
+    // view from claiming the agent is still talking, without waiting for the
+    // gateway to say so — the turn being cancelled may be one another browser
+    // started. What was running in the background is left as it stands: the
+    // gateway says what became of it, and guessing here would be this browser
+    // inventing an ending.
+    this.speakingUpstream = false;
     this.emit();
   }
 

@@ -2,12 +2,15 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 /** What a badge reports, which picks its colour. */
-export type BadgeKind = 'running' | 'turn' | 'waiting' | 'error' | 'idle';
+export type BadgeKind = 'running' | 'turn' | 'task' | 'waiting' | 'error' | 'idle';
 
 /** The dot colour for each kind; the label itself stays plain. */
 const DOT: Record<BadgeKind, string> = {
   running: 'bg-ok',
   turn: 'bg-primary animate-pulse',
+  // Work going on with nobody talking about it: the turn's colour, and still,
+  // because the thread itself is not saying anything.
+  task: 'bg-primary/60',
   waiting: 'bg-warn animate-pulse',
   error: 'bg-danger',
   idle: 'bg-idle',

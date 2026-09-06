@@ -94,7 +94,16 @@ test('the thread is named in the message, not just the session', () => {
 
 test('an idle event and an approval read differently', () => {
   assert.equal(wording(event).title, 'Boxes: approval needed');
-  assert.equal(wording({ ...event, kind: 'idle' }).title, 'Boxes: turn finished');
+  assert.equal(wording({ ...event, kind: 'idle' }).title, 'Boxes: waiting for you');
+});
+
+test('an idle event says what is still running, when anything is', () => {
+  const idle = { ...event, kind: 'idle' as const };
+  // The difference between a thread you can come back to whenever, and one
+  // that is going to say something else without being asked.
+  assert.doesNotMatch(wording(idle).body, /still running/);
+  assert.match(wording({ ...idle, background: 1 }).body, /1 task is still running/);
+  assert.match(wording({ ...idle, background: 3 }).body, /3 tasks are still running/);
 });
 
 test('a subscription the push service has finished with is forgotten', async () => {

@@ -826,19 +826,83 @@ state is deliberately in memory — a background task is a child of the adapter,
 the adapter is a docker exec this process owns, and both die with it, so an
 orchestrator that has forgotten a task is one whose task is already gone.
 
+### Is the agent talking, or is it your turn
+
+Boxes had one bit per thread — a `session/prompt` this gateway forwarded has
+not come back — and read three separate things off it: the agent is producing
+output, you may not type, nothing more will happen until you do. Background
+work pulls those apart in both directions. A turn that spawns a background
+subagent keeps its prompt open long after the agent has finished, so the
+browser showed a stop button and no way to send while the thread sat waiting
+for its reader; and a task reporting in wakes the agent with no prompt open at
+all, so that turn's output arrived while the same bit said the thread was
+idle.
+
+ACP has no word for it: no "the agent is done for now" notification, no stop
+reason on a prompt being deferred, and the moment worth reporting is by
+construction the moment nothing arrives. This adapter does say it sideways,
+though — `claude-agent-acp` emits a `usage_update` at the end of every
+processing cycle, and that one carries a `cost` where the ones it sends while
+a message streams do not. `gateway/activity.ts` reads it, so a held turn and a
+cycle the harness woke on its own both end the instant they actually end.
+
+That marker is the adapter's own rather than anything ACP promises, and it
+appears only when the backend reported usage, so silence is the fallback and
+the same file infers it: an update from the agent says it is working, and
+silence lasting `AGENT_QUIET_SECONDS` says it has stopped. The one exception
+is a tool call the agent is waiting on, which is evidence where silence is not
+— a thread with one open stays speaking however quiet it goes. A call that
+runs *in the background* is not counted, which is why this and `background.ts`
+share the one predicate that decides which those are.
+
+Which calls hold a prompt open is the adapter's rule, not a guess: it defers a
+turn's settlement for the **subagents** it spawned and for nothing else — a
+backgrounded command or a monitor never holds one. A prompt sent into a
+deferred turn is accepted and hands the held turn off, so the composer is safe
+to offer send there. Both were read out of `claude-agent-acp` 0.70.0; `IDLE.md`
+§4 records where.
+
+Two thresholds, because the two readers want opposite things. The screen flips
+at `AGENT_QUIET_SECONDS` and can afford to be wrong for a moment: an early
+flip offers a send button while the model thinks between tool calls, and
+sending was allowed anyway. The notification waits for `AGENT_SETTLE_SECONDS`,
+because "your turn has finished" on a lock screen is a claim there is no
+taking back.
+
+So `_boxes/turn_state` carries three facts rather than one — a prompt is open,
+the agent is speaking, and here is what is still running in the background —
+and every browser is told all three after its replay and on every transition.
+`TurnStateParams` is the shape. The dashboard shows `speaking` wherever it
+used to show the prompt bit — the composer's send-or-stop, the spinner,
+follow-output, the list badges — and the outstanding tasks in a bar above the
+composer, which is a standing fact about the box rather than something that
+happened, and so does not belong in the transcript. A tab title has to pick
+one word for all of it, and `lib/tab-title.ts` is where the four are named:
+`⚠` and `?` for a thread that has stopped and needs an answer, `⟳` for one
+that is talking, `◍` for one that is waiting for you with work still running,
+`○` for one that is simply waiting.
+
 ### Notifications
 
 Two events are worth interrupting somebody for: a permission request has been
-queued, and a turn has finished. Both are announced from the gateway through
-`notify.ts`, and both are gated on the same condition — **no browser is
-watching that thread**. That is not a heuristic about attention, it is the
+queued, and a turn has finished and is waiting for somebody. Both are
+announced from the gateway through `notify.ts`, and both are gated on the same
+condition — **no browser is watching that thread**. That is not a heuristic about attention, it is the
 same test that decides whether a permission request is queued in the first
 place, so the two agree about what "you are not here" means. A turn finishing
 in front of you is the screen you are already looking at.
 
-The announcement names the conversation, not only the box. With two threads
-live, "your session needs you" is not something you can act on from a lock
-screen.
+The finished turn is announced when the agent goes quiet, not when the prompt
+comes back: a request coming back says the request is over, which for a turn
+holding a background subagent open happens hours later, and a turn the harness
+started on its own has no request to come back at all. See *Is the agent
+talking* above.
+
+The announcement names the conversation, not only the box, and says what is
+still running in it. With two threads live, "your session needs you" is not
+something you can act on from a lock screen, and "two tasks are still running"
+is the difference between a thread you can come back to whenever and one that
+is about to say something else on its own.
 
 `Notifier` sends one event and the gateway's side awaits none of it. A turn
 already waiting on a human must not also wait on a push service, so every
@@ -1417,6 +1481,7 @@ orchestrator/src/
   reaper.ts             The idle reaper and the proxy reconciler
   log.ts                Structured stderr logging with secret redaction
   gateway/
+    activity.ts         Whether the agent is talking on a thread, which silence is the only evidence of
     background.ts       What a session left running in the background, so the reaper waits for it
     upstream.ts         One persistent ACP client per session, carrying every watched thread
     downstream.ts       One ACP agent connection per browser, pinned to one thread

@@ -1,4 +1,4 @@
-import { TURN_STATE_METHOD } from '../../../shared/types.ts';
+import { TURN_STATE_METHOD, type TurnStateParams } from '../../../shared/types.ts';
 import { log } from '../log.ts';
 import type { DownstreamHandle } from './upstream.ts';
 
@@ -42,7 +42,23 @@ export class Broadcast {
    */
   private readonly echoingPrompts = new Map<string, number>();
 
-  constructor(private readonly sessionId: string) {}
+  /**
+   * @param stateOf Everything a browser is told about a thread. The gateway
+   *   supplies it, because two thirds of it — whether the agent is speaking,
+   *   and what it left running in the background — are known upstream of this
+   *   class. The default is the part this class knows on its own, which is
+   *   what a test about routing wants and what Boxes reported before the
+   *   other two existed.
+   */
+  constructor(
+    private readonly sessionId: string,
+    private readonly stateOf: (acpThreadId: string) => TurnStateParams = (acpThreadId) => ({
+      sessionId: acpThreadId,
+      active: this.isPrompting(acpThreadId),
+      speaking: false,
+      background: [],
+    }),
+  ) {}
 
   /** How many browsers are attached, across every thread. */
   get size(): number {
@@ -145,7 +161,7 @@ export class Broadcast {
     this.echoingPrompts.set(thread, before + 1);
     // The first prompt on a thread is what starts its turn; a second one
     // arriving while that runs does not start a second turn.
-    if (before === 0) this.turnState(thread, true);
+    if (before === 0) this.threadState(thread);
     const blocks = (params as { prompt?: unknown })?.prompt;
     if (!Array.isArray(blocks)) return;
     for (const content of blocks) {
@@ -166,7 +182,7 @@ export class Broadcast {
       return;
     }
     this.echoingPrompts.delete(thread);
-    this.turnState(thread, false);
+    this.threadState(thread);
   }
 
   /** Whether the gateway is carrying a prompt on a thread right now. */
@@ -175,31 +191,29 @@ export class Broadcast {
   }
 
   /**
-   * Tells the browsers watching a thread whether a turn is running on it.
+   * Tells the browsers watching a thread what it is doing.
    *
    * The one thing a browser cannot work out for itself: a turn it did not
    * start, on a thread it has only just re-opened, is indistinguishable from
-   * a finished one until somebody says. See TURN_STATE_METHOD.
+   * a finished one until somebody says — and so is a monitor left running in
+   * the box an hour ago. See TURN_STATE_METHOD.
    */
-  turnState(acpThreadId: string, active: boolean): void {
-    this.send(this.byRecency(acpThreadId), TURN_STATE_METHOD, {
-      sessionId: acpThreadId,
-      active,
-    });
+  threadState(acpThreadId: string): void {
+    this.send(this.byRecency(acpThreadId), TURN_STATE_METHOD, this.stateOf(acpThreadId));
   }
 
   /** The same, to one browser: what a fresh connection is told after its replay. */
-  turnStateTo(handle: DownstreamHandle, active: boolean): void {
+  threadStateTo(handle: DownstreamHandle): void {
     if (!handle.acpThreadId) return;
-    this.send([handle], TURN_STATE_METHOD, {
-      sessionId: handle.acpThreadId,
-      active,
-    });
+    this.send([handle], TURN_STATE_METHOD, this.stateOf(handle.acpThreadId));
   }
 
-  /** Says "no turn is running" on every thread anybody is watching. */
-  clearTurnStates(): void {
-    for (const thread of this.watchedThreads) this.turnState(thread, false);
+  /**
+   * Re-states every watched thread, for whoever has just changed something
+   * true of all of them — an adapter that exited, a session stopping.
+   */
+  refreshThreadStates(): void {
+    for (const thread of this.watchedThreads) this.threadState(thread);
   }
 
   /**

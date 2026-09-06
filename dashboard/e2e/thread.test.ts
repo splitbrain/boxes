@@ -424,6 +424,63 @@ test('cancelling stops the run state', async () => {
   }
 });
 
+test('a turn held open for background work still hands the composer back', async () => {
+  // The shape the adapter actually produces: the agent answers, spawns
+  // something that runs on, and the prompt stays open until it settles. The
+  // thread is waiting for its reader for the whole of that.
+  await start({
+    prompts: [
+      {
+        match: () => true,
+        updates: reply('Started the build. I will report back.'),
+        hold: true,
+        background: [
+          { toolCallId: 'toolu_1', tool: 'Bash', title: 'npm run build', startedAt: Date.now() },
+        ],
+      },
+    ],
+  });
+
+  const { page, errors, close } = await openPage(stub.url, `/sessions/${SESSION.id}`);
+  try {
+    await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
+    const input = page.getByLabel('Message input');
+    await input.fill('build it');
+    await input.press('Control+Enter');
+
+    await expect.poll(() => page.getByText('I will report back').isVisible()).toBe(true);
+
+    // The composer is yours again, though the prompt upstream is still open.
+    await expect
+      .poll(() => page.getByLabel('Send message').isVisible(), { timeout: 10_000 })
+      .toBe(true);
+    expect(await page.getByLabel('Stop generating').count()).toBe(0);
+
+    // And what is still going on says so, above the composer, where the
+    // transcript cannot say it.
+    const bar = page.locator('[data-slot="boxes_background-bar"]');
+    await expect.poll(() => bar.isVisible()).toBe(true);
+    await expect.poll(() => page.getByText('1 task running in the background').isVisible()).toBe(true);
+
+    // Including for a browser that arrives afterwards and has only the
+    // replay to go on — the tasks reach it with the thread state.
+    await page.reload();
+    await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
+    await expect.poll(() => bar.isVisible()).toBe(true);
+    await bar.getByText('1 task running in the background').click();
+    await expect.poll(() => page.getByText('npm run build').isVisible()).toBe(true);
+
+    // And when the task reports itself over, the bar goes with it.
+    stub.gateway.finishTasks();
+    await expect.poll(() => bar.isVisible()).toBe(false);
+
+    stub.gateway.release();
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 test('a thread that has not been read yet shows a placeholder, then all of it at once', async () => {
   // Long enough to scroll, so where the reading starts is a real question.
   const said = Array.from({ length: 12 }, (_, i) => `exchange number ${i}`);

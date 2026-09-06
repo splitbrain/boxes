@@ -5,6 +5,7 @@ import type { SessionSummary, ThreadSummary } from '../../../shared/types.ts';
 import { StatusBadge, type BadgeKind } from './StatusBadge';
 import { Card } from '@/components/ui/card';
 import { api } from '../api.ts';
+import { tasksRunning } from '@/lib/activity';
 import { threadName } from '@/lib/threads';
 import { refresh } from '../stores/sessions.ts';
 import { cn } from '@/lib/utils';
@@ -25,7 +26,13 @@ export function sessionBadges(s: SessionSummary): Array<{ kind: BadgeKind; label
       label: s.pendingCount === 1 ? 'waiting for approval' : `${s.pendingCount} approvals waiting`,
     });
   }
-  if (s.turnActive) badges.push({ kind: 'turn', label: 'running turn' });
+  // What the agent is doing, rather than whether a request is open upstream:
+  // a prompt held open for a background subagent is not a running turn to
+  // anybody reading this list. See lib/activity.ts.
+  if (s.speaking) badges.push({ kind: 'turn', label: 'running turn' });
+  if (s.backgroundCount > 0) {
+    badges.push({ kind: 'task', label: tasksRunning(s.backgroundCount) });
+  }
   if (s.status === 'error') badges.push({ kind: 'error', label: 'error' });
   else if (s.dockerState === 'running') badges.push({ kind: 'running', label: 'up' });
   else badges.push({ kind: 'idle', label: s.status });
@@ -202,6 +209,13 @@ export function threadBadges(
           : `${thread.pendingCount} approvals waiting`,
     });
   }
-  if (thread.turnActive) badges.push({ kind: 'turn', label: 'running turn' });
+  if (thread.speaking) badges.push({ kind: 'turn', label: 'running turn' });
+  // The exception to the rule above: a thread that has gone quiet with a
+  // monitor or a build still in it says nothing about itself anywhere else,
+  // and "waiting for you" and "still working" are the two answers this list
+  // exists to tell apart.
+  if (thread.background.length > 0) {
+    badges.push({ kind: 'task', label: tasksRunning(thread.background.length) });
+  }
   return badges;
 }

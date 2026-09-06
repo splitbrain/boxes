@@ -1,4 +1,5 @@
 import { isTerminalStatus, parseTaskNotifications } from '../../../shared/task-notifications.ts';
+import type { BackgroundTask } from '../../../shared/types.ts';
 
 /**
  * The background work one session has started and not seen finish, so the
@@ -26,6 +27,12 @@ import { isTerminalStatus, parseTaskNotifications } from '../../../shared/task-n
  * missed ending must cost a box that stops later than it should rather than
  * one that never stops at all.
  *
+ * It is also read by people now, which is why an entry is a list item rather
+ * than a tick in a box: what the work is, which conversation started it, and
+ * when. A thread that has gone quiet with a build still running in it looks
+ * exactly like a finished one otherwise — see `activity.ts` for the other
+ * half of that question and `BackgroundBar` for where the two are shown.
+ *
  * The state is deliberately in memory. A background task is a child of the
  * adapter, the adapter is a docker exec this process owns, and both die with
  * it — so an orchestrator that has forgotten a task is an orchestrator whose
@@ -35,9 +42,15 @@ import { isTerminalStatus, parseTaskNotifications } from '../../../shared/task-n
 /** Claude Code tools that run in the background whatever their input says. */
 const ALWAYS_BACKGROUND = new Set(['Monitor', 'Workflow']);
 
+/** One live entry: what the call is, and when it was first seen. */
+interface Entry extends BackgroundTask {
+  /** The thread the call was made on, which is the one it reports back to. */
+  acpThreadId: string;
+}
+
 export class BackgroundWork {
-  /** When each live background call was started, by its tool call id. */
-  private readonly live = new Map<string, number>();
+  /** Every live background call, by its tool call id. */
+  private readonly live = new Map<string, Entry>();
 
   /**
    * @param maxAgeMs How long one entry may hold the reaper off.
@@ -56,12 +69,17 @@ export class BackgroundWork {
    * there, and the notification the harness sends when a task is over. An
    * adapter that says neither leaves this empty, which is the behaviour Boxes
    * had before any of it.
+   *
+   * `acpThreadId` is the thread the update was about, so an entry belongs to
+   * the conversation that started it: with two threads live, "something is
+   * still running" has to say which of them it is running for.
    */
-  observe(update: unknown): void {
+  observe(acpThreadId: string, update: unknown): void {
     if (!update || typeof update !== 'object') return;
     const u = update as {
       sessionUpdate?: string;
       toolCallId?: string;
+      title?: unknown;
       name?: string;
       rawInput?: unknown;
       content?: unknown;
@@ -74,7 +92,17 @@ export class BackgroundWork {
         // Only the first sighting of a call counts: the adapter re-announces
         // one as its input streams in, and replay sends every one again.
         if (u.toolCallId && !this.live.has(u.toolCallId) && startsBackgroundWork(u)) {
-          this.live.set(u.toolCallId, this.now());
+          this.live.set(u.toolCallId, {
+            toolCallId: u.toolCallId,
+            acpThreadId,
+            tool: toolOf(u),
+            // The call's own title, which is what the agent chose to call the
+            // work: "npm run build", "watch the crawl". A first sighting
+            // sometimes has none, and a name is worth less than knowing the
+            // work is there, so a nameless one is still an entry.
+            title: typeof u.title === 'string' && u.title ? u.title : null,
+            startedAt: this.now(),
+          });
         }
         return;
       case 'user_message_chunk':
@@ -112,16 +140,57 @@ export class BackgroundWork {
    * what holds the reaper off. Expired entries are dropped as it is asked.
    */
   get active(): boolean {
-    const oldest = this.now() - this.maxAgeMs;
-    for (const [toolCallId, started] of this.live) {
-      if (started <= oldest) this.live.delete(toolCallId);
-    }
+    this.expire();
     return this.live.size > 0;
+  }
+
+  /** How many tasks the whole session is believed to have running. */
+  get count(): number {
+    this.expire();
+    return this.live.size;
+  }
+
+  /**
+   * What one thread has running, oldest first — which is what a browser is
+   * shown, and the order the work was started in.
+   */
+  forThread(acpThreadId: string): BackgroundTask[] {
+    this.expire();
+    return [...this.live.values()]
+      .filter((entry) => entry.acpThreadId === acpThreadId)
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map(({ toolCallId, tool, title, startedAt }) => ({
+        toolCallId,
+        tool,
+        title,
+        startedAt,
+      }));
+  }
+
+  /** Every thread with something running, for telling their browsers. */
+  get threads(): string[] {
+    this.expire();
+    return [...new Set([...this.live.values()].map((entry) => entry.acpThreadId))];
+  }
+
+  /** Drops whatever has outlived the cap. Cheap, and every reader asks. */
+  private expire(): void {
+    const oldest = this.now() - this.maxAgeMs;
+    for (const [toolCallId, entry] of this.live) {
+      if (entry.startedAt <= oldest) this.live.delete(toolCallId);
+    }
   }
 }
 
-/** Whether a tool call leaves something running after the turn that made it. */
-function startsBackgroundWork(update: {
+/**
+ * Whether a tool call leaves something running after the turn that made it.
+ *
+ * Exported because the other half of this question is asked in activity.ts: a
+ * call that runs in the background is exactly the call whose silence says
+ * nothing about whether the agent is still working, and the two must agree
+ * about which those are.
+ */
+export function startsBackgroundWork(update: {
   name?: string;
   rawInput?: unknown;
   _meta?: { claudeCode?: { toolName?: string } };
@@ -134,8 +203,14 @@ function startsBackgroundWork(update: {
   ) {
     return true;
   }
-  // The programmatic name, which this adapter carries in its own metadata and
-  // a future one may carry where the ACP schema has it.
-  const tool = update._meta?.claudeCode?.toolName ?? update.name;
+  const tool = toolOf(update);
   return typeof tool === 'string' && ALWAYS_BACKGROUND.has(tool);
+}
+
+/**
+ * The tool a call runs, by the programmatic name this adapter carries in its
+ * own metadata and a future one may carry where the ACP schema has it.
+ */
+function toolOf(update: { name?: string; _meta?: { claudeCode?: { toolName?: string } } }): string | null {
+  return update._meta?.claudeCode?.toolName ?? update.name ?? null;
 }

@@ -13,6 +13,13 @@ import { Notifier, type NotifyEvent } from '../notify.ts';
 import { AgentStore } from '../agents.ts';
 import { SessionManager } from '../sessions.ts';
 import type { DownstreamHandle } from './upstream.ts';
+import type { TurnStateParams } from '../../../shared/types.ts';
+
+// A turn is announced when the thread it ran on has gone quiet, not when the
+// prompt comes back — so these tests have to wait one out. Turned down to the
+// shortest the config allows, before anything reads it.
+process.env['AGENT_QUIET_SECONDS'] = '1';
+process.env['AGENT_SETTLE_SECONDS'] = '1';
 
 /**
  * The upstream's spawn path against an adapter that answers for real, with
@@ -1003,6 +1010,10 @@ test('a turn that finishes with nobody watching is announced, naming the thread'
     prompt: [{ type: 'text', text: 'go' }],
   });
 
+  // Not on the prompt coming back: that says the request is over, which is
+  // not the same as the agent having finished — see gateway/activity.ts.
+  assert.deepEqual(announced, []);
+  await expect.poll(() => announced.length, { timeout: 5000 }).toBe(1);
   assert.deepEqual(announced, [
     {
       kind: 'idle',
@@ -1014,6 +1025,9 @@ test('a turn that finishes with nobody watching is announced, naming the thread'
       // Untitled until a turn produces one, so it goes by its ordinal — the
       // same name the session list shows.
       threadName: 'Thread 1',
+      // Nothing was left running, which is what makes this a turn somebody
+      // can come back to at their leisure.
+      background: 0,
     },
   ]);
 });
@@ -1028,6 +1042,8 @@ test('a turn that finishes in front of a browser is not announced', async () => 
     sessionId: 'acp-gone',
     prompt: [{ type: 'text', text: 'go' }],
   });
+  // Long enough for the quiet window to have passed twice over.
+  await new Promise((r) => setTimeout(r, 2500));
   assert.deepEqual(announced, []);
 });
 
@@ -1043,6 +1059,7 @@ test('a browser on another thread does not count as watching this one', async ()
     sessionId: 'acp-gone',
     prompt: [{ type: 'text', text: 'go' }],
   });
+  await expect.poll(() => announced.length, { timeout: 5000 }).toBe(1);
   assert.deepEqual(
     announced.map((e) => [e.kind, e.threadId]),
     [['idle', 't1']],
@@ -1064,6 +1081,7 @@ test('a queued permission request is announced as one', async () => {
     sessionName: 'test',
     threadId: 't2',
     threadName: 'Thread 2',
+    background: 0,
   });
 });
 
@@ -1158,6 +1176,120 @@ test('work the agent leaves running in the background holds the reaper off', asy
     },
   });
   await expect.poll(() => up.backgroundActive).toBe(false);
+});
+
+test('a prompt held open for background work is not the agent still talking', async () => {
+  // The shape this whole distinction exists for: the adapter defers the
+  // prompt's result until what the turn started settles, so the request stays
+  // open long after the agent has said its piece.
+  let finish!: (result: unknown) => void;
+  const held = new Promise<unknown>((resolve) => {
+    finish = resolve;
+  });
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    if (msg.method === 'session/prompt') return held;
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  const watcher = fakeHandle(1, 'acp-gone');
+  up.attach(watcher);
+
+  const prompt = up.forwardRequest('session/prompt', {
+    sessionId: 'acp-gone',
+    prompt: [{ type: 'text', text: 'build it' }],
+  });
+  // Forwarding one is enough to say the agent is working: the browser that
+  // sent it should not have to wait out the model's first token. (Polled
+  // rather than read: forwarding starts by awaiting the connection, so the
+  // prompt reaches the adapter a microtask after the call returns.)
+  await expect.poll(() => up.threadState('acp-gone').speaking).toBe(true);
+
+  adapter.notify('session/update', {
+    sessionId: 'acp-gone',
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Started the build. I will report back.' },
+    },
+  });
+  adapter.notify('session/update', {
+    sessionId: 'acp-gone',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'toolu_1',
+      title: 'npm run build',
+      status: 'in_progress',
+      rawInput: { command: 'npm run build', run_in_background: true },
+      _meta: { claudeCode: { toolName: 'Bash' } },
+    },
+  });
+
+  // And then it stops. The request is still open, and nothing about it says
+  // so — which is the entire bug: silence, and a bit that reads "running".
+  await expect.poll(() => up.threadState('acp-gone').speaking, { timeout: 5000 }).toBe(false);
+  const state = up.threadState('acp-gone');
+  assert.equal(state.active, true);
+  assert.deepEqual(
+    state.background.map((task) => [task.tool, task.title]),
+    [['Bash', 'npm run build']],
+  );
+
+  // The browser watching was told all of it, without asking.
+  const told = watcher.told.filter(
+    (params) => typeof (params as { speaking?: unknown }).speaking === 'boolean',
+  ) as TurnStateParams[];
+  assert.equal(told.at(-1)?.speaking, false);
+  assert.deepEqual(told.at(-1)?.background.map((t) => t.title), ['npm run build']);
+  // Nobody was notified: somebody is looking at this thread.
+  assert.deepEqual(announced, []);
+
+  finish({ stopReason: 'end_turn' });
+  await prompt;
+});
+
+test("the adapter's own end-of-cycle update ends the turn without waiting", async () => {
+  const adapter = new FakeAdapter((msg) =>
+    msg.method === 'initialize' ? { protocolVersion: 1, agentCapabilities: {} } : {},
+  );
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  const watcher = fakeHandle(1, 'acp-gone');
+  up.attach(watcher);
+
+  adapter.notify('session/update', {
+    sessionId: 'acp-gone',
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'here you go' },
+    },
+  });
+  await expect.poll(() => up.threadState('acp-gone').speaking).toBe(true);
+
+  // The one the adapter sends while a message streams says nothing about the
+  // end: tokens and a window, no cost.
+  adapter.notify('session/update', {
+    sessionId: 'acp-gone',
+    update: { sessionUpdate: 'usage_update', used: 12_000, size: 200_000 },
+  });
+  assert.equal(up.threadState('acp-gone').speaking, true);
+
+  // The one it sends at the end of a cycle carries the cycle's cost, and is
+  // taken at its word — no quiet window waited out.
+  adapter.notify('session/update', {
+    sessionId: 'acp-gone',
+    update: {
+      sessionUpdate: 'usage_update',
+      used: 12_400,
+      size: 200_000,
+      cost: { amount: 0.03, currency: 'USD' },
+    },
+  });
+  await expect.poll(() => up.threadState('acp-gone').speaking).toBe(false);
 });
 
 test('a replayed transcript is history, not work to wait for', async () => {

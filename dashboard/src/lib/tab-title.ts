@@ -11,7 +11,7 @@
  */
 
 /** What a tab is doing, in the order of how much it wants you. */
-export type TabState = 'permission' | 'question' | 'running' | 'idle';
+export type TabState = 'permission' | 'question' | 'running' | 'waiting' | 'idle';
 
 /**
  * The symbol for each state.
@@ -24,6 +24,9 @@ const SYMBOL: Record<TabState, string> = {
   permission: '⚠',
   question: '?',
   running: '⟳',
+  // Between the two: nothing is being said, and the thread is not empty of
+  // work either. A ring with something in it, next to the hollow one.
+  waiting: '◍',
   idle: '○',
 };
 
@@ -32,6 +35,7 @@ export const TAB_STATE_LABEL: Record<TabState, string> = {
   permission: 'waiting for a permission decision',
   question: 'waiting for an answer',
   running: 'running a turn',
+  waiting: 'waiting for you, with work still running',
   idle: 'idle',
 };
 
