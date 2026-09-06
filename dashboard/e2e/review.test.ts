@@ -61,9 +61,14 @@ test('the tree is the whole screen on a phone, and a file replaces it', async ()
     await expect.poll(() => page.getByText('import { boot }').isVisible()).toBe(true);
     await shoot(page, 'review-file-phone');
 
-    // And going back to the list is one tap, not a browser gesture.
-    await page.getByRole('button', { name: /Back to the file list/ }).click();
+    // Back is one step of the stack — file → file list — and it is the
+    // header's own button, the same control every other view goes back with.
+    await page.getByLabel('Back to the file list').click();
     await expect.poll(() => new URL(page.url()).search).not.toContain('path=');
+    await expect.poll(() => page.getByRole('button', { name: 'src' }).isVisible()).toBe(true);
+
+    // And from the list, the next step out is the thread.
+    await expect.poll(() => page.getByLabel('Back to the thread').isVisible()).toBe(true);
 
     expect(errors).toEqual([]);
   } finally {
@@ -84,8 +89,10 @@ test('the tree is a column beside the pane on a desktop', async () => {
     await expect.poll(() => page.getByRole('button', { name: 'src' }).isVisible()).toBe(true);
     await page.getByRole('button', { name: 'src' }).click();
     await expect.poll(() => page.getByRole('button', { name: /boot\.ts/ }).isVisible()).toBe(true);
-    // The sheet trigger is the phone's way in and must not be here.
-    expect(await page.getByRole('button', { name: 'Browse files' }).isVisible()).toBe(false);
+    // The list and the file are one view here, so there is no step between
+    // the review and the thread: back leaves, with a file open or without.
+    expect(await page.getByLabel('Back to the file list').count()).toBe(0);
+    await expect.poll(() => page.getByLabel('Back to the thread').isVisible()).toBe(true);
     await shoot(page, 'review-file-desktop');
     expect(errors).toEqual([]);
   } finally {

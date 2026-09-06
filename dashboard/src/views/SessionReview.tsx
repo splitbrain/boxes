@@ -1,4 +1,4 @@
-import { ArrowLeft, FilePlus2, FolderTree, Send } from 'lucide-react';
+import { ArrowLeft, FilePlus2, Send } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import type { ReviewDiffHunk } from '../../../shared/types.ts';
@@ -13,7 +13,6 @@ import { ReviewToolbar } from '@/components/review/ReviewToolbar';
 import { ReviewTree } from '@/components/review/ReviewTree';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { useDocumentTitle } from '@/hooks/use-document-title';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { useScrollAway } from '@/hooks/use-scroll-away';
@@ -49,13 +48,16 @@ function handoffPrompt(root: string): string {
 /**
  * Reviewing a session's code, at `/sessions/:id/review`.
  *
- * The open file is in the search string, so a file is linkable and the back
- * button works — which on a phone is also how you get from a file back to the
- * tree.
+ * The open file is in the search string, so a file is linkable and the
+ * browser's own back button works — which on a phone is also one step of the
+ * stack: sessions → thread → file list → file, out of each by the same back
+ * button in the header and by no other control.
  *
  * The layout collapses the desktop tool's three panels into patterns that work
- * at both sizes rather than two parallel UIs: the tree is a column from `md` up
- * and a Sheet below it, and the same components render in both.
+ * at both sizes rather than two parallel UIs: the tree is a column beside the
+ * pane from `md` up and the screen before it below, and the same components
+ * render in both. That is why the stack is a step shorter on a pointer — the
+ * list and the file are one view there, so back leaves the review.
  *
  * The view owns the whole viewport the way the thread view does, because a code
  * pane in a reading column is not a code pane.
@@ -70,8 +72,16 @@ export function SessionReview() {
   const { sessions } = useSessions();
   const session = sessions.find((s) => s.id === id);
 
-  const [treeOpen, setTreeOpen] = useState(false);
-  const [wrap, setWrap] = useState(false);
+  /**
+   * Long lines wrap unless the reader turns it off.
+   *
+   * A phone is narrower than most source files, so the alternative default is
+   * a pane where the end of every long line is off screen and reading it means
+   * scrolling the code sideways under a sticky gutter. Wrapping keeps a line
+   * addressable — it is still one row, one number, one tap to comment — and
+   * the toggle is there for the times the columns matter.
+   */
+  const [wrap, setWrap] = useState(true);
   const [hunk, setHunk] = useState<ReviewDiffHunk | null>(null);
   /** A line to scroll to once, set by the prev/next toolbar. */
   const [scrollTo, setScrollTo] = useState<number | null>(null);
@@ -93,9 +103,14 @@ export function SessionReview() {
   );
   const navigate = useNavigate();
   /**
-   * Which composer arrangement to mount. A media query in JavaScript rather
-   * than in CSS only because a Sheet renders into a portal, where a
-   * `md:hidden` wrapper cannot reach it.
+   * Whether the tree and the pane are side by side, which decides what the
+   * back button steps out to and which composer arrangement to mount.
+   *
+   * A media query in JavaScript rather than in CSS because both are decisions
+   * about what to mount, not how to paint it: a Sheet renders into a portal a
+   * `md:hidden` wrapper cannot reach, and two back buttons behind two
+   * visibility classes would be two back buttons to anything not looking at
+   * the screen.
    */
   const wide = useMediaQuery('(min-width: 768px)');
 
@@ -121,7 +136,6 @@ export function SessionReview() {
         params.set('path', next);
         return params;
       });
-      setTreeOpen(false);
       setScrollTo(null);
     },
     [setParams],
@@ -239,14 +253,32 @@ export function SessionReview() {
     <div ref={container} className="flex h-dvh flex-col">
       <Shelf away={away}>
         <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-          <Button asChild variant="ghost" size="sm" className="shrink-0 px-2">
-            <Link
-              to={thread ? `/sessions/${id}/threads/${thread}` : `/sessions/${id}`}
-              aria-label="Back to the thread"
+          {/* One back button, one step out, wherever it is pressed.
+              On a phone the stack is sessions → thread → file list → file, so
+              a file's parent is the list and the list's parent is the thread.
+              From md up the list and the file are one view side by side, so
+              there is nothing between the review and the thread. */}
+          {file && !wide ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="shrink-0 px-2"
+              onClick={back}
+              aria-label="Back to the file list"
             >
               <ArrowLeft className="size-4" />
-            </Link>
-          </Button>
+            </Button>
+          ) : (
+            <Button asChild variant="ghost" size="sm" className="shrink-0 px-2">
+              <Link
+                to={thread ? `/sessions/${id}/threads/${thread}` : `/sessions/${id}`}
+                aria-label="Back to the thread"
+              >
+                <ArrowLeft className="size-4" />
+              </Link>
+            </Button>
+          )}
 
           <div className="flex min-w-16 flex-1 flex-col">
             <span className="truncate text-sm font-medium">
@@ -308,20 +340,6 @@ export function SessionReview() {
               <FilePlus2 />
             </Button>
           ) : null}
-
-          {/* The tree lives behind this button below md, and in the column
-              beside the pane above it. */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="shrink-0 md:hidden"
-            onClick={() => setTreeOpen(true)}
-            aria-label="Browse files"
-            title="Browse files"
-          >
-            <FolderTree />
-          </Button>
         </header>
       </Shelf>
 
@@ -331,8 +349,9 @@ export function SessionReview() {
         {/* One tree in the document, two arrangements.
             From md up it is the left column, whatever is open. Below md it is
             the whole screen until a file is picked and gone once one is —
-            where the Sheet in the header brings it back. Rendering it twice
-            and hiding one would put two of every row in the page. */}
+            one step of the stack, which the header's back button returns to.
+            Rendering it twice and hiding one would put two of every row in
+            the page. */}
         <aside
           className={cn(
             'shrink-0 overflow-auto md:block md:w-72 md:border-r lg:w-80',
@@ -399,20 +418,6 @@ export function SessionReview() {
         </main>
       </div>
 
-      {/* Below md: the same tree, in a sheet, closing on selection. */}
-      <Sheet open={treeOpen} onOpenChange={setTreeOpen}>
-        <SheetContent side="left" className="w-[88vw] max-w-sm gap-0 p-0 sm:max-w-sm">
-          <SheetHeader className="border-b">
-            <SheetTitle className="text-sm">Files</SheetTitle>
-          </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {tree ? (
-              <ReviewTree tree={tree} activePath={file?.path ?? null} onOpen={openPath} />
-            ) : null}
-          </div>
-        </SheetContent>
-      </Sheet>
-
       <HunkSheet hunk={hunk} onClose={() => setHunk(null)} />
 
       {/* Below md, writing a comment happens here rather than inline. */}
@@ -455,18 +460,6 @@ export function SessionReview() {
             void newReview();
           }}
         />
-      ) : null}
-
-      {/* Below md a file fills the screen, so going back to the tree needs a
-          way that is not the browser's own button. */}
-      {file ? (
-        <button
-          type="button"
-          onClick={back}
-          className="shrink-0 border-t px-3 py-2 text-left text-xs text-muted-foreground md:hidden"
-        >
-          ← Back to the file list
-        </button>
       ) : null}
     </div>
   );
