@@ -19,8 +19,14 @@ function formatTokens(tokens: number): string {
   return `${(tokens / (1000 * 1000)).toFixed(1)}M tokens`;
 }
 
-/** A duration as something to read; seconds below a minute, then minutes. */
-function formatDuration(ms: number): string {
+/**
+ * A duration as something to read; seconds below a minute, then minutes.
+ *
+ * Exported because a task that is still going is timed the same way as one
+ * that has finished — the row under a report and the bar above the composer
+ * should not count in two different vocabularies.
+ */
+export function formatDuration(ms: number): string {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);

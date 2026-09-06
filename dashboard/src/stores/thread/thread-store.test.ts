@@ -7,6 +7,7 @@ import type {
   SessionModeState,
   SessionUpdate,
 } from './acp-types.ts';
+import type { BackgroundTask, TurnStateParams } from '../../../../shared/types.ts';
 import type { AcpClient, AcpClientHandlers } from './acp-client.ts';
 import { ThreadStore, type ThreadStoreDeps } from './thread-store.ts';
 import { convertMessage } from './convert.ts';
@@ -151,21 +152,41 @@ test('subscribers are woken on every update', () => {
   expect(listener).toHaveBeenCalled();
 });
 
-test('a prompt marks the thread running until it answers', async () => {
+/** What the gateway says about a thread, defaulting to a quiet one. */
+function threadState(patch: Partial<TurnStateParams> = {}): TurnStateParams {
+  return { sessionId: 'acp-1', active: false, speaking: false, background: [], ...patch };
+}
+
+/** One background task, as the gateway reports it. */
+function task(toolCallId: string, title: string): BackgroundTask {
+  return { toolCallId, tool: 'Bash', title, startedAt: 1_000 };
+}
+
+test('a prompt of this browser\'s own does not claim the agent is talking', async () => {
   const { store, client } = makeStore((c) => {
     c.hold = true;
   });
   assert.equal(store.getSnapshot().isRunning, false);
 
   const sent = store.send([{ type: 'text', text: 'hello' }]);
-  assert.equal(store.getSnapshot().isRunning, true);
   assert.deepEqual(client.requests[0], {
     method: 'session/prompt',
     params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'hello' }] },
   });
+  // A request being open says nothing about the agent: the adapter holds one
+  // open for as long as the background work a turn started takes to settle.
+  // The gateway marks the thread as working when it forwards the prompt, and
+  // that is what the view goes by.
+  assert.equal(store.getSnapshot().isRunning, false);
+  client.handlers.onTurnState(threadState({ active: true, speaking: true }));
+  assert.equal(store.getSnapshot().isRunning, true);
 
   client.settle();
   await sent;
+  // Still talking: the prompt coming back is not the agent stopping, and the
+  // gateway has not said it has.
+  assert.equal(store.getSnapshot().isRunning, true);
+  client.handlers.onTurnState(threadState());
   assert.equal(store.getSnapshot().isRunning, false);
 });
 
@@ -175,27 +196,45 @@ test("the gateway's turn state runs the thread a browser did not prompt", () => 
 
   // What a browser is told after its replay when it re-opens a thread that
   // is mid-turn: nothing is in flight from here, and the turn is real.
-  client.handlers.onTurnState(true);
+  client.handlers.onTurnState(threadState({ speaking: true }));
   assert.equal(store.getSnapshot().isRunning, true);
 
-  client.handlers.onTurnState(false);
+  client.handlers.onTurnState(threadState());
   assert.equal(store.getSnapshot().isRunning, false);
+});
+
+test('a thread that has stopped talking with work still in it is not running', () => {
+  const { store, client } = makeStore();
+  // The state this whole vocabulary exists for: the agent has finished, the
+  // composer is yours, and a build is still going in the box.
+  client.handlers.onTurnState(
+    threadState({ active: true, speaking: false, background: [task('toolu_1', 'npm run build')] }),
+  );
+  assert.equal(store.getSnapshot().isRunning, false);
+  assert.deepEqual(
+    store.getSnapshot().background.map((t) => t.title),
+    ['npm run build'],
+  );
 });
 
 test('a replay drops the turn state it was told before it', () => {
   const { store, client } = makeStore();
-  client.handlers.onTurnState(true);
+  client.handlers.onTurnState(
+    threadState({ speaking: true, background: [task('toolu_1', 'watch the log')] }),
+  );
   assert.equal(store.getSnapshot().isRunning, true);
 
-  // A reconnect: the gateway re-states the turn after the replay, so holding
-  // the old answer over one would claim a turn nobody has confirmed.
+  // A reconnect: the gateway re-states the thread after the replay, so
+  // holding the old answer over one would claim a turn nobody has confirmed
+  // and a task nobody has said is still running.
   client.handlers.onResetThread();
   assert.equal(store.getSnapshot().isRunning, false);
+  assert.deepEqual(store.getSnapshot().background, []);
 });
 
 test('cancel stops a turn this browser did not start', () => {
   const { store, client } = makeStore();
-  client.handlers.onTurnState(true);
+  client.handlers.onTurnState(threadState({ speaking: true }));
   store.cancel();
   assert.deepEqual(client.notifications, [
     { method: 'session/cancel', params: { sessionId: 'acp-1' } },
@@ -601,6 +640,7 @@ test('a turn blocked on a permission request is not reported as running', async 
     c.hold = true;
   });
   void store.send([{ type: 'text', text: 'edit the file' }]);
+  client.handlers.onTurnState(threadState({ active: true, speaking: true }));
   assert.equal(store.getSnapshot().isRunning, true);
 
   push(client, { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Write main.ts' });

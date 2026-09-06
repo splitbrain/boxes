@@ -26,9 +26,11 @@ import {
 import * as dk from '../docker.ts';
 import { log, type Logger } from '../log.ts';
 import type { NotifyKind, Notifier } from '../notify.ts';
+import { Activity } from './activity.ts';
 import { BackgroundWork } from './background.ts';
 import { Broadcast, threadOf } from './broadcast.ts';
 import type { PendingStore } from './pending.ts';
+import type { BackgroundTask, TurnStateParams } from '../../../shared/types.ts';
 
 /**
  * One persistent ACP client per session, connected to the adapter inside the
@@ -203,6 +205,8 @@ export class UpstreamSession {
   private readonly downstreams: Broadcast;
   /** What this session has left running in the background; see background.ts. */
   private readonly background: BackgroundWork;
+  /** Whether the agent is talking on each thread; see activity.ts. */
+  private readonly activity: Activity;
   private readonly slog: Logger;
   /** Threads with a mint in flight, so concurrent pins share one; see below. */
   private readonly minting = new Map<string, Promise<string>>();
@@ -229,8 +233,22 @@ export class UpstreamSession {
     private readonly beforeStart: () => void,
   ) {
     this.slog = log.session(sessionId);
-    this.downstreams = new Broadcast(sessionId);
+    this.downstreams = new Broadcast(sessionId, (thread) => this.threadState(thread));
     this.background = new BackgroundWork(cfg.BACKGROUND_TASK_MAX_MINUTES * 60_000);
+    this.activity = new Activity({
+      quietMs: cfg.AGENT_QUIET_SECONDS * 1000,
+      settleMs: cfg.AGENT_SETTLE_SECONDS * 1000,
+      // Every transition reaches the browsers watching that conversation, so
+      // the composer stops offering a stop button the moment the agent stops
+      // needing one.
+      onChange: (thread) => this.downstreams.threadState(thread),
+      // And a turn that has been over for a while, with nobody there to have
+      // seen it end, is worth a notification. Same gate as everything else
+      // here: only when that thread has no browser on it.
+      onSettled: (thread) => {
+        if (this.downstreams.byRecency(thread).length === 0) this.announce('idle', thread);
+      },
+    });
   }
 
   /** How many browsers are attached to this session. */
@@ -244,6 +262,38 @@ export class UpstreamSession {
    */
   get backgroundActive(): boolean {
     return this.background.active;
+  }
+
+  /** How many background tasks the session is believed to have running. */
+  get backgroundCount(): number {
+    return this.background.count;
+  }
+
+  /** What one thread has left running in the background. */
+  backgroundFor(acpThreadId: string): BackgroundTask[] {
+    return this.background.forThread(acpThreadId);
+  }
+
+  /** The threads of this session the agent is talking on. */
+  get speakingThreads(): string[] {
+    return this.activity.speakingThreads;
+  }
+
+  /**
+   * Everything a browser is told about a thread: whether a prompt of its own
+   * is open, whether the agent is talking, and what it has left running.
+   *
+   * The three are gathered here because this is the only object that has all
+   * three, and they are sent together because a reader's question — is this
+   * thread waiting for me? — is answered by all three at once.
+   */
+  threadState(acpThreadId: string): TurnStateParams {
+    return {
+      sessionId: acpThreadId,
+      active: this.downstreams.isPrompting(acpThreadId),
+      speaking: this.activity.speaking(acpThreadId),
+      background: this.background.forThread(acpThreadId),
+    };
   }
 
   /** Whether the adapter connection is up. */
@@ -402,13 +452,21 @@ export class UpstreamSession {
   }
 
   /**
-   * Clears the running-turn flag on every thread. What the callers have in
-   * common is that none of them leaves a turn running: a deliberate stop, an
-   * adapter exit, and the session being closed.
+   * Forgets everything this session was in the middle of. What the callers
+   * have in common is that none of them leaves anything running: a deliberate
+   * stop, an adapter exit, and the session being closed.
+   *
+   * All three facts together, and the browsers told afterwards rather than
+   * between: whatever was running in the background was a child of that
+   * adapter, so it is either gone or beyond anything that could ever report
+   * it, and a state published halfway through would name tasks that had just
+   * stopped existing.
    */
-  private clearTurns(): void {
+  private clearThreadStates(): void {
     clearSessionTurns(this.db, this.sessionId);
-    this.downstreams.clearTurnStates();
+    this.activity.clear();
+    this.background.clear();
+    this.downstreams.refreshThreadStates();
   }
 
   /**
@@ -854,8 +912,18 @@ export class UpstreamSession {
     // awake for the sake of work that is long gone. The cost is that a call
     // backgrounded during somebody else's replay goes untracked, which is a
     // window of milliseconds and no worse than not tracking it at all.
-    if (this.replaying === 0) {
-      this.background.observe((params as { update?: unknown })?.update);
+    const thread = threadOf(params);
+    if (this.replaying === 0 && thread) {
+      const update = (params as { update?: unknown })?.update;
+      const before = this.background.forThread(thread).length;
+      this.background.observe(thread, update);
+      this.activity.observe(thread, update);
+      // A task that has just been started, or has just reported itself over,
+      // changes what the thread is waiting for. The agent's own transitions
+      // are announced by activity.ts; this is the other half.
+      if (this.background.forThread(thread).length !== before) {
+        this.downstreams.threadState(thread);
+      }
     }
     this.recordThreadInfo(params);
     this.tap('up', 'session/update', params);
@@ -1028,6 +1096,10 @@ export class UpstreamSession {
       // The same name the dashboard shows, so a notification and the list
       // agree about which conversation this is.
       threadName: thread ? thread.title?.trim() || `Thread ${thread.ordinal}` : null,
+      // What is still going on in there, which is what makes the difference
+      // between a thread you can come back to later and one that is about to
+      // say something on its own.
+      background: acpThreadId ? this.background.forThread(acpThreadId).length : 0,
     });
   }
 
@@ -1047,7 +1119,7 @@ export class UpstreamSession {
     // is still saying it. Sent here rather than at attach for the same reason
     // the queued questions are — a client rebuilds from the replay and drops
     // whatever it held before it landed.
-    this.downstreams.turnStateTo(handle, this.downstreams.isPrompting(thread));
+    this.downstreams.threadStateTo(handle);
     for (const entry of this.pending.listForThread(this.sessionId, thread)) {
       const params = JSON.parse(entry.row.params) as unknown;
       handle
@@ -1095,6 +1167,11 @@ export class UpstreamSession {
       const row = threadByAcpId(this.db, this.sessionId, thread);
       if (row?.inherits_from) clearThreadInheritance(this.db, row.id);
       this.setTurnActive(thread, true);
+      // Before the echo, so the state that goes with it already says the
+      // agent is working: the browser that sent the prompt gets its spinner
+      // in one hop rather than waiting out the model's own first-token
+      // latency.
+      this.activity.begin(thread);
       this.downstreams.beginPrompt(params);
     }
     if (isLoad) this.downstreams.beginReplay(from, thread);
@@ -1122,13 +1199,13 @@ export class UpstreamSession {
       if (isPrompt) {
         this.setTurnActive(thread, false);
         this.downstreams.endPrompt(params);
-        // Only when nobody is left watching this conversation. A turn
-        // finishing in front of you needs no notification, and the same test
-        // already decides whether a permission request is queued — so the two
-        // events agree about what "you are not here" means.
-        if (this.downstreams.byRecency(thread).length === 0) {
-          this.announce('idle', thread);
-        }
+        // Nothing is announced from here. A prompt coming back says the
+        // request is over, which is not the same as the agent having
+        // finished: the adapter holds one open until the background subagents
+        // the turn spawned settle, so an announcement here would be hours
+        // late — and a turn the harness started on its own has no request to
+        // come back at all. The moment worth telling somebody about is the
+        // agent going quiet, and activity.ts is what finds it.
       }
       if (isLoad) this.downstreams.endReplay(from, thread);
     }
@@ -1218,7 +1295,10 @@ export class UpstreamSession {
     const thread = threadOf(params);
     if (method === 'session/cancel' && thread) {
       this.setTurnActive(thread, false);
-      this.downstreams.turnState(thread, false);
+      // Whatever the agent was in the middle of saying, it is not saying it
+      // any more. The tool calls it had open go with it.
+      this.activity.reset(thread);
+      this.downstreams.threadState(thread);
     }
     await conn.agent.notify(method, params);
   }
@@ -1245,10 +1325,7 @@ export class UpstreamSession {
     if (this.closed || this.stopping) return;
     this.slog.warn('adapter exec exited', { code });
     this.teardownConnection();
-    this.clearTurns();
-    // Whatever was running in the background was a child of that adapter, so
-    // it is either gone or beyond anything that could ever report it.
-    this.background.clear();
+    this.clearThreadStates();
   }
 
   /** Closes the connection and kills the exec, tolerating either being gone. */
@@ -1271,8 +1348,7 @@ export class UpstreamSession {
   stop(): void {
     this.stopping = true;
     this.teardownConnection();
-    this.clearTurns();
-    this.background.clear();
+    this.clearThreadStates();
     this.pending.failSession(this.sessionId, 'Session stopped');
   }
 

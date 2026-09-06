@@ -76,6 +76,36 @@ const schema = z.object({
   BACKGROUND_TASK_MAX_MINUTES: durationMinutes.default(240),
 
   /**
+   * How long a thread has to say nothing before the agent counts as having
+   * stopped, in seconds.
+   *
+   * The fallback, and for the adapter Boxes ships with it is only that: that
+   * one marks the end of a processing cycle with a `usage_update` carrying a
+   * cost, and gateway/activity.ts takes it. This is for the adapters that say
+   * nothing — no stop reason arrives for a prompt being held open, and a turn
+   * the harness started on its own has no request to end, so how long a gap
+   * has to be before it is read as the end is all that is left. Wrong in either direction it costs
+   * little: a short one puts a send button under a model that is thinking
+   * between tool calls, which was allowed anyway, and a long one leaves the
+   * spinner up a second or two after the agent has finished. A tool call the
+   * agent is waiting on suspends the question entirely — see
+   * gateway/activity.ts.
+   */
+  AGENT_QUIET_SECONDS: z.coerce.number().int().positive().default(3),
+
+  /**
+   * How long a thread has to stay quiet before anybody is told its turn has
+   * finished, in seconds. Measured from the last thing the agent said, so it
+   * includes AGENT_QUIET_SECONDS.
+   *
+   * Longer than the quiet threshold on purpose: the screen can afford to be
+   * wrong for a moment and correct itself, and a push notification cannot.
+   * "Your turn has finished" on a lock screen is a claim there is no taking
+   * back, so it waits until the silence is convincing.
+   */
+  AGENT_SETTLE_SECONDS: z.coerce.number().int().positive().default(30),
+
+  /**
    * Largest single attachment a prompt may carry into a workspace, in
    * mebibytes.
    *

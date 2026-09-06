@@ -1,6 +1,6 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server } from 'node:http';
-import { TURN_STATE_METHOD } from '../../shared/types.ts';
+import { TURN_STATE_METHOD, type BackgroundTask } from '../../shared/types.ts';
 import type {
   SessionConfigOption,
   SessionModeState,
@@ -37,6 +37,14 @@ export interface PromptScript {
   gapMs?: number;
   /** Hold the prompt open until the test releases it. */
   hold?: boolean;
+  /**
+   * Work this turn leaves running in the background, which is the real
+   * adapter's most awkward shape: the agent says its piece, the prompt stays
+   * open because a subagent is still going, and the thread is waiting for its
+   * reader the whole time. Set alongside `hold`, and the stub goes quiet
+   * before it parks — a held prompt with no tasks stays a talking one.
+   */
+  background?: BackgroundTask[];
 }
 
 /** A permission question the stub raises instead of answering a prompt. */
@@ -90,6 +98,8 @@ export interface StubGateway {
   select: (threadId: string) => void;
   /** Releases a held prompt, ending the turn. */
   release: () => void;
+  /** Ends the background work a held turn declared, as a report would. */
+  finishTasks: (threadId?: string) => void;
   /** Releases every held session/load, replay and all. */
   releaseLoad: () => void;
   /**
@@ -146,8 +156,12 @@ export function attachStubGateway(
   let releaseHeld: (() => void) | null = null;
   /** Loads waiting for releaseLoad, when the script holds them. */
   const heldLoads: Array<() => void> = [];
-  /** Threads with a prompt running, which is what turn state reports. */
+  /** Threads with a prompt running, which is one third of the turn state. */
   const running = new Set<string>();
+  /** Threads the agent is talking on, which is usually but not always those. */
+  const speaking = new Set<string>();
+  /** What each thread has left running in the background. */
+  const background = new Map<string, BackgroundTask[]>();
 
   const historyOf = (threadId: string): SessionUpdate[] => {
     let found = threads.get(threadId);
@@ -167,12 +181,17 @@ export function attachStubGateway(
    * Mirrored here because a browser re-opening a thread mid-turn learns it
    * from nothing else — see TURN_STATE_METHOD.
    */
-  const turnState = (threadId: string, active: boolean, only?: WebSocket): void => {
+  const turnState = (threadId: string, only?: WebSocket): void => {
     for (const ws of only ? [only] : watchers(threadId)) {
       send(ws, {
         jsonrpc: '2.0',
         method: TURN_STATE_METHOD,
-        params: { sessionId: threadId, active },
+        params: {
+          sessionId: threadId,
+          active: running.has(threadId),
+          speaking: speaking.has(threadId),
+          background: background.get(threadId) ?? [],
+        },
       });
     }
   };
@@ -277,7 +296,7 @@ export function attachStubGateway(
         }
         // Whether that thread is mid-turn, sent where the real gateway sends
         // it: after the replay the client rebuilds from, never before.
-        turnState(threadId, running.has(threadId), ws);
+        turnState(threadId, ws);
         // After the replay, which is where the real gateway flushes them
         // (orchestrator/src/gateway/downstream.ts). Delivering one earlier
         // means delivering it into a transcript the client is about to throw
@@ -327,12 +346,15 @@ export function attachStubGateway(
         prompts.push(promptText);
         promptBlocks.push(blocks);
         running.add(onThread);
-        turnState(onThread, true);
+        speaking.add(onThread);
+        turnState(onThread);
         try {
           return await runPrompt(ws, onThread, blocks, promptText, reply);
         } finally {
           running.delete(onThread);
-          turnState(onThread, false);
+          speaking.delete(onThread);
+          background.delete(onThread);
+          turnState(onThread);
         }
       }
 
@@ -372,6 +394,13 @@ export function attachStubGateway(
         emit(update, onThread);
       }
       if (found.hold) {
+        if (found.background) {
+          // What the adapter does with a turn that spawned one: the prompt
+          // stays open and the agent stops talking.
+          background.set(onThread, found.background);
+          speaking.delete(onThread);
+          turnState(onThread);
+        }
         await new Promise<void>((resolve) => {
           releaseHeld = resolve;
         });
@@ -442,6 +471,10 @@ export function attachStubGateway(
       current = threadId;
     },
     release: () => releaseHeld?.(),
+    finishTasks: (threadId = current) => {
+      background.delete(threadId);
+      turnState(threadId);
+    },
     releaseLoad: () => {
       for (const go of heldLoads.splice(0)) go();
     },

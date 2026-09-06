@@ -30,6 +30,12 @@ beforeAll(async () => {
       status: 'running',
       dockerState: 'running',
       turnActive: true,
+      // What the badge goes by: a prompt being open upstream is not the same
+      // as the agent working, and the list says what the agent is doing.
+      speaking: true,
+      // And one that is not: a box whose agent has stopped with a build
+      // still running in it.
+      backgroundCount: 1,
       attachedCount: 1,
       proxyAttached: false,
     }),
@@ -48,6 +54,7 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect.poll(() => page.getByText('refactor auth').isVisible()).toBe(true);
       await expect.poll(() => page.getByText('2 approvals waiting').isVisible()).toBe(true);
       await expect.poll(() => page.getByText('running turn').isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('1 task running').isVisible()).toBe(true);
       await shoot(page, `list-${scheme}`);
       expect(errors).toEqual([]);
     } finally {

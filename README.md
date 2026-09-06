@@ -200,6 +200,8 @@ docker exec -it session-<id> claude /login
 | `SESSION_PIDS_LIMIT` | `512` | Per-session pids cap |
 | `IDLE_STOP_MINUTES` | `30` | Idle time before a session container is stopped |
 | `BACKGROUND_TASK_MAX_MINUTES` | `240` | Longest a background task holds that stop off |
+| `AGENT_QUIET_SECONDS` | `3` | Silence after which the agent counts as having stopped talking |
+| `AGENT_SETTLE_SECONDS` | `30` | Silence after which you are told the turn is over |
 | `MAX_ATTACHMENT_MB` | `25` | Largest single file a prompt may carry into a workspace |
 | `PERMISSION_FALLBACK` | `hold` | `hold` or `deny` for an unanswered permission request |
 | `PERMISSION_HOLD_MINUTES` | `120` | How long before that fallback applies |
@@ -374,12 +376,23 @@ monitor still watching holds the stop off, for up to
 a long build and closing the tab is safe, and a box whose task ended without
 saying so is stopped late rather than never.
 
+**Work still running says so.** A thread with something left going shows it
+above the composer, with what each task is and how long it has been at it, and
+the session list carries the same count. That is the difference between a
+thread that has finished and one that is waiting for you with a build still
+in it — and the composer is yours in both, because a turn the adapter is
+holding open for a background subagent is not an agent that is still
+talking.
+
 ## Notifications
 
 A box that wants something tells you whenever **nobody is watching that
-thread**: a permission request has been queued, or a turn has finished. A
-turn finishing in front of you is not announced — that is the screen you are
-already looking at.
+thread**: a permission request has been queued, or a turn has finished and is
+waiting for you. A turn finishing in front of you is not announced — that is
+the screen you are already looking at. "Finished" means the agent has stopped
+talking rather than that a request came back, so a turn holding a background
+subagent open is announced when the agent actually goes quiet, and the
+notification says what is still running.
 
 **Web Push** is the one channel, and it reaches a browser with no tab open,
 which is the case the feature exists for: lock your phone mid-turn and the

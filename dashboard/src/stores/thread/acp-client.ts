@@ -37,11 +37,14 @@ export interface AcpClientHandlers {
   /** The connection state changed. */
   onState(state: ConnectionState): void;
   /**
-   * The gateway said whether a turn is running on this thread. It says so
-   * once after every replay and again on every transition, which is how a
-   * browser that did not send the prompt knows there is one.
+   * The gateway said what this thread is doing: whether a prompt is open on
+   * it, whether the agent is talking, and what it has left running in the
+   * background. It says so once after every replay and again on every
+   * transition, which is how a browser that did not send the prompt knows
+   * there is one — and the only way any browser learns about a monitor
+   * somebody started an hour ago.
    */
-  onTurnState(active: boolean): void;
+  onTurnState(state: TurnStateParams): void;
   /**
    * A fresh connection is about to replay the thread, so whatever the store
    * holds is stale and must be thrown away.
@@ -265,7 +268,15 @@ export class AcpClient {
     }
 
     if (msg.method === TURN_STATE_METHOD) {
-      this.handlers.onTurnState((msg.params as TurnStateParams)?.active === true);
+      const params = msg.params as Partial<TurnStateParams> | undefined;
+      // Read defensively: an older orchestrator, or an ACP client of its own,
+      // sends the one field this notification used to carry.
+      this.handlers.onTurnState({
+        sessionId: params?.sessionId ?? '',
+        active: params?.active === true,
+        speaking: params?.speaking === true,
+        background: Array.isArray(params?.background) ? params.background : [],
+      });
     }
   }
 

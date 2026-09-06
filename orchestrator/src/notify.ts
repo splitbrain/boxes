@@ -32,6 +32,12 @@ export interface NotifyEvent {
   threadId: string | null;
   /** What that conversation is called, or null for an untitled one. */
   threadName: string | null;
+  /**
+   * How many background tasks the thread still has running, for an event that
+   * knows. The difference between "come back when you like" and "come back,
+   * it will interrupt you", and worth the words it costs on a lock screen.
+   */
+  background?: number;
 }
 
 /** The JSON a service worker receives; see dashboard/public/sw.js. */
@@ -58,12 +64,23 @@ export function wording(event: NotifyEvent): { title: string; body: string } {
   const where = event.threadName
     ? `${event.sessionName} · ${event.threadName}`
     : event.sessionName;
-  return event.kind === 'approval'
-    ? {
-        title: 'Boxes: approval needed',
-        body: `${where} is waiting for a permission decision.`,
-      }
-    : { title: 'Boxes: turn finished', body: `${where} has finished its turn.` };
+  if (event.kind === 'approval') {
+    return {
+      title: 'Boxes: approval needed',
+      body: `${where} is waiting for a permission decision.`,
+    };
+  }
+  const running = event.background ?? 0;
+  const still =
+    running === 0
+      ? ''
+      : running === 1
+        ? ' 1 task is still running.'
+        : ` ${running} tasks are still running.`;
+  return {
+    title: 'Boxes: waiting for you',
+    body: `${where} has stopped and is waiting for input.${still}`,
+  };
 }
 
 /** Where a notification about this event points. */

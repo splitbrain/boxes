@@ -13,6 +13,31 @@ export type SessionStatus =
 /** What Docker reports right now, independent of what the DB believes. */
 export type DockerState = 'running' | 'exited' | 'missing' | 'unknown';
 
+/**
+ * One piece of work a session left running in the background: a command told
+ * to run there, a monitor watching something, a subagent.
+ *
+ * What the orchestrator believes is running now, rather than a record of
+ * anything — the entries are held in memory beside the adapter that owns the
+ * work, and both go together (`orchestrator/src/gateway/background.ts`). It
+ * is a list rather than a count because "1 task" and "npm run build" are
+ * different answers to the question a reader is actually asking, and the tool
+ * call that started the work already carries the words.
+ */
+export interface BackgroundTask {
+  /**
+   * The tool call that started it, which is also what a report names — so
+   * this is the id that correlates the two. ACP's `toolCallId`.
+   */
+  toolCallId: string;
+  /** The tool running it: `Bash`, `Monitor`, `Workflow`, or a later one. */
+  tool: string | null;
+  /** What the call was called — "npm run build" — or null when it said none. */
+  title: string | null;
+  /** When the call was first seen, in epoch milliseconds. */
+  startedAt: number;
+}
+
 /** One conversation of a session, as the API reports it. */
 export interface ThreadSummary {
   id: string;
@@ -27,11 +52,26 @@ export interface ThreadSummary {
   /** Per session and never reused; what an untitled thread is called. */
   ordinal: number;
   /**
-   * True while a prompt turn is running on this thread. Threads run in
-   * parallel, so with two of them live this is the only thing that says which
-   * one is busy.
+   * True while a prompt this gateway forwarded is still open on this thread.
+   *
+   * Which is not the same as the agent working: a turn that spawned a
+   * background subagent stays open long after the agent has said its piece
+   * and gone quiet. `speaking` is the one to show a reader; this is here for
+   * the reaper and for anybody debugging the pair.
    */
   turnActive: boolean;
+  /**
+   * True while the agent is producing output on this thread — text, thinking,
+   * a tool call of its own.
+   *
+   * The honest answer to "is it working", and the only one that survives
+   * background work: a thread woken by a task reporting in is speaking with
+   * no prompt open, and a thread holding a subagent's turn open is silent
+   * with one. See `orchestrator/src/gateway/activity.ts`.
+   */
+  speaking: boolean;
+  /** What this thread has left running in the background; usually empty. */
+  background: BackgroundTask[];
   /** Permission requests from this thread waiting for a browser to answer. */
   pendingCount: number;
   createdAt: number;
@@ -47,11 +87,18 @@ export interface SessionSummary {
   /** Live container state, resolved against Docker on every request. */
   dockerState: DockerState;
   /**
-   * True while a prompt turn is running on any of the session's threads.
-   * Derived from them rather than stored beside them, so the two can never
-   * disagree.
+   * True while a prompt this gateway forwarded is open on any of the
+   * session's threads. Derived from them rather than stored beside them, so
+   * the two can never disagree.
    */
   turnActive: boolean;
+  /** True while the agent is producing output on any of them. */
+  speaking: boolean;
+  /**
+   * How many background tasks the session is believed to have running, across
+   * every thread. The threads carry what each one is.
+   */
+  backgroundCount: number;
   /** Permission requests waiting for a browser to answer them, on any thread. */
   pendingCount: number;
   /**
@@ -576,10 +623,29 @@ export interface AgentBundlePreview {
  */
 export const TURN_STATE_METHOD = '_boxes/turn_state';
 
-/** Params of a `_boxes/turn_state` notification. */
+/**
+ * Params of a `_boxes/turn_state` notification: everything the gateway knows
+ * about what a thread is doing that a browser cannot work out for itself.
+ *
+ * Three facts rather than one, because one bit cannot answer the three
+ * questions a reader asks — is the agent talking, may I type, will anything
+ * happen if I say nothing. Background work is what pulled them apart, and it
+ * is the third field. What the UI makes of the three is
+ * `dashboard/src/lib/activity.ts`.
+ */
 export interface TurnStateParams {
   /** The adapter's own id for the thread, as every ACP message names it. */
   sessionId: string;
-  /** True while a prompt is in flight on that thread. */
+  /**
+   * True while a prompt the gateway forwarded is still open on that thread.
+   *
+   * Not what a reader is shown: the adapter holds a prompt open until the
+   * background subagents its turn spawned settle, so this stays true through
+   * however long the agent then spends waiting for somebody to type.
+   */
   active: boolean;
+  /** True while the agent is producing output on that thread, now. */
+  speaking: boolean;
+  /** What the thread has left running in the background; usually empty. */
+  background: BackgroundTask[];
 }

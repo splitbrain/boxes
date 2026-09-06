@@ -13,6 +13,10 @@ import { BackgroundWork } from './background.ts';
 
 const HOUR = 60 * 60_000;
 
+/** The thread these tests are about; a second one appears where it matters. */
+const T1 = 'acp-1';
+const T2 = 'acp-2';
+
 /** A tracker with a four-hour cap and a clock the test moves. */
 function tracker(): { work: BackgroundWork; pass: (ms: number) => void } {
   let now = 1_000_000;
@@ -50,17 +54,17 @@ function notification(lines: string[]): unknown {
 
 test('a session that has started nothing has nothing running', () => {
   const { work } = tracker();
-  work.observe(toolCall('toolu_1', { command: 'npm test' }));
-  work.observe({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } });
+  work.observe(T1, toolCall('toolu_1', { command: 'npm test' }));
+  work.observe(T1, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } });
   assert.equal(work.active, false);
 });
 
 test('a backgrounded command holds the reaper off until it reports back', () => {
   const { work } = tracker();
-  work.observe(toolCall('toolu_1', { command: 'npm run build', run_in_background: true }));
+  work.observe(T1, toolCall('toolu_1', { command: 'npm run build', run_in_background: true }));
   assert.equal(work.active, true);
 
-  work.observe(
+  work.observe(T1, 
     notification([
       '<task-id>bm74el4o7</task-id>',
       '<tool-use-id>toolu_1</tool-use-id>',
@@ -73,15 +77,15 @@ test('a backgrounded command holds the reaper off until it reports back', () => 
 
 test('a monitor is running work too, whatever its input says', () => {
   const { work } = tracker();
-  work.observe(toolCall('toolu_2', { command: 'tail -f build.log' }, 'Monitor'));
+  work.observe(T1, toolCall('toolu_2', { command: 'tail -f build.log' }, 'Monitor'));
   assert.equal(work.active, true);
 });
 
 test('one command finishing does not clear another that is still going', () => {
   const { work } = tracker();
-  work.observe(toolCall('toolu_1', { run_in_background: true }));
-  work.observe(toolCall('toolu_2', { run_in_background: true }));
-  work.observe(
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T1, toolCall('toolu_2', { run_in_background: true }));
+  work.observe(T1, 
     notification([
       '<task-id>b1</task-id>',
       '<tool-use-id>toolu_1</tool-use-id>',
@@ -94,9 +98,9 @@ test('one command finishing does not clear another that is still going', () => {
 
 test('a report that is not the end of anything ends nothing', () => {
   const { work } = tracker();
-  work.observe(toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
   // A monitor's event: it names no call, and says the task is still going.
-  work.observe(
+  work.observe(T1, 
     notification([
       '<task-id>bnztwmmw5</task-id>',
       '<summary>Monitor event: "crawl progress"</summary>',
@@ -108,7 +112,7 @@ test('a report that is not the end of anything ends nothing', () => {
 
 test('a task whose ending never arrives delays the reaper rather than stopping it', () => {
   const { work, pass } = tracker();
-  work.observe(toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
 
   pass(3 * HOUR);
   assert.equal(work.active, true);
@@ -118,18 +122,84 @@ test('a task whose ending never arrives delays the reaper rather than stopping i
 
 test('a re-announced call is the same call, and expires on its own clock', () => {
   const { work, pass } = tracker();
-  work.observe(toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
   pass(3 * HOUR);
   // Replay, or the adapter refining a call as its input streams in. Either
   // way this is the call from three hours ago, not a new one.
-  work.observe(toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
   pass(2 * HOUR);
   assert.equal(work.active, false);
 });
 
 test('an adapter whose exec is gone has nothing left to wait for', () => {
   const { work } = tracker();
-  work.observe(toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
   work.clear();
   assert.equal(work.active, false);
+});
+
+test('an entry says what the work is and when it started', () => {
+  const { work, pass } = tracker();
+  work.observe(T1, toolCall('toolu_1', { command: 'npm run build', run_in_background: true }));
+  pass(90_000);
+  work.observe(T1, {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'toolu_2',
+    title: 'watch the crawl',
+    status: 'pending',
+    rawInput: {},
+    _meta: { claudeCode: { toolName: 'Monitor' } },
+  });
+
+  // Oldest first, which is the order the work was started in and the order a
+  // reader will have watched it appear.
+  assert.deepEqual(
+    work.forThread(T1).map((t) => [t.toolCallId, t.tool, t.title]),
+    [
+      ['toolu_1', 'Bash', 'npm run build'],
+      ['toolu_2', 'Monitor', 'watch the crawl'],
+    ],
+  );
+  // Ninety seconds apart, as a bar showing their ages has to be able to say.
+  const [first, second] = work.forThread(T1);
+  assert.equal((second?.startedAt ?? 0) - (first?.startedAt ?? 0), 90_000);
+});
+
+test('a task belongs to the conversation that started it', () => {
+  const { work } = tracker();
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T2, toolCall('toolu_2', { run_in_background: true }));
+
+  assert.deepEqual(work.forThread(T1).map((t) => t.toolCallId), ['toolu_1']);
+  assert.deepEqual(work.forThread(T2).map((t) => t.toolCallId), ['toolu_2']);
+  assert.deepEqual(work.threads.sort(), [T1, T2]);
+  // The box is what the reaper asks about, and both threads are in it.
+  assert.equal(work.count, 2);
+  assert.equal(work.active, true);
+});
+
+test("a report ends its own thread's task and leaves the other alone", () => {
+  const { work } = tracker();
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
+  work.observe(T2, toolCall('toolu_2', { run_in_background: true }));
+
+  work.observe(T1, 
+    notification([
+      '<task-id>bg_1</task-id>',
+      '<tool-use-id>toolu_1</tool-use-id>',
+      '<status>completed</status>',
+      '<summary>Build finished</summary>',
+    ]),
+  );
+
+  assert.deepEqual(work.forThread(T1), []);
+  assert.deepEqual(work.forThread(T2).map((t) => t.toolCallId), ['toolu_2']);
+});
+
+test('an expired task is gone from the list as well as from the count', () => {
+  const { work, pass } = tracker();
+  work.observe(T1, toolCall('toolu_1', { run_in_background: true }));
+  pass(5 * HOUR);
+  assert.deepEqual(work.forThread(T1), []);
+  assert.equal(work.count, 0);
 });

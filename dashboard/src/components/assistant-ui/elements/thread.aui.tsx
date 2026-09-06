@@ -70,6 +70,7 @@ import {
   type ComponentType,
   type FC,
   type PropsWithChildren,
+  type ReactNode,
 } from "react";
 
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
@@ -96,6 +97,14 @@ export type ThreadComponents = {
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
   autoFocus?: boolean | undefined;
+  /**
+   * Boxes edit: something to show directly above the composer, for as long as
+   * it is true — what this thread has left running in the background. It goes
+   * here rather than in the transcript because it is not something that
+   * happened, and here rather than in the header because the composer is
+   * where the question "is it my turn?" gets asked. See BackgroundBar.
+   */
+  aboveComposer?: ReactNode | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -140,20 +149,26 @@ const ThreadHistorySkeleton: FC = () => (
 export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   autoFocus = true,
+  aboveComposer,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
     <ThreadComponentsContext.Provider value={components}>
-      <ThreadRoot isEmpty={isEmpty} autoFocus={autoFocus} />
+      <ThreadRoot
+        isEmpty={isEmpty}
+        autoFocus={autoFocus}
+        aboveComposer={aboveComposer}
+      />
     </ThreadComponentsContext.Provider>
   );
 };
 
-const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
-  isEmpty,
-  autoFocus,
-}) => {
+const ThreadRoot: FC<{
+  isEmpty: boolean;
+  autoFocus: boolean;
+  aboveComposer?: ReactNode | undefined;
+}> = ({ isEmpty, autoFocus, aboveComposer }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   // Boxes edit: the rest of a long turn. autoScroll below stops at the turn
   // anchor, which holds the prompt at the top and follows nothing; once the
@@ -221,6 +236,9 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
           >
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
+            {/* Boxes edit: above the composer and below everything else, so
+                it is the last thing read before typing. */}
+            {aboveComposer}
             <Composer autoFocus={autoFocus} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
