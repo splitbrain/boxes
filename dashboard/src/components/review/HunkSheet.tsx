@@ -17,6 +17,11 @@ import { cn } from '@/lib/utils';
  * live, since the file itself cannot show them.
  *
  * The diff text comes from the workspace and is rendered as text nodes only.
+ *
+ * Long lines wrap, like the pane's do: a sheet is the narrowest surface in the
+ * tool, and a hunk whose ends are off to the right is not showing the change.
+ * The continuation of a wrapped line is indented past the +/− column, so the
+ * marker that opens a line stays the only thing in it.
  */
 export function HunkSheet({
   hunk,
@@ -38,14 +43,14 @@ export function HunkSheet({
           </SheetDescription>
         </SheetHeader>
         <div className="min-h-0 overflow-auto px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-          <div className="w-max min-w-full font-mono text-[13px] leading-[1.5]">
+          <div className="min-w-full font-mono text-[13px] leading-[1.5]">
             {(hunk?.diff ?? '').split('\n').map((line, i) =>
               // A trailing empty line is the terminator, not a diff line.
               i === (hunk?.diff ?? '').split('\n').length - 1 && line === '' ? null : (
                 <div
                   key={i}
                   className={cn(
-                    'whitespace-pre px-1',
+                    '-indent-3 pr-1 pl-4 break-words whitespace-pre-wrap',
                     line.startsWith('+') && 'bg-ok/12 text-ok',
                     line.startsWith('-') && 'bg-danger/12 text-danger',
                     line.startsWith('\\') && 'text-muted-foreground',

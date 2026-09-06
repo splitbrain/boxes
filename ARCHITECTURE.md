@@ -1201,7 +1201,10 @@ the agent controls:
 
 `/sessions/:id/review`, with the open file in the search string
 (`?path=src/app.ts`) so a file is linkable and the back button works — which on
-a phone is also how you get from a file back to the tree. Entry points: a
+a phone is also one step of the navigation stack: sessions → thread → file list
+→ file, out of each by the back button in the header and by no other control.
+From `md` up the list and the file are one view, so the stack is a step shorter
+there and back always leaves the review. Entry points: a
 Review action in the thread header next to Fork, and one on the session card,
 where it works whether or not the box is running. The view owns the whole
 viewport the way the thread view does.
@@ -1211,8 +1214,11 @@ interactions do not survive. The feature set does; the layout does not. What
 replaces it is one set of components in two arrangements rather than two
 parallel UIs:
 
-- **The tree** is a column from `md` up and a shadcn Sheet below it, closing on
-  selection. Same component, same status colours and comment badges.
+- **The tree** is a column from `md` up and the screen before the file below
+  it. Same component, same status colours and comment badges. Below `md` it is
+  a step of the stack rather than a drawer over the file: a drawer would be a
+  second door to the screen back already reaches, and the two disagree about
+  where you are.
 - **Comments are inline**, GitHub-style, on every screen size. There is no
   right-hand sidebar to reflow away.
 - **Tap replaces hover.** Tapping a line's gutter is how a comment starts;
@@ -1223,7 +1229,9 @@ parallel UIs:
   the minimap was for — so the toolbar says it directly, with counts and paired
   step buttons for changes and comments.
 - **The code pane** is a CSS grid per line: a sticky line-number gutter, the
-  code cell scrolling horizontally as one block, and a wrap toggle. Every line
+  code cell scrolling horizontally as one block, and a wrap toggle that starts
+  on — a phone is narrower than most source files, so the alternative default
+  puts the end of every long line off screen. Every line
   being its own element is what makes it addressable at all.
 
 Highlighting is client-side, with Shiki: the API ships plain text and the
