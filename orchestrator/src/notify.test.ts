@@ -102,8 +102,8 @@ test('an idle event says what is still running, when anything is', () => {
   // The difference between a thread you can come back to whenever, and one
   // that is going to say something else without being asked.
   assert.doesNotMatch(wording(idle).body, /still running/);
-  assert.match(wording({ ...idle, background: 1 }).body, /1 task is still running/);
-  assert.match(wording({ ...idle, background: 3 }).body, /3 tasks are still running/);
+  assert.match(wording({ ...idle, background: true }).body, /Something is still running/);
+  assert.doesNotMatch(wording({ ...idle, background: false }).body, /still running/);
 });
 
 test('a subscription the push service has finished with is forgotten', async () => {

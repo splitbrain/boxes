@@ -539,6 +539,57 @@ export async function containerState(containerId: string | null): Promise<Docker
   }
 }
 
+/** One process inside a container, as `docker top` reports it. */
+export interface ContainerProcess {
+  pid: number;
+  ppid: number;
+  /** The whole command line, which is how a process is recognised. */
+  command: string;
+}
+
+/**
+ * Every process running inside a container.
+ *
+ * `top` rather than an exec: it is one API call against the daemon, the `ps`
+ * runs on the host, and a container with no `ps` of its own — or no shell —
+ * answers just the same. An exec would also be a process, which is a poor
+ * way to ask what processes there are.
+ *
+ * The columns are asked for by name and read back by name: `top` returns
+ * whatever titles the host's `ps` printed, and the daemon splits each row on
+ * whitespace with the command left whole at the end. A container that cannot
+ * be reached throws, which the caller reads as "no answer" rather than as
+ * "nothing running" — see `background.ts` for why that direction matters.
+ */
+export async function containerProcesses(containerId: string): Promise<ContainerProcess[]> {
+  const top = (await docker()
+    .getContainer(containerId)
+    .top({ ps_args: '-eo pid,ppid,args' })) as {
+    Titles?: string[];
+    Processes?: string[][];
+  };
+
+  const titles = top.Titles ?? [];
+  const pidAt = titles.indexOf('PID');
+  const ppidAt = titles.indexOf('PPID');
+  // Without both columns there is no tree to read, and guessing at positions
+  // would invent one. The caller treats a throw as "no answer".
+  if (pidAt === -1 || ppidAt === -1) {
+    throw new Error(`docker top returned no PID/PPID columns: ${titles.join(',')}`);
+  }
+  // Whatever ps put last is the command; the daemon leaves its spaces alone.
+  const commandAt = titles.length - 1;
+
+  const processes: ContainerProcess[] = [];
+  for (const row of top.Processes ?? []) {
+    const pid = Number(row[pidAt]);
+    const ppid = Number(row[ppidAt]);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
+    processes.push({ pid, ppid, command: row[commandAt] ?? '' });
+  }
+  return processes;
+}
+
 /**
  * Whether a container has a mount at `destination`.
  *

@@ -5,7 +5,7 @@ import type { SessionSummary, ThreadSummary } from '../../../shared/types.ts';
 import { StatusBadge, type BadgeKind } from './StatusBadge';
 import { Card } from '@/components/ui/card';
 import { api } from '../api.ts';
-import { tasksRunning } from '@/lib/activity';
+import { STILL_RUNNING } from '@/lib/activity';
 import { threadName } from '@/lib/threads';
 import { refresh } from '../stores/sessions.ts';
 import { cn } from '@/lib/utils';
@@ -30,9 +30,7 @@ export function sessionBadges(s: SessionSummary): Array<{ kind: BadgeKind; label
   // a prompt held open for a background subagent is not a running turn to
   // anybody reading this list. See lib/activity.ts.
   if (s.speaking) badges.push({ kind: 'turn', label: 'running turn' });
-  if (s.backgroundCount > 0) {
-    badges.push({ kind: 'task', label: tasksRunning(s.backgroundCount) });
-  }
+  if (s.backgroundBusy) badges.push({ kind: 'task', label: STILL_RUNNING });
   if (s.status === 'error') badges.push({ kind: 'error', label: 'error' });
   else if (s.dockerState === 'running') badges.push({ kind: 'running', label: 'up' });
   else badges.push({ kind: 'idle', label: s.status });
@@ -210,12 +208,9 @@ export function threadBadges(
     });
   }
   if (thread.speaking) badges.push({ kind: 'turn', label: 'running turn' });
-  // The exception to the rule above: a thread that has gone quiet with a
-  // monitor or a build still in it says nothing about itself anywhere else,
-  // and "waiting for you" and "still working" are the two answers this list
-  // exists to tell apart.
-  if (thread.background.length > 0) {
-    badges.push({ kind: 'task', label: tasksRunning(thread.background.length) });
-  }
+  // Work still running is the box's, not the thread's: it is read from the
+  // processes alive in the container, and those do not say which conversation
+  // started them. The session's own badge above carries it.
+
   return badges;
 }

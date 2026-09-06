@@ -275,7 +275,11 @@ export class AcpClient {
         sessionId: params?.sessionId ?? '',
         active: params?.active === true,
         speaking: params?.speaking === true,
-        background: Array.isArray(params?.background) ? params.background : [],
+        // An older orchestrator sent a list of what was running; anything in
+        // it meant the same as `true` does now.
+        background: Array.isArray(params?.background)
+          ? params.background.length > 0
+          : params?.background === true,
       });
     }
   }

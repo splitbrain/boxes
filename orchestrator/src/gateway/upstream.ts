@@ -27,10 +27,10 @@ import * as dk from '../docker.ts';
 import { log, type Logger } from '../log.ts';
 import type { NotifyKind, Notifier } from '../notify.ts';
 import { Activity } from './activity.ts';
-import { BackgroundWork } from './background.ts';
+import { BackgroundProbe } from './background.ts';
 import { Broadcast, threadOf } from './broadcast.ts';
 import type { PendingStore } from './pending.ts';
-import type { BackgroundTask, TurnStateParams } from '../../../shared/types.ts';
+import type { TurnStateParams } from '../../../shared/types.ts';
 
 /**
  * One persistent ACP client per session, connected to the adapter inside the
@@ -203,8 +203,8 @@ export class UpstreamSession {
   private starting: Promise<void> | null = null;
   /** Who each adapter update goes to; see broadcast.ts. */
   private readonly downstreams: Broadcast;
-  /** What this session has left running in the background; see background.ts. */
-  private readonly background: BackgroundWork;
+  /** Whether this session still has work running in it; see background.ts. */
+  private readonly background: BackgroundProbe;
   /** Whether the agent is talking on each thread; see activity.ts. */
   private readonly activity: Activity;
   private readonly slog: Logger;
@@ -234,7 +234,23 @@ export class UpstreamSession {
   ) {
     this.slog = log.session(sessionId);
     this.downstreams = new Broadcast(sessionId, (thread) => this.threadState(thread));
-    this.background = new BackgroundWork(cfg.BACKGROUND_TASK_MAX_MINUTES * 60_000);
+    this.background = new BackgroundProbe(
+      () => this.containerProcesses(),
+      // The adapter names itself: this is the command Boxes launched, so it
+      // is the one thing in the box guaranteed to be recognisable from here.
+      JSON.parse(this.row().agent_cmd)[0] as string,
+      cfg.BACKGROUND_POLL_SECONDS * 1_000,
+      Date.now,
+      // A probe that cannot read its box holds whatever it last believed, and
+      // what it last believed holds the reaper off. Silence here is a session
+      // that never stops for a reason nobody can see.
+      (error) =>
+        error
+          ? this.slog.warn('cannot read what is running in the box', {
+              error: error.message,
+            })
+          : this.slog.info('reading what is running in the box again'),
+    );
     this.activity = new Activity({
       quietMs: cfg.AGENT_QUIET_SECONDS * 1000,
       settleMs: cfg.AGENT_SETTLE_SECONDS * 1000,
@@ -264,14 +280,23 @@ export class UpstreamSession {
     return this.background.active;
   }
 
-  /** How many background tasks the session is believed to have running. */
-  get backgroundCount(): number {
-    return this.background.count;
+  /** Test seam: takes a reading now rather than when one goes stale. */
+  refreshBackgroundForTests(): Promise<void> {
+    return this.background.refresh();
   }
 
-  /** What one thread has left running in the background. */
-  backgroundFor(acpThreadId: string): BackgroundTask[] {
-    return this.background.forThread(acpThreadId);
+  /**
+   * What is running in this session's container, for the probe.
+   *
+   * A session with no container, or one that is not up, has nothing running
+   * in it — and answering that here rather than throwing keeps a stopped box
+   * from being read as one that could not be asked.
+   */
+  private async containerProcesses(): Promise<dk.ContainerProcess[]> {
+    const containerId = this.row().container_id;
+    if (!containerId) return [];
+    if ((await dk.containerState(containerId)) !== 'running') return [];
+    return dk.containerProcesses(containerId);
   }
 
   /** The threads of this session the agent is talking on. */
@@ -292,7 +317,7 @@ export class UpstreamSession {
       sessionId: acpThreadId,
       active: this.downstreams.isPrompting(acpThreadId),
       speaking: this.activity.speaking(acpThreadId),
-      background: this.background.forThread(acpThreadId),
+      background: this.background.active,
     };
   }
 
@@ -456,16 +481,15 @@ export class UpstreamSession {
    * have in common is that none of them leaves anything running: a deliberate
    * stop, an adapter exit, and the session being closed.
    *
-   * All three facts together, and the browsers told afterwards rather than
-   * between: whatever was running in the background was a child of that
-   * adapter, so it is either gone or beyond anything that could ever report
-   * it, and a state published halfway through would name tasks that had just
-   * stopped existing.
+   * Both facts together, and the browsers told afterwards rather than
+   * between, so a state published halfway through cannot claim a turn on a
+   * thread that has just been cleared. What was running in the background
+   * needs no forgetting: it is read from the container rather than
+   * remembered, and an adapter that has gone took its children with it.
    */
   private clearThreadStates(): void {
     clearSessionTurns(this.db, this.sessionId);
     this.activity.clear();
-    this.background.clear();
     this.downstreams.refreshThreadStates();
   }
 
@@ -906,24 +930,15 @@ export class UpstreamSession {
   /** Taps an adapter update and delivers it to the browsers it is meant for. */
   private onSessionUpdate(params: unknown): void {
     this.touch();
-    // Only what is happening now. A replay re-sends every tool call the thread
-    // ever made, and a background one among them started hours ago in a
-    // container that has since been stopped — re-arming those would keep a box
-    // awake for the sake of work that is long gone. The cost is that a call
-    // backgrounded during somebody else's replay goes untracked, which is a
-    // window of milliseconds and no worse than not tracking it at all.
+    // Only what is happening now. A replay re-sends everything the thread ever
+    // said, and a transcript arriving in a burst is not the agent talking —
+    // reading one as activity would show a spinner for a conversation that
+    // ended hours ago. The cost is that a turn starting during somebody else's
+    // replay goes unobserved, which is a window of milliseconds.
     const thread = threadOf(params);
     if (this.replaying === 0 && thread) {
       const update = (params as { update?: unknown })?.update;
-      const before = this.background.forThread(thread).length;
-      this.background.observe(thread, update);
       this.activity.observe(thread, update);
-      // A task that has just been started, or has just reported itself over,
-      // changes what the thread is waiting for. The agent's own transitions
-      // are announced by activity.ts; this is the other half.
-      if (this.background.forThread(thread).length !== before) {
-        this.downstreams.threadState(thread);
-      }
     }
     this.recordThreadInfo(params);
     this.tap('up', 'session/update', params);
@@ -1099,7 +1114,7 @@ export class UpstreamSession {
       // What is still going on in there, which is what makes the difference
       // between a thread you can come back to later and one that is about to
       // say something on its own.
-      background: acpThreadId ? this.background.forThread(acpThreadId).length : 0,
+      background: this.background.active,
     });
   }
 

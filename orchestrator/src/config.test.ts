@@ -31,7 +31,7 @@ test('an empty environment yields the documented defaults', () => {
     assert.equal(cfg.SESSION_CPUS, 2);
     assert.equal(cfg.SESSION_PIDS_LIMIT, 512);
     assert.equal(cfg.IDLE_STOP_MINUTES, 30);
-    assert.equal(cfg.BACKGROUND_TASK_MAX_MINUTES, 240);
+    assert.equal(cfg.BACKGROUND_POLL_SECONDS, 20);
     assert.equal(cfg.PERMISSION_FALLBACK, 'hold');
     assert.equal(cfg.PERMISSION_HOLD_MINUTES, 120);
     assert.equal(cfg.EGRESS_PROXY_CONTAINER, 'boxes-egress-proxy');

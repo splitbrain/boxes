@@ -434,9 +434,7 @@ test('a turn held open for background work still hands the composer back', async
         match: () => true,
         updates: reply('Started the build. I will report back.'),
         hold: true,
-        background: [
-          { toolCallId: 'toolu_1', tool: 'Bash', title: 'npm run build', startedAt: Date.now() },
-        ],
+        background: true,
       },
     ],
   });
@@ -460,17 +458,17 @@ test('a turn held open for background work still hands the composer back', async
     // transcript cannot say it.
     const bar = page.locator('[data-slot="boxes_background-bar"]');
     await expect.poll(() => bar.isVisible()).toBe(true);
-    await expect.poll(() => page.getByText('1 task running in the background').isVisible()).toBe(true);
+    await expect
+      .poll(() => page.getByText('Something is still running in the background').isVisible())
+      .toBe(true);
 
     // Including for a browser that arrives afterwards and has only the
-    // replay to go on — the tasks reach it with the thread state.
+    // replay to go on — it reaches that one with the thread state.
     await page.reload();
     await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
     await expect.poll(() => bar.isVisible()).toBe(true);
-    await bar.getByText('1 task running in the background').click();
-    await expect.poll(() => page.getByText('npm run build').isVisible()).toBe(true);
 
-    // And when the task reports itself over, the bar goes with it.
+    // And when the work is over, the bar goes with it.
     stub.gateway.finishTasks();
     await expect.poll(() => bar.isVisible()).toBe(false);
 

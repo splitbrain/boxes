@@ -1,6 +1,6 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Server } from 'node:http';
-import { TURN_STATE_METHOD, type BackgroundTask } from '../../shared/types.ts';
+import { TURN_STATE_METHOD } from '../../shared/types.ts';
 import type {
   SessionConfigOption,
   SessionModeState,
@@ -38,13 +38,13 @@ export interface PromptScript {
   /** Hold the prompt open until the test releases it. */
   hold?: boolean;
   /**
-   * Work this turn leaves running in the background, which is the real
+   * Whether this turn leaves work running in the background, which is the real
    * adapter's most awkward shape: the agent says its piece, the prompt stays
    * open because a subagent is still going, and the thread is waiting for its
    * reader the whole time. Set alongside `hold`, and the stub goes quiet
    * before it parks — a held prompt with no tasks stays a talking one.
    */
-  background?: BackgroundTask[];
+  background?: boolean;
 }
 
 /** A permission question the stub raises instead of answering a prompt. */
@@ -160,8 +160,8 @@ export function attachStubGateway(
   const running = new Set<string>();
   /** Threads the agent is talking on, which is usually but not always those. */
   const speaking = new Set<string>();
-  /** What each thread has left running in the background. */
-  const background = new Map<string, BackgroundTask[]>();
+  /** Which threads are in a box with work still running in it. */
+  const background = new Set<string>();
 
   const historyOf = (threadId: string): SessionUpdate[] => {
     let found = threads.get(threadId);
@@ -190,7 +190,7 @@ export function attachStubGateway(
           sessionId: threadId,
           active: running.has(threadId),
           speaking: speaking.has(threadId),
-          background: background.get(threadId) ?? [],
+          background: background.has(threadId),
         },
       });
     }
@@ -397,7 +397,7 @@ export function attachStubGateway(
         if (found.background) {
           // What the adapter does with a turn that spawned one: the prompt
           // stays open and the agent stops talking.
-          background.set(onThread, found.background);
+          background.add(onThread);
           speaking.delete(onThread);
           turnState(onThread);
         }

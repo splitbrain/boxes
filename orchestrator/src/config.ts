@@ -63,17 +63,16 @@ const schema = z.object({
   IDLE_STOP_MINUTES: durationMinutes.default(30),
 
   /**
-   * The longest a background task may hold the idle reaper off — a command
-   * left running, a monitor watching something — measured from the tool call
-   * that started it.
+   * How long an answer about what is running in a box stands before the box
+   * is asked again, in seconds.
    *
-   * A cap rather than a licence, because knowing a task has finished depends
-   * on the harness's own notification and a missed one would otherwise pin a
-   * box awake for good. A task that reports as it goes needs none of this: its
-   * reports mark the session active like any other traffic, so what this
-   * covers is the quiet stretch of a long one.
+   * This is a Docker API call per running session per window, so it is not
+   * free — and it is also what a browser is shown, so it should not lag a
+   * build finishing by much. There is no cap on the answer itself and no need
+   * of one: it is a reading rather than a tally, so a stale one is at most
+   * this old and never wrong for longer. See gateway/background.ts.
    */
-  BACKGROUND_TASK_MAX_MINUTES: durationMinutes.default(240),
+  BACKGROUND_POLL_SECONDS: z.coerce.number().int().positive().default(20),
 
   /**
    * How long a thread has to say nothing before the agent counts as having
