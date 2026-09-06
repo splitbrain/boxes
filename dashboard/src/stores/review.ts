@@ -2,21 +2,23 @@ import { create } from 'zustand';
 import type {
   ReviewAnnotation,
   ReviewFileResponse,
-  ReviewStatusResponse,
   ReviewTreeResponse,
 } from '../../../shared/types.ts';
 import { api } from '../api.ts';
 import { tokenizeLines, type Token } from '../lib/highlight.ts';
-import { pollWhileVisible } from '../lib/poll.ts';
+import { refetchOnVisible } from '../lib/poll.ts';
 
 /**
- * The review view's whole state: the tree, the open file, and the poll that
- * keeps both honest.
+ * The review view's whole state: the tree and the open file.
  *
- * Freshness is polling, the pattern the session list already uses. The view
- * asks for a three-hash fingerprint every few seconds while its tab is
- * visible and refetches only when one of the hashes moved, which is also what
- * makes drift show up: the refetch is what runs it.
+ * **Freshness is the fetch.** There is no poll. Every review fetch reads the
+ * filesystem on the spot — the tree endpoint runs `ls-files` and `status` per
+ * request, the file endpoint reads the file, and drift recomputes on both — so
+ * what matters is being fresh on arrival, and arrival is three moments: the
+ * view mounting, a file closing back to the tree, and the tab becoming visible
+ * again. Boxes is driven from a phone, where the reviewer is in the thread or
+ * in the review and not both, so a timer would be paying for an answer nobody
+ * is looking at.
  *
  * The store is a singleton keyed by session id rather than one per mount, so
  * navigating between files does not lose the tree, and remounting the route
@@ -42,8 +44,6 @@ export interface ReviewState {
   loadingFile: boolean;
   /** What went wrong last, or null. Shown in place of the pane. */
   error: string | null;
-  /** The last fingerprint seen, so a poll can tell a change from a repeat. */
-  fingerprint: ReviewStatusResponse | null;
   /** A line whose composer is open, or null. */
   composing: number | null;
   /** True while an annotation write is in flight. */
@@ -57,7 +57,6 @@ const EMPTY: ReviewState = {
   loadingTree: false,
   loadingFile: false,
   error: null,
-  fingerprint: null,
   composing: null,
   saving: false,
 };
@@ -276,57 +275,35 @@ export async function setBase(rev: string | null): Promise<void> {
   }
 }
 
-// --- the poll ---------------------------------------------------------------
+// --- freshness --------------------------------------------------------------
 
-/** Time between fingerprint polls, matching the session list's cadence. */
-const POLL_MS = 5000;
-
-/** Whether two fingerprints say the same thing. */
-function same(a: ReviewStatusResponse | null, b: ReviewStatusResponse): boolean {
-  return (
-    a !== null &&
-    a.reviewHash === b.reviewHash &&
-    a.headCommit === b.headCommit &&
-    a.statusHash === b.statusHash &&
-    a.fileHash === b.fileHash
-  );
+/**
+ * Refetches what is on screen: the tree, and the open file if there is one.
+ *
+ * Not while a write is in flight or a composer is open — refetching would
+ * fight the optimistic annotation list, or drop what is being typed. That
+ * guard is the one piece of the poll's logic worth keeping.
+ */
+export async function refresh(): Promise<void> {
+  const { sessionId, file, saving, composing } = get();
+  if (!sessionId || saving || composing !== null) return;
+  await loadTree();
+  if (file) await loadFile(file.path);
 }
 
 /**
- * Asks for the fingerprint and refetches only what moved.
+ * Refetches whenever the tab comes back to the front, and returns the
+ * teardown.
  *
- * This is the whole cost of an idle review view: one request answering a few
- * local hashes. Nothing is refetched while they stand still.
+ * On a phone, switching apps and coming back is the dominant shape of
+ * returning to a review — the browser's own back button is the other, and that
+ * remounts. Nothing fires while the tab is open and still, so an idle review
+ * costs nothing at all.
  *
- * The open file is named in the request, because its own hash is one of those
- * hashes: the agent editing the file being read changes nothing else about the
- * workspace.
+ * The residual is that a background task can be working while the review is
+ * open. Drift already covers the consequence: a comment whose code moved
+ * follows it, and one whose code is gone is marked outdated.
  */
-export async function poll(): Promise<void> {
-  const { sessionId, fingerprint, file, saving, composing } = get();
-  if (!sessionId) return;
-  // Not while a write is in flight or a composer is open: refetching would
-  // fight the optimistic list, or drop what is being typed.
-  if (saving || composing !== null) return;
-  try {
-    const next = await api.reviewStatus(sessionId, file?.path);
-    if (same(fingerprint, next)) return;
-    set({ fingerprint: next });
-    await loadTree();
-    if (file) await loadFile(file.path);
-  } catch {
-    // A failed poll says nothing: the next one will answer, and an error
-    // banner every five seconds on a flaky link is worse than silence.
-  }
-}
-
-/**
- * Starts polling for as long as the tab is visible, and returns the teardown.
- *
- * Visible-tab only, like the session list: a review left open in a background
- * tab is not worth a request every five seconds, and coming back refetches
- * immediately anyway.
- */
-export function startPolling(): () => void {
-  return pollWhileVisible(() => void poll(), POLL_MS);
+export function refreshOnReturn(): () => void {
+  return refetchOnVisible(() => void refresh());
 }

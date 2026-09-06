@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test, vi } from 'vitest';
-import type {
-  ReviewFileResponse,
-  ReviewStatusResponse,
-  ReviewTreeResponse,
-} from '../../../shared/types.ts';
+import type { ReviewFileResponse, ReviewTreeResponse } from '../../../shared/types.ts';
 import {
   closeFile,
   deleteComment,
@@ -12,8 +8,8 @@ import {
   loadTree,
   newReview,
   open,
-  poll,
   recallScroll,
+  refresh,
   rememberScroll,
   saveComment,
   setBase,
@@ -21,12 +17,13 @@ import {
 } from './review.ts';
 
 /**
- * The review store's fetching and polling.
+ * The review store's fetching, and the refetch that replaced the poll.
  *
- * The poll is the part worth pinning down: an idle review view costs one
- * request every few seconds, and it must refetch nothing while the
- * fingerprint stands still. Getting that wrong is invisible in use and
- * expensive on a phone.
+ * Freshness is the fetch: there is no fingerprint and no timer, so an idle
+ * review costs nothing. What has to hold instead is that the three moments
+ * that do refetch — a mount, a file closing, the tab coming back — actually
+ * ask, and that the one that fires unprompted does not fight a write or a
+ * half-typed comment.
  */
 
 /** Requests the stub answered, in order. */
@@ -40,13 +37,13 @@ let failWith: string | null = null;
 
 function tree(over: Partial<ReviewTreeResponse> = {}): ReviewTreeResponse {
   return {
-    root: '',
+    repos: [{ path: '', name: 'workspace', head: 'abc', baseCommit: '' }],
     hasGit: true,
     entries: [{ name: 'a.ts', path: 'a.ts', isDir: false }],
     truncated: false,
     statuses: {},
     counts: {},
-    base: { rev: '', commit: '' },
+    base: { rev: '' },
     hasReview: false,
     started: '',
     ...over,
@@ -56,6 +53,7 @@ function tree(over: Partial<ReviewTreeResponse> = {}): ReviewTreeResponse {
 function file(over: Partial<ReviewFileResponse> = {}): ReviewFileResponse {
   return {
     path: 'a.ts',
+    repo: '',
     content: 'one\ntwo\n',
     truncated: false,
     binary: false,
@@ -72,17 +70,12 @@ function file(over: Partial<ReviewFileResponse> = {}): ReviewFileResponse {
   };
 }
 
-function status(over: Partial<ReviewStatusResponse> = {}): ReviewStatusResponse {
-  return { reviewHash: '', headCommit: 'abc', statusHash: 'def', fileHash: 'ghi', ...over };
-}
-
 beforeEach(() => {
   requested = [];
   failWith = null;
   answers = {
     '/review/tree': tree(),
     '/review/file': file(),
-    '/review/status': status(),
   };
 
   vi.stubGlobal('fetch', async (url: string) => {
@@ -101,7 +94,7 @@ beforeEach(() => {
   });
 
   // A fresh store per test: it is a singleton keyed by session id.
-  useReview.setState({ sessionId: null, tree: null, file: null, fingerprint: null });
+  useReview.setState({ sessionId: null, tree: null, file: null });
   open('abc123');
 });
 
@@ -173,95 +166,61 @@ test('a new session starts every file at the top again', () => {
   assert.equal(recallScroll('a.ts'), 0);
 });
 
-test('an unchanged fingerprint refetches nothing', async () => {
+test('a refresh refetches the tree and the open file', async () => {
   await loadTree();
   await loadFile('a.ts');
-  const before = requested.length;
-
-  // The first poll has no fingerprint to compare against, so it refetches.
-  await poll();
-  const afterFirst = requested.length;
-  assert.ok(afterFirst > before);
-
-  // Every poll after that, with nothing moving, must cost one request.
-  await poll();
-  await poll();
-  assert.equal(requested.length, afterFirst + 2);
-  assert.equal(requested.at(-1)?.includes('/review/status'), true);
-});
-
-test('a moved fingerprint refetches the tree and the open file', async () => {
-  await loadTree();
-  await loadFile('a.ts');
-  await poll();
   const before = { tree: hits('/review/tree'), file: hits('/review/file') };
 
-  answers['/review/status'] = status({ statusHash: 'moved' });
-  await poll();
+  // What returning to the tab does. Every fetch reads the filesystem on the
+  // spot, so this is the whole freshness mechanism — there is no fingerprint
+  // to compare and nothing to decide.
+  await refresh();
 
   assert.equal(hits('/review/tree'), before.tree + 1);
   assert.equal(hits('/review/file'), before.file + 1);
 });
 
-test('an edit to the open file alone refetches it', async () => {
+test('a refresh with no file open asks only for the tree', async () => {
   await loadTree();
-  await loadFile('a.ts');
-  await poll();
   const before = hits('/review/file');
-
-  // What the agent does most: rewrite a file that git already calls modified.
-  // Nothing else about the workspace moves, so this hash is the only thing
-  // that says the pane is showing text that is no longer there.
-  answers['/review/status'] = status({ fileHash: 'rewritten' });
-  await poll();
-
-  assert.equal(hits('/review/file'), before + 1);
-});
-
-test('the poll names the open file, so the server can hash it', async () => {
-  await loadTree();
-  await loadFile('a.ts');
-  await poll();
-  assert.equal(
-    requested.filter((url) => url.includes('/review/status')).at(-1)?.includes('path=a.ts'),
-    true,
-  );
-});
-
-test('a moved fingerprint with no file open refetches only the tree', async () => {
-  await loadTree();
-  await poll();
-  const before = hits('/review/file');
-
-  answers['/review/status'] = status({ reviewHash: 'now-there-is-one' });
-  await poll();
+  await refresh();
   assert.equal(hits('/review/file'), before);
+  assert.equal(hits('/review/tree'), 2);
 });
 
-test('a failed poll is silent', async () => {
+test('there is no fingerprint request at all', async () => {
+  await loadTree();
+  await loadFile('a.ts');
+  await refresh();
+  // The endpoint is gone from the orchestrator too. An idle review makes no
+  // request of any kind.
+  assert.equal(hits('/review/status'), 0);
+});
+
+test('a failed refresh reports itself the way any fetch does', async () => {
   await loadTree();
   failWith = 'the network went away';
-  await poll();
-  // An error banner every five seconds on a flaky link is worse than
-  // silence, and the next poll will answer.
-  assert.equal(useReview.getState().error, null);
+  await refresh();
+  // Unlike a poll, this fires because the reader came back and is looking at
+  // it — so silence would be the wrong answer.
+  assert.equal(useReview.getState().error, 'the network went away');
 });
 
-test('a poll while a write is in flight is skipped', async () => {
+test('a refresh while a write is in flight is skipped', async () => {
   await loadTree();
   useReview.setState({ saving: true });
   const before = requested.length;
-  await poll();
+  await refresh();
   // Refetching here would fight the optimistic annotation list.
   assert.equal(requested.length, before);
   useReview.setState({ saving: false });
 });
 
-test('a poll while a composer is open is skipped', async () => {
+test('a refresh while a composer is open is skipped', async () => {
   await loadTree();
   useReview.setState({ composing: 4 });
   const before = requested.length;
-  await poll();
+  await refresh();
   // Refetching would drop what is being typed.
   assert.equal(requested.length, before);
   useReview.setState({ composing: null });
@@ -271,7 +230,7 @@ test('nothing is fetched before a session is set', async () => {
   useReview.setState({ sessionId: null });
   await loadTree();
   await loadFile('a.ts');
-  await poll();
+  await refresh();
   assert.deepEqual(requested, []);
 });
 
@@ -393,7 +352,10 @@ test('setting a base refetches the tree and the open file', async () => {
   await loadFile('a.ts');
   const before = { tree: hits('/review/tree'), file: hits('/review/file') };
 
-  answers['/review/base'] = { rev: 'main', commit: 'abcdef1234' };
+  answers['/review/base'] = {
+    rev: 'main',
+    repos: [{ path: '', name: 'workspace', head: 'abc', baseCommit: 'abcdef1234' }],
+  };
   await setBase('main');
 
   // The base changes what a status and a diff mean, so both are answers to a
@@ -405,7 +367,7 @@ test('setting a base refetches the tree and the open file', async () => {
 
 test('clearing the base sends null', async () => {
   await loadTree();
-  answers['/review/base'] = { rev: '', commit: '' };
+  answers['/review/base'] = { rev: '', repos: [] };
   await setBase(null);
   assert.ok(requested.some((url) => url.includes('/review/base')));
 });

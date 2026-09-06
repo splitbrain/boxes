@@ -4,8 +4,10 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
+import { discoverRepos } from './repos.ts';
 import {
   buildTree,
+  markRepoRoots,
   MAX_ENTRIES,
   reviewTree,
   treePaths,
@@ -160,40 +162,128 @@ describe('reviewTree', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('a repository is listed by git, ignored files included in the ignoring', async () => {
-    const run = (...args: string[]): void => {
-      execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
-    };
-    run('init', '-q');
-    run('config', 'user.email', 'test@example.com');
-    run('config', 'user.name', 'test');
-    writeFileSync(join(dir, '.gitignore'), 'ignored.txt\n');
-    writeFileSync(join(dir, 'tracked.ts'), 'x\n');
-    writeFileSync(join(dir, 'untracked.ts'), 'x\n');
-    writeFileSync(join(dir, 'ignored.txt'), 'x\n');
-    writeFileSync(join(dir, 'REVIEW.md'), '# Code Review\n');
-    run('add', 'tracked.ts', '.gitignore');
-    run('commit', '-q', '-m', 'init');
+  /** Runs git in a workspace-relative directory. */
+  function git(rel: string, ...args: string[]): void {
+    execFileSync('git', args, { cwd: rel === '' ? dir : join(dir, rel), stdio: 'pipe' });
+  }
 
-    const { entries, truncated } = await reviewTree(dir, true);
-    const names = [...treePaths(entries)].toSorted();
-    // Tracked and untracked, but not gitignored, and never REVIEW.md.
-    assert.deepEqual(names, ['.gitignore', 'tracked.ts', 'untracked.ts']);
+  /** Initialises a repository at a workspace-relative path. */
+  function repo(rel: string): void {
+    mkdirSync(rel === '' ? dir : join(dir, rel), { recursive: true });
+    git(rel, 'init', '-q', '-b', 'main');
+    git(rel, 'config', 'user.email', 'test@example.com');
+    git(rel, 'config', 'user.name', 'test');
+  }
+
+  /** Writes a file, creating the directories above it. */
+  function file(rel: string, content = 'x\n'): void {
+    const full = join(dir, rel);
+    mkdirSync(full.slice(0, full.lastIndexOf('/')), { recursive: true });
+    writeFileSync(full, content);
+  }
+
+  /** The merged tree of the workspace, as a sorted path list. */
+  async function paths(): Promise<string[]> {
+    const { entries } = await reviewTree(await discoverRepos(dir));
+    return [...treePaths(entries)].toSorted();
+  }
+
+  test('a repository is listed by git, ignored files included in the ignoring', async () => {
+    repo('');
+    file('.gitignore', 'ignored.txt\n');
+    file('tracked.ts');
+    file('untracked.ts');
+    file('ignored.txt');
+    file('REVIEW.md', '# Code Review\n');
+    git('', 'add', 'tracked.ts', '.gitignore');
+    git('', 'commit', '-q', '-m', 'init');
+
+    const { entries, truncated } = await reviewTree(await discoverRepos(dir));
+    // Tracked and untracked, but not gitignored, and never the workspace's
+    // own REVIEW.md.
+    assert.deepEqual(
+      [...treePaths(entries)].toSorted(),
+      ['.gitignore', 'tracked.ts', 'untracked.ts'],
+    );
     assert.equal(truncated, false);
   });
 
   test('a plain directory falls back to a walk', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'x\n');
-    const { entries } = await reviewTree(dir, false);
-    assert.deepEqual([...treePaths(entries)], ['a.txt']);
+    file('a.txt');
+    assert.deepEqual(await paths(), ['a.txt']);
   });
 
   test('an empty repository still answers, with an empty tree', async () => {
-    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'pipe' });
-    // ls-files reports nothing, which is indistinguishable from "no
-    // repository" — and both lead to the same walk, which finds nothing.
-    const { entries } = await reviewTree(dir, true);
+    repo('');
+    const { entries } = await reviewTree(await discoverRepos(dir));
     assert.deepEqual(entries as TreeEntry[], []);
+  });
+
+  test('two repositories side by side merge into one workspace-relative tree', async () => {
+    repo('repo-a');
+    repo('repo-b');
+    file('repo-a/src/x.ts');
+    file('repo-b/README.md');
+    // The shape the old single-root rule dropped to a plain file browser with
+    // no git at all.
+    assert.deepEqual(await paths(), ['repo-a/src/x.ts', 'repo-b/README.md']);
+  });
+
+  test('the space no repository claims is walked, and shows its loose files', async () => {
+    repo('project');
+    file('project/a.ts');
+    file('notes/todo.md');
+    file('loose.txt');
+    // Inside a repository the project has said what is noise; outside one
+    // nobody has, so everything shows.
+    assert.deepEqual(await paths(), ['loose.txt', 'notes/todo.md', 'project/a.ts']);
+  });
+
+  test('an unclaimed directory holding a repository is walked around it', async () => {
+    repo('projects/foo');
+    file('projects/foo/a.ts');
+    file('projects/note.md');
+    assert.deepEqual(await paths(), ['projects/foo/a.ts', 'projects/note.md']);
+  });
+
+  test('a repository inside a repository contributes its own files, once', async () => {
+    repo('outer');
+    file('outer/a.ts');
+    repo('outer/inner');
+    file('outer/inner/b.txt');
+
+    // The outer repository's `ls-files --others` reports the inner work tree
+    // as a single `inner/` entry, which used to become a nameless row that
+    // 404ed when tapped. The closest-repo filter drops it, and the inner
+    // repository contributes the real files under the same prefix.
+    const listed = await paths();
+    assert.deepEqual(listed, ['outer/a.ts', 'outer/inner/b.txt']);
+    assert.ok(!listed.includes('outer/inner'));
+    assert.ok(!listed.some((path) => path.endsWith('/')));
+  });
+
+  test('a REVIEW.md inside a repository is a file of that project', async () => {
+    repo('repo-a');
+    file('repo-a/REVIEW.md', '# Code Review\n');
+    file('REVIEW.md', '# Code Review\n');
+    // Only `/workspace/REVIEW.md` is the review's own, and it is the one left
+    // out. Which is also why it sits there: outside every repository, so it
+    // cannot be committed by accident.
+    assert.deepEqual(await paths(), ['repo-a/REVIEW.md']);
+  });
+
+  test('repository roots are marked, so the boundaries are visible', async () => {
+    repo('repo-a');
+    file('repo-a/src/x.ts');
+    file('notes/todo.md');
+
+    const map = await discoverRepos(dir);
+    const entries = markRepoRoots((await reviewTree(map)).entries, map);
+    const byName = new Map(entries.map((e) => [e.name, e]));
+    assert.equal(byName.get('repo-a')?.repo, true);
+    assert.equal(byName.get('notes')?.repo, undefined);
+    // And not on a directory inside one, only on its root.
+    assert.equal(byName.get('repo-a')?.children?.[0]?.repo, undefined);
   });
 });
 

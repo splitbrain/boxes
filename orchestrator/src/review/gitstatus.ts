@@ -1,11 +1,16 @@
 import { git, gitOut } from './git.ts';
+import { inWorkspace, type RepoMap } from './repos.ts';
+import { REVIEW_FILE } from './tree.ts';
 
 /**
  * Git file statuses and base-revision resolution.
  *
- * A port of the desktop tool's `internal/gitstatus`. The parsers are pure and
- * take git's output as a string; the two functions that actually run git sit at
- * the bottom and do nothing but call them.
+ * A port of the desktop tool's `internal/gitstatus`, with the workspace layer
+ * on top: a review spans every repository the workspace holds, so the
+ * statuses of all of them are merged into one map and one base *expression*
+ * is resolved separately in each. The parsers are pure and take git's output
+ * as a string; the functions that actually run git sit at the bottom and do
+ * nothing but call them.
  */
 
 /** The git status of a file, as the tree shows it. */
@@ -17,7 +22,7 @@ export type FileStatus =
   | 'deleted'
   | 'conflict';
 
-/** File paths, relative to the review root, to their status. */
+/** File paths to their status, relative to whatever asked for them. */
 export type FileStatuses = Record<string, FileStatus>;
 
 /**
@@ -194,4 +199,62 @@ export async function resolveBase(
   }
 
   return { base: { rev, commit } };
+}
+
+// --- the workspace layer ----------------------------------------------------
+
+/**
+ * The status of every file in the workspace, from every repository in it.
+ *
+ * One `git status` per repository, run in parallel, keys prefixed with the
+ * repository's own path, and the same closest-repo filter the tree runs: a
+ * status contributed by repository `P` for path `p` is dropped when the
+ * closest repository to `P/p` is not `P`. That is what stops an outer
+ * repository reporting an inner work tree as one untracked entry, and what
+ * makes the merged keys disjoint rather than merely last-writer-wins.
+ *
+ * `/workspace/REVIEW.md` is left out for the same reason the tree leaves it
+ * out: it is the review, not a file of it. That only ever comes up when the
+ * workspace is itself a repository, which is the one shape where the review
+ * file is inside one.
+ */
+export async function workspaceStatuses(
+  map: RepoMap,
+  bases: Map<string, Base>,
+): Promise<FileStatuses> {
+  const perRepo = await Promise.all(
+    map.repos.map(async (repo) => {
+      const statuses = await fileStatuses(repo.absolute, bases.get(repo.path) ?? NO_BASE);
+      const owned: FileStatuses = {};
+      for (const [path, status] of Object.entries(statuses ?? {})) {
+        const full = inWorkspace(repo, path);
+        if (full === REVIEW_FILE) continue;
+        if (map.repoFor(full)?.path !== repo.path) continue;
+        owned[full] = status;
+      }
+      return owned;
+    }),
+  );
+  return Object.assign({}, ...perRepo) as FileStatuses;
+}
+
+/**
+ * Resolves one revision expression in every repository of a workspace.
+ *
+ * `main` means main-in-each, through the merge base with that repository's own
+ * HEAD. A repository the revision names nothing in is simply absent from the
+ * result, which leaves it compared against its own working tree — a soft
+ * failure, because a workspace holding one repository on a branch and another
+ * that never heard of it is an ordinary shape, not a broken request.
+ */
+export async function resolveBases(map: RepoMap, rev: string): Promise<Map<string, Base>> {
+  const bases = new Map<string, Base>();
+  if (rev === '') return bases;
+  const resolved = await Promise.all(
+    map.repos.map(async (repo) => [repo.path, await resolveBase(repo.absolute, rev)] as const),
+  );
+  for (const [path, result] of resolved) {
+    if ('base' in result) bases.set(path, result.base);
+  }
+  return bases;
 }

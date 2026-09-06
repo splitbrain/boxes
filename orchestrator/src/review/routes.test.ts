@@ -14,9 +14,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
 import type {
   ReviewAnnotationsResponse,
-  ReviewBase,
+  ReviewBaseResponse,
   ReviewFileResponse,
-  ReviewStatusResponse,
   ReviewTreeResponse,
 } from '../../../shared/types.ts';
 import { buildApp, type Orchestrator } from '../app.ts';
@@ -31,6 +30,11 @@ import { treePaths } from './tree.ts';
  * That is the payoff of workspaces being directories: what used to need a
  * container to read a file now needs a directory, so the API can be driven
  * end to end in a unit test.
+ *
+ * The review is over the *workspace*, so most of what is worth pinning down
+ * here is a workspace shape: two clones side by side, a clone beside a stray
+ * directory, a repository inside a repository. Each of those used to turn the
+ * whole review into a plain file browser with no git in it, or worse.
  */
 
 let dir: string;
@@ -47,11 +51,10 @@ function insertSession(id: string): string {
   const now = Date.now();
   db.prepare(
     `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
-       network_name, subnet, ws_volume, home_volume, workspace_dir, review_root,
-       review_base_rev, review_base_commit, status, current_thread_id,
-       created_at, last_active_at)
+       network_name, subnet, ws_volume, home_volume, workspace_dir,
+       review_base_rev, status, current_thread_id, created_at, last_active_at)
      VALUES (?, 'test', 'DEFAULT', 'img', '["claude-agent-acp"]', 'c1',
-       ?, '10.200.0.0/24', '', ?, ?, NULL, NULL, NULL, 'running', NULL, ?, ?)`,
+       ?, '10.200.0.0/24', '', ?, ?, NULL, 'running', NULL, ?, ?)`,
   ).run(id, `sn-${id}`, `home-${id}`, workspace(id), now, now);
   const path = workspace(id);
   mkdirSync(path, { recursive: true });
@@ -63,11 +66,10 @@ function insertVolumeSession(id: string): void {
   const now = Date.now();
   db.prepare(
     `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
-       network_name, subnet, ws_volume, home_volume, workspace_dir, review_root,
-       review_base_rev, review_base_commit, status, current_thread_id,
-       created_at, last_active_at)
+       network_name, subnet, ws_volume, home_volume, workspace_dir,
+       review_base_rev, status, current_thread_id, created_at, last_active_at)
      VALUES (?, 'legacy', 'DEFAULT', 'img', '["claude-agent-acp"]', 'c1',
-       ?, '10.200.0.0/24', ?, ?, NULL, NULL, NULL, NULL, 'stopped', NULL, ?, ?)`,
+       ?, '10.200.0.0/24', ?, ?, NULL, NULL, 'stopped', NULL, ?, ?)`,
   ).run(id, `sn-${id}`, `ws-${id}`, `home-${id}`, now, now);
 }
 
@@ -116,7 +118,7 @@ async function get<T>(url: string): Promise<{ status: number; body: T }> {
 // --- the tree ---------------------------------------------------------------
 
 describe('the tree endpoint', () => {
-  test('a cloned project roots at its subdirectory, with git on', async () => {
+  test('a cloned project is browsable under its own prefix, with git on', async () => {
     const ws = insertSession('aaa');
     // The shape a clone actually leaves: /workspace holds one directory and
     // that is the repository.
@@ -130,14 +132,21 @@ describe('the tree endpoint', () => {
 
     const { status, body } = await get<ReviewTreeResponse>('/api/sessions/aaa/review/tree');
     assert.equal(status, 200);
-    assert.equal(body.root, 'project');
     assert.equal(body.hasGit, true);
-    assert.deepEqual([...treePaths(body.entries)].toSorted(), ['README.md', 'src/app.ts']);
+    assert.deepEqual(
+      body.repos.map((r) => ({ path: r.path, name: r.name })),
+      [{ path: 'project', name: 'project' }],
+    );
+    // Paths are the workspace's, so the repository's own prefix is in them.
+    assert.deepEqual([...treePaths(body.entries)].toSorted(), [
+      'project/README.md',
+      'project/src/app.ts',
+    ]);
     assert.equal(body.hasReview, false);
-    assert.deepEqual(body.base, { rev: '', commit: '' });
+    assert.deepEqual(body.base, { rev: '' });
   });
 
-  test('a workspace that is itself a repository roots at the workspace', async () => {
+  test('a workspace that is itself a repository claims every path in it', async () => {
     const ws = insertSession('bbb');
     initRepo(ws);
     write(ws, 'a.txt', 'x\n');
@@ -145,35 +154,110 @@ describe('the tree endpoint', () => {
     git(ws, 'commit', '-q', '-m', 'init');
 
     const { body } = await get<ReviewTreeResponse>('/api/sessions/bbb/review/tree');
-    assert.equal(body.root, '');
     assert.equal(body.hasGit, true);
+    assert.deepEqual(body.repos.map((r) => r.path), ['']);
+    assert.deepEqual([...treePaths(body.entries)], ['a.txt']);
   });
 
-  test('a workspace with no git degrades to a plain tree', async () => {
+  test('a workspace with no repository browses without the git features', async () => {
     const ws = insertSession('ccc');
     write(ws, 'notes/todo.txt', 'x\n');
 
     const { body } = await get<ReviewTreeResponse>('/api/sessions/ccc/review/tree');
     assert.equal(body.hasGit, false);
+    assert.deepEqual(body.repos, []);
     // Everything still works but the git features, the way the desktop tool
     // degrades outside a repository.
     assert.deepEqual([...treePaths(body.entries)], ['notes/todo.txt']);
     assert.deepEqual(body.statuses, {});
   });
 
-  test('two subdirectories are ambiguous, so the workspace is the root', async () => {
+  test('two clones side by side both keep their git', async () => {
     const ws = insertSession('ddd');
     for (const name of ['one', 'two']) {
-      mkdirSync(join(ws, name));
-      initRepo(join(ws, name));
-      write(ws, `${name}/a.txt`, 'x\n');
+      const repo = join(ws, name);
+      mkdirSync(repo);
+      initRepo(repo);
+      write(repo, 'a.txt', `${name}\n`);
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'init');
+      write(repo, 'a.txt', 'changed\n');
     }
+    // The most common multi-repository shape, and the one that used to get
+    // the worst mode: a filesystem walk with no statuses and no diffs.
     const { body } = await get<ReviewTreeResponse>('/api/sessions/ddd/review/tree');
-    assert.equal(body.root, '');
-    assert.equal(body.hasGit, false);
+    assert.equal(body.hasGit, true);
+    assert.deepEqual(body.repos.map((r) => r.path), ['one', 'two']);
+    assert.equal(body.statuses['one/a.txt'], 'modified');
+    assert.equal(body.statuses['two/a.txt'], 'modified');
   });
 
-  test('the resolved root is remembered on the session row', async () => {
+  test('a clone beside a stray directory keeps its git, and the stray shows too', async () => {
+    const ws = insertSession('str');
+    const repo = join(ws, 'project');
+    mkdirSync(repo);
+    initRepo(repo);
+    write(repo, 'a.txt', 'x\n');
+    write(ws, 'notes/todo.md', 'x\n');
+
+    const { body } = await get<ReviewTreeResponse>('/api/sessions/str/review/tree');
+    assert.equal(body.hasGit, true);
+    assert.equal(body.statuses['project/a.txt'], 'untracked');
+    // Outside every repository there is no .gitignore to consult, so loose
+    // files all show — and they have no status at all.
+    assert.deepEqual([...treePaths(body.entries)].toSorted(), [
+      'notes/todo.md',
+      'project/a.txt',
+    ]);
+    assert.equal(body.statuses['notes/todo.md'], undefined);
+  });
+
+  test('a clone one level deeper is found', async () => {
+    const ws = insertSession('dpt');
+    const repo = join(ws, 'projects', 'foo');
+    mkdirSync(repo, { recursive: true });
+    initRepo(repo);
+    write(repo, 'a.txt', 'x\n');
+
+    const { body } = await get<ReviewTreeResponse>('/api/sessions/dpt/review/tree');
+    assert.deepEqual(body.repos.map((r) => r.path), ['projects/foo']);
+    assert.equal(body.statuses['projects/foo/a.txt'], 'untracked');
+  });
+
+  test('a repository inside a repository is listed, with no ghost row', async () => {
+    const ws = insertSession('nst');
+    initRepo(ws);
+    write(ws, 'a.txt', 'x\n');
+    const inner = join(ws, 'inner');
+    mkdirSync(inner);
+    initRepo(inner);
+    write(inner, 'b.txt', 'y\n');
+
+    const { body } = await get<ReviewTreeResponse>('/api/sessions/nst/review/tree');
+    assert.deepEqual(body.repos.map((r) => r.path), ['', 'inner']);
+    // The outer repository's `ls-files --others` reports the inner work tree
+    // as one `inner/` entry, which used to become a nameless row that 404ed
+    // when tapped. The inner repository's own files are here instead.
+    assert.deepEqual([...treePaths(body.entries)].toSorted(), ['a.txt', 'inner/b.txt']);
+    assert.equal(body.statuses['inner'], undefined);
+    assert.equal(body.statuses['inner/b.txt'], 'untracked');
+  });
+
+  test('the repository roots are marked in the tree', async () => {
+    const ws = insertSession('mrk');
+    const repo = join(ws, 'project');
+    mkdirSync(repo);
+    initRepo(repo);
+    write(repo, 'a.txt', 'x\n');
+    write(ws, 'notes/todo.md', 'x\n');
+
+    const { body } = await get<ReviewTreeResponse>('/api/sessions/mrk/review/tree');
+    const byName = new Map(body.entries.map((e) => [e.name, e]));
+    assert.equal(byName.get('project')?.repo, true);
+    assert.equal(byName.get('notes')?.repo, undefined);
+  });
+
+  test('nothing about a root is stored on the session row', async () => {
     const ws = insertSession('eee');
     const repo = join(ws, 'project');
     mkdirSync(repo);
@@ -181,13 +265,16 @@ describe('the tree endpoint', () => {
     write(repo, 'a.txt', 'x\n');
 
     await get<ReviewTreeResponse>('/api/sessions/eee/review/tree');
-    const row = db.prepare('SELECT review_root FROM sessions WHERE id = ?').get('eee') as {
-      review_root: string;
-    };
-    assert.equal(row.review_root, 'project');
+    // There is no root to remember: /workspace is the root, and which
+    // repository a path belongs to is derived from the path.
+    const columns = (db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    assert.ok(!columns.includes('review_root'));
+    assert.ok(!columns.includes('review_base_commit'));
   });
 
-  test('a repository that appears later takes over as the root', async () => {
+  test('a repository that appears later is picked up by the next tree fetch', async () => {
     const ws = insertSession('ggg');
     // What a curious user does: open the review on a fresh box, before the
     // agent has fetched anything.
@@ -202,12 +289,14 @@ describe('the tree endpoint', () => {
     git(repo, 'add', '.');
     git(repo, 'commit', '-q', '-m', 'init');
 
+    // The tree fetch is the clock: it rediscovers, so there is no TTL to be
+    // wrong about and no root decided before the repository existed.
     const { body } = await get<ReviewTreeResponse>('/api/sessions/ggg/review/tree');
-    assert.equal(body.root, 'project');
     assert.equal(body.hasGit, true);
+    assert.deepEqual(body.repos.map((r) => r.path), ['project']);
   });
 
-  test('a root that already holds a review stays where it is', async () => {
+  test('a review written before a clone stays the workspace review', async () => {
     const ws = insertSession('hhh');
     write(ws, 'notes.txt', 'x\n');
     await orchestrator.app.inject({
@@ -223,12 +312,34 @@ describe('the tree endpoint', () => {
     git(repo, 'add', '.');
     git(repo, 'commit', '-q', '-m', 'init');
 
-    // Re-rooting now would leave REVIEW.md, and the comment in it, outside
-    // the review — so the root does not move.
+    // REVIEW.md is at /workspace and stays there whatever the agent clones,
+    // so a comment written before the clone is still in the review after it.
     const { body } = await get<ReviewTreeResponse>('/api/sessions/hhh/review/tree');
-    assert.equal(body.root, '');
-    assert.equal(body.hasGit, false);
+    assert.equal(body.hasGit, true);
     assert.deepEqual(body.counts, { 'notes.txt': 1 });
+    assert.equal(existsSync(join(ws, 'REVIEW.md')), true);
+    assert.equal(existsSync(join(repo, 'REVIEW.md')), false);
+  });
+
+  test('the workspace REVIEW.md is not in any repository status', async () => {
+    const ws = insertSession('out');
+    initRepo(ws);
+    write(ws, 'code.ts', 'x\n');
+    git(ws, 'add', '.');
+    git(ws, 'commit', '-q', '-m', 'init');
+    await orchestrator.app.inject({
+      method: 'PUT',
+      url: '/api/sessions/out/review/annotations',
+      payload: { path: 'code.ts', line: 1, comment: 'x' },
+    });
+
+    const { body } = await get<ReviewTreeResponse>('/api/sessions/out/review/tree');
+    // It is a real untracked file of this repository, since the workspace is
+    // one — but the tree and the statuses both leave it out, because it is
+    // the review rather than a file of it.
+    assert.equal(body.hasReview, true);
+    assert.ok(![...treePaths(body.entries)].includes('REVIEW.md'));
+    assert.equal(body.statuses['REVIEW.md'], undefined);
   });
 
   test('a file the change deleted is still listed', async () => {
@@ -667,42 +778,54 @@ describe('deleting the review', () => {
 // --- the base revision ------------------------------------------------------
 
 describe('the base revision', () => {
-  /** A repository with a main commit and a feature branch on top. */
+  /** A repository with a main commit and a feature branch on top of it. */
+  function branchRepo(ws: string, at = ''): string {
+    const repo = at === '' ? ws : join(ws, at);
+    mkdirSync(repo, { recursive: true });
+    initRepo(repo);
+    // Repository-specific content, so two built the same way in the same
+    // second do not end up with the same commit ids.
+    write(repo, 'base.txt', `${at}\n`);
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'init');
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    write(repo, 'mine.txt', 'mine\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'feature work');
+    return repo;
+  }
+
+  /** A session whose workspace is itself such a repository. */
   function branched(id: string): string {
-    const ws = insertSession(id);
-    initRepo(ws);
-    write(ws, 'base.txt', 'x\n');
-    git(ws, 'add', '.');
-    git(ws, 'commit', '-q', '-m', 'init');
-    git(ws, 'checkout', '-q', '-b', 'feature');
-    write(ws, 'mine.txt', 'mine\n');
-    git(ws, 'add', '.');
-    git(ws, 'commit', '-q', '-m', 'feature work');
-    return ws;
+    return branchRepo(insertSession(id));
   }
 
   /** PUT the base. */
-  async function setBase(id: string, rev: string | null): Promise<{ status: number; body: ReviewBase }> {
+  async function setBase(
+    id: string,
+    rev: string | null,
+  ): Promise<{ status: number; body: ReviewBaseResponse }> {
     const res = await orchestrator.app.inject({
       method: 'PUT',
       url: `/api/sessions/${id}/review/base`,
       payload: { rev },
     });
-    return { status: res.statusCode, body: res.json() as ReviewBase };
+    return { status: res.statusCode, body: res.json() as ReviewBaseResponse };
   }
 
-  test('a branch resolves through the merge base and is remembered', async () => {
+  test('a branch resolves through the merge base and is remembered as an expression', async () => {
     const ws = branched('aaa');
     const { status, body } = await setBase('aaa', 'main');
     assert.equal(status, 200);
     assert.equal(body.rev, 'main');
-    assert.equal(body.commit, git(ws, 'merge-base', 'main', 'HEAD').trim());
+    assert.equal(body.repos[0]!.baseCommit, git(ws, 'merge-base', 'main', 'HEAD').trim());
 
+    // Only the expression is stored: what it resolves to is a different commit
+    // in every repository, so it is derived rather than kept.
     const row = db
-      .prepare('SELECT review_base_rev, review_base_commit FROM sessions WHERE id = ?')
-      .get('aaa') as { review_base_rev: string; review_base_commit: string };
+      .prepare('SELECT review_base_rev FROM sessions WHERE id = ?')
+      .get('aaa') as { review_base_rev: string };
     assert.equal(row.review_base_rev, 'main');
-    assert.equal(row.review_base_commit, body.commit);
   });
 
   test('with a base set, the branch own changes are what is reported', async () => {
@@ -732,16 +855,17 @@ describe('the base revision', () => {
     assert.deepEqual(after.body.diff.lines, { 1: 'added' });
   });
 
-  test('null clears the base back to HEAD', async () => {
+  test('null clears the base back to the working tree', async () => {
     branched('ddd');
     await setBase('ddd', 'main');
     const { body } = await setBase('ddd', null);
-    assert.deepEqual(body, { rev: '', commit: '' });
+    assert.equal(body.rev, '');
+    assert.deepEqual(body.repos.map((r) => r.baseCommit), ['']);
     const tree = await get<ReviewTreeResponse>('/api/sessions/ddd/review/tree');
-    assert.deepEqual(tree.body.base, { rev: '', commit: '' });
+    assert.deepEqual(tree.body.base, { rev: '' });
   });
 
-  test('an unknown revision is refused by name', async () => {
+  test('a revision that resolves nowhere is refused by name', async () => {
     branched('eee');
     const res = await orchestrator.app.inject({
       method: 'PUT',
@@ -752,7 +876,53 @@ describe('the base revision', () => {
     assert.match((res.json() as { error: string }).error, /unknown revision/);
   });
 
-  test('a workspace with no git cannot have a base', async () => {
+  test('one expression means the same branch in each repository', async () => {
+    const ws = insertSession('two');
+    branchRepo(ws, 'repo-a');
+    branchRepo(ws, 'repo-b');
+
+    const { body } = await setBase('two', 'main');
+    assert.equal(body.repos.length, 2);
+    assert.ok(body.repos.every((r) => r.baseCommit !== ''));
+    // Resolved separately, so they are different commits.
+    assert.notEqual(body.repos[0]!.baseCommit, body.repos[1]!.baseCommit);
+
+    const tree = await get<ReviewTreeResponse>('/api/sessions/two/review/tree');
+    assert.equal(tree.body.statuses['repo-a/mine.txt'], 'added');
+    assert.equal(tree.body.statuses['repo-b/mine.txt'], 'added');
+  });
+
+  test('a repository the revision names nothing in falls back to its working tree', async () => {
+    const ws = insertSession('mix');
+    git(branchRepo(ws, 'repo-a'), 'branch', 'release');
+    const other = join(ws, 'repo-b');
+    mkdirSync(other, { recursive: true });
+    initRepo(other);
+    write(other, 'b.txt', 'x\n');
+    git(other, 'add', '.');
+    git(other, 'commit', '-q', '-m', 'init');
+    write(other, 'b.txt', 'changed\n');
+
+    // Resolved in one, unknown in the other. A 400 would refuse an ordinary
+    // shape, so the one it does not name is compared against its own tree.
+    const { status, body } = await setBase('mix', 'release');
+    assert.equal(status, 200);
+    assert.deepEqual(
+      body.repos.map((r) => [r.path, r.baseCommit !== '']),
+      [
+        ['repo-a', true],
+        ['repo-b', false],
+      ],
+    );
+
+    const tree = await get<ReviewTreeResponse>('/api/sessions/mix/review/tree');
+    assert.equal(tree.body.statuses['repo-b/b.txt'], 'modified');
+    // And the tree reports the same resolution, so the header can say where
+    // the revision landed.
+    assert.deepEqual(tree.body.repos.map((r) => r.baseCommit !== ''), [true, false]);
+  });
+
+  test('a workspace with no repository cannot have a base', async () => {
     const ws = insertSession('fff');
     write(ws, 'a.txt', 'x\n');
     const res = await orchestrator.app.inject({
@@ -764,80 +934,52 @@ describe('the base revision', () => {
   });
 });
 
-// --- the poll ---------------------------------------------------------------
+// --- freshness --------------------------------------------------------------
 
-describe('the status fingerprint', () => {
-  test('it moves when the review, the working tree or HEAD moves', async () => {
+describe('freshness is the fetch', () => {
+  test('there is no fingerprint endpoint to poll', async () => {
     const ws = insertSession('aaa');
-    initRepo(ws);
-    write(ws, 'code.ts', 'one\ntwo\n');
-    git(ws, 'add', '.');
-    git(ws, 'commit', '-q', '-m', 'init');
-
-    const first = (await get<ReviewStatusResponse>('/api/sessions/aaa/review/status')).body;
-    assert.equal(first.reviewHash, '');
-    assert.match(first.headCommit, /^[0-9a-f]{40}$/);
-
-    // Asking again with nothing changed must answer the same, or the poll
-    // would refetch everything every few seconds.
-    assert.deepEqual((await get<ReviewStatusResponse>('/api/sessions/aaa/review/status')).body, first);
-
-    await orchestrator.app.inject({
-      method: 'PUT',
-      url: '/api/sessions/aaa/review/annotations',
-      payload: { path: 'code.ts', line: 1, comment: 'x' },
-    });
-    const afterComment = (await get<ReviewStatusResponse>('/api/sessions/aaa/review/status')).body;
-    assert.notEqual(afterComment.reviewHash, '');
-
-    write(ws, 'code.ts', 'one\nTWO\n');
-    const afterEdit = (await get<ReviewStatusResponse>('/api/sessions/aaa/review/status')).body;
-    assert.notEqual(afterEdit.statusHash, afterComment.statusHash);
-
-    git(ws, 'add', '.');
-    git(ws, 'commit', '-q', '-m', 'second');
-    const afterCommit = (await get<ReviewStatusResponse>('/api/sessions/aaa/review/status')).body;
-    assert.notEqual(afterCommit.headCommit, afterEdit.headCommit);
-  });
-
-  test('an edit to the open file moves the fingerprint on its own', async () => {
-    const ws = insertSession('fff');
-    initRepo(ws);
-    write(ws, 'code.ts', 'one\ntwo\n');
-    git(ws, 'add', '.');
-    git(ws, 'commit', '-q', '-m', 'init');
-    write(ws, 'code.ts', 'one\nTWO\n');
-
-    const before = (
-      await get<ReviewStatusResponse>('/api/sessions/fff/review/status?path=code.ts')
-    ).body;
-    assert.notEqual(before.fileHash, '');
-
-    // Already modified, so its status letter does not change and neither does
-    // HEAD. Without the file's own hash the pane would keep showing the text
-    // the agent has just replaced.
-    write(ws, 'code.ts', 'one\nthree\n');
-    const after = (
-      await get<ReviewStatusResponse>('/api/sessions/fff/review/status?path=code.ts')
-    ).body;
-    assert.equal(after.statusHash, before.statusHash);
-    assert.equal(after.headCommit, before.headCommit);
-    assert.notEqual(after.fileHash, before.fileHash);
-  });
-
-  test('a fingerprint asked for without a file carries no file hash', async () => {
-    const ws = insertSession('ggg');
     write(ws, 'a.txt', 'x\n');
-    const { body } = await get<ReviewStatusResponse>('/api/sessions/ggg/review/status');
-    assert.equal(body.fileHash, '');
+    // The poll is gone, and with it the idle cost of an open review. Every
+    // fetch below reads the filesystem on the spot, which is what makes
+    // freshness-on-arrival enough.
+    const res = await orchestrator.app.inject({ url: '/api/sessions/aaa/review/status' });
+    assert.equal(res.statusCode, 404);
   });
 
-  test('polling a review does not hold off the reaper', async () => {
+  test('a tree fetch sees what changed since the last one', async () => {
+    const ws = insertSession('ccc');
+    initRepo(ws);
+    write(ws, 'code.ts', 'one\ntwo\n');
+    git(ws, 'add', '.');
+    git(ws, 'commit', '-q', '-m', 'init');
+
+    const before = await get<ReviewTreeResponse>('/api/sessions/ccc/review/tree');
+    assert.equal(before.body.statuses['code.ts'], undefined);
+
+    write(ws, 'code.ts', 'one\nTWO\n');
+    const after = await get<ReviewTreeResponse>('/api/sessions/ccc/review/tree');
+    assert.equal(after.body.statuses['code.ts'], 'modified');
+  });
+
+  test('a file fetch sees an edit the agent made to it', async () => {
+    const ws = insertSession('ddd');
+    initRepo(ws);
+    write(ws, 'code.ts', 'one\ntwo\n');
+    git(ws, 'add', '.');
+    git(ws, 'commit', '-q', '-m', 'init');
+    await get<ReviewTreeResponse>('/api/sessions/ddd/review/tree');
+
+    write(ws, 'code.ts', 'one\nTWO\n');
+    const { body } = await get<ReviewFileResponse>('/api/sessions/ddd/review/file?path=code.ts');
+    assert.equal(body.content, 'one\nTWO\n');
+  });
+
+  test('reading a review does not hold off the reaper', async () => {
     const ws = insertSession('bbb');
     write(ws, 'a.txt', 'x\n');
     db.prepare('UPDATE sessions SET last_active_at = 0 WHERE id = ?').run('bbb');
 
-    await get<ReviewStatusResponse>('/api/sessions/bbb/review/status');
     await get<ReviewTreeResponse>('/api/sessions/bbb/review/tree');
     await get<ReviewFileResponse>('/api/sessions/bbb/review/file?path=a.txt');
 
@@ -846,12 +988,5 @@ describe('the status fingerprint', () => {
       last_active_at: number;
     };
     assert.equal(row.last_active_at, 0);
-  });
-
-  test('a workspace with no git still has a fingerprint', async () => {
-    const ws = insertSession('ccc');
-    write(ws, 'a.txt', 'x\n');
-    const { body } = await get<ReviewStatusResponse>('/api/sessions/ccc/review/status');
-    assert.deepEqual(body, { reviewHash: '', headCommit: '', statusHash: '', fileHash: '' });
   });
 });

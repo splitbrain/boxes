@@ -308,20 +308,34 @@ diff hunk — including the lines that were deleted, which the file itself canno
 show. **Compare against** a branch, tag or commit to review a whole branch's
 work rather than only what is uncommitted.
 
-Comments are written to a `REVIEW.md` at the root of what you are reviewing, in
-the workspace. That is the point of having this here rather than beside it:
-**Hand to agent** opens the thread with "Read REVIEW.md and address the comments
-in it." waiting in the composer — staged, not sent. The agent can edit and
-delete the file too, and a comment whose code has since moved follows it, or is
-marked as no longer matching.
+The review is over the whole workspace, not over one repository in it. A box
+that holds two clones side by side, a dependency checked out beside them, or a
+repository inside a repository browses as one tree, and each file is shown with
+the status and diff of the repository it is actually in — repository roots are
+marked so you can see where one stops and the next begins. Files that are in no
+repository show too, without the git parts. There is nothing to pick and
+nothing to switch between. **Compare against** takes one revision for the whole
+workspace and resolves it in each repository separately, so `main` means
+main-in-each; where it landed, and where it named nothing, is on the picker.
+
+Comments are written to a single `REVIEW.md` at the top of the workspace, with
+workspace-relative paths in it. That is the point of having this here rather
+than beside it: **Hand to agent** opens the thread with "Read REVIEW.md and
+address the comments in it." waiting in the composer — staged, not sent. It is
+the same one line however many repositories the box holds, and because the file
+sits above all of them it cannot be committed into one by accident. The agent
+can edit and delete it too, and a comment whose code has since moved follows
+it, or is marked as no longer matching.
 
 The format is the desktop [`review`](https://github.com/splitbrain/review)
-tool's, byte for byte, so a review started in one can be continued in the other.
+tool's, so a review reads the same in both.
 
 Reviewing needs no running container — the files are a directory on the
 orchestrator's data volume — so the natural moment, once the agent is done and
-the box has idled out, costs nothing. A session created before Boxes stored
-workspaces this way says so and asks you to start it once, which migrates it.
+the box has idled out, costs nothing. Nothing is polled while a review sits
+open: it refetches when you arrive, when you close a file back to the list, and
+when you come back to the tab. A session created before Boxes stored workspaces
+this way says so and asks you to start it once, which migrates it.
 
 **Configure the agent.** The sliders in the session list header open **Agent
 configuration**: an `AGENTS.md`, skills and slash commands, managed here rather

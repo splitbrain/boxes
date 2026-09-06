@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
+import { discoverRepos } from './repos.ts';
 import {
   baseRev,
   fileStatuses,
@@ -12,6 +13,8 @@ import {
   parsePathList,
   parsePorcelain,
   resolveBase,
+  resolveBases,
+  workspaceStatuses,
 } from './gitstatus.ts';
 
 /** Git statuses and base resolution, ported from the Go implementation's. */
@@ -192,5 +195,127 @@ describe('over a real repository', () => {
     } finally {
       rmSync(bare, { recursive: true, force: true });
     }
+  });
+});
+
+// --- across a whole workspace ------------------------------------------------
+
+describe('over a workspace of several repositories', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'boxes-wsstatus-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Runs git in a workspace-relative directory. */
+  const git = (rel: string, ...args: string[]): string =>
+    execFileSync('git', args, {
+      cwd: rel === '' ? dir : join(dir, rel),
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+
+  /** A repository with one committed file in it. */
+  function repo(rel: string): void {
+    mkdirSync(rel === '' ? dir : join(dir, rel), { recursive: true });
+    git(rel, 'init', '-q', '-b', 'main');
+    git(rel, 'config', 'user.email', 'test@example.com');
+    git(rel, 'config', 'user.name', 'test');
+    // Repository-specific content, so two repositories built the same way in
+    // the same second do not end up with the same commit id.
+    file(rel === '' ? 'tracked.txt' : `${rel}/tracked.txt`, `${rel}\n`);
+    git(rel, 'add', '.');
+    git(rel, 'commit', '-q', '-m', 'init');
+  }
+
+  /** Writes a workspace-relative file, creating the directories above it. */
+  function file(rel: string, content = 'x\n'): void {
+    const full = join(dir, rel);
+    mkdirSync(full.slice(0, full.lastIndexOf('/')), { recursive: true });
+    writeFileSync(full, content);
+  }
+
+  /** The merged statuses of the workspace, against each repository's HEAD. */
+  async function statuses(rev = ''): Promise<Record<string, string>> {
+    const map = await discoverRepos(dir);
+    return workspaceStatuses(map, await resolveBases(map, rev));
+  }
+
+  test('every repository contributes, under its own prefix', async () => {
+    repo('repo-a');
+    repo('repo-b');
+    file('repo-a/tracked.txt', 'changed\n');
+    file('repo-b/new.txt');
+
+    assert.deepEqual(await statuses(), {
+      'repo-a/tracked.txt': 'modified',
+      'repo-b/new.txt': 'untracked',
+    });
+  });
+
+  test('a nested repository owns its own files, and the outer one does not claim it', async () => {
+    repo('outer');
+    repo('outer/inner');
+    file('outer/inner/new.txt');
+
+    const merged = await statuses();
+    // The inner repository's own answer, at its workspace-relative path — and
+    // not the outer repository's `inner/` for the whole work tree.
+    assert.equal(merged['outer/inner/new.txt'], 'untracked');
+    assert.equal(merged['outer/inner'], undefined);
+    assert.equal(merged['outer/inner/tracked.txt'], undefined);
+  });
+
+  test('a workspace with no repository has no statuses', async () => {
+    file('notes/todo.md');
+    assert.deepEqual(await statuses(), {});
+  });
+
+  test('one revision resolves separately in each repository', async () => {
+    repo('repo-a');
+    repo('repo-b');
+    for (const name of ['repo-a', 'repo-b']) {
+      git(name, 'checkout', '-q', '-b', 'feature');
+      file(`${name}/feature.txt`);
+      git(name, 'add', '.');
+      git(name, 'commit', '-q', '-m', 'feature work');
+    }
+
+    const map = await discoverRepos(dir);
+    const bases = await resolveBases(map, 'main');
+    assert.equal(bases.size, 2);
+    // Different commits: `main` means main-in-each, not one shared id.
+    assert.notEqual(bases.get('repo-a')!.commit, bases.get('repo-b')!.commit);
+
+    const merged = await workspaceStatuses(map, bases);
+    assert.equal(merged['repo-a/feature.txt'], 'added');
+    assert.equal(merged['repo-b/feature.txt'], 'added');
+  });
+
+  test('a repository the revision names nothing in falls back to its working tree', async () => {
+    repo('repo-a');
+    repo('repo-b');
+    git('repo-a', 'branch', 'release');
+    file('repo-b/tracked.txt', 'changed\n');
+
+    const map = await discoverRepos(dir);
+    const bases = await resolveBases(map, 'release');
+    // Resolved in one, absent from the other — a soft failure rather than a
+    // failed request, because that shape is ordinary.
+    assert.deepEqual([...bases.keys()], ['repo-a']);
+
+    const merged = await workspaceStatuses(map, bases);
+    assert.equal(merged['repo-b/tracked.txt'], 'modified');
+  });
+
+  test('no revision resolves nothing anywhere', async () => {
+    repo('repo-a');
+    const map = await discoverRepos(dir);
+    assert.equal((await resolveBases(map, '')).size, 0);
+    assert.equal((await resolveBases(map, 'no-such-branch')).size, 0);
   });
 });

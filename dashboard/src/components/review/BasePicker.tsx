@@ -1,36 +1,44 @@
 import { GitCompareArrows } from 'lucide-react';
 import { useState } from 'react';
-import type { ReviewBase } from '../../../../shared/types.ts';
+import type { ReviewBase, ReviewRepo } from '../../../../shared/types.ts';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 /**
  * Which revision the review is compared against.
  *
- * Without one, the diff is against the working tree's HEAD: what has not been
- * committed yet. With one, it is against the merge base of that revision and
- * HEAD, so a whole branch's work reads as the change — and commits made on the
- * base branch after branching off do not.
+ * Without one, the diff is against each repository's own working tree: what
+ * has not been committed yet. With one, it is against the merge base of that
+ * revision and that repository's HEAD, so a whole branch's work reads as the
+ * change — and commits made on the base branch after branching off do not.
+ *
+ * One expression for the whole workspace, resolved separately in every
+ * repository it holds: `main` means main-in-each. A revision can name a branch
+ * in one repository and nothing at all in the dependency checked out beside
+ * it, so the picker says where it landed rather than pretending to a single
+ * commit — and a revision that resolves nowhere is the only one refused.
  *
  * A popover with a free-text field rather than a list of branches: the
  * orchestrator does not enumerate refs, and "main" or "HEAD~3" is quicker to
- * type than a list is to scroll on a phone. The revision is resolved server
- * side, so a name that is not a revision comes back as an error rather than
- * silently doing nothing.
+ * type than a list is to scroll on a phone.
  */
 export function BasePicker({
   base,
+  repos,
   busy,
   onSet,
 }: {
   base: ReviewBase;
+  /** The workspace's repositories, each carrying where the revision landed. */
+  repos: ReviewRepo[];
   busy: boolean;
   onSet: (rev: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [rev, setRev] = useState(base.rev);
 
-  const active = base.commit !== '';
+  const active = base.rev !== '';
+  const landed = repos.filter((repo) => repo.baseCommit !== '');
 
   const submit = (): void => {
     const wanted = rev.trim();
@@ -58,7 +66,7 @@ export function BasePicker({
           disabled={busy}
           title={
             active
-              ? `Comparing against ${base.rev} (${base.commit.slice(0, 8)})`
+              ? `Comparing against ${base.rev}${whereLanded(landed.length, repos.length)}`
               : 'Comparing against the working tree'
           }
         >
@@ -116,12 +124,28 @@ export function BasePicker({
             ) : null}
           </div>
           {active ? (
-            <p className="font-mono text-xs text-muted-foreground">
-              now: {base.rev} @ {base.commit.slice(0, 8)}
-            </p>
+            <ul className="flex list-none flex-col gap-0.5 font-mono text-xs text-muted-foreground">
+              {repos.map((repo) => (
+                <li key={repo.path} className="flex items-baseline justify-between gap-2">
+                  <span className="truncate">{repo.name}</span>
+                  {/* A repository the revision names nothing in is compared
+                      against its own working tree rather than failing the
+                      whole request, so it says so instead of a commit. */}
+                  <span className={repo.baseCommit === '' ? 'text-warn' : undefined}>
+                    {repo.baseCommit === '' ? 'working tree' : repo.baseCommit.slice(0, 8)}
+                  </span>
+                </li>
+              ))}
+            </ul>
           ) : null}
         </div>
       </PopoverContent>
     </Popover>
   );
+}
+
+/** " in 2 of 3 repositories", or nothing at all when there is only one. */
+function whereLanded(landed: number, total: number): string {
+  if (total <= 1) return '';
+  return `, in ${landed} of ${total} repositories`;
 }

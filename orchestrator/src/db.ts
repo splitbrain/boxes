@@ -36,19 +36,16 @@ export interface SessionRow {
    */
   workspace_dir: string | null;
   /**
-   * Where the review is rooted, relative to the workspace, or null before it
-   * has been resolved. Empty string means the workspace itself; a name means
-   * that subdirectory, which is the shape a cloned project takes. Re-validated
-   * rather than trusted, since the agent can delete the directory it names.
+   * The revision the review is compared against, as the user gave it — a
+   * branch, a tag, a short id — or null for each repository's own working
+   * tree.
+   *
+   * One expression for the whole workspace, resolved independently in every
+   * repository it holds. What it resolves to is therefore a different commit
+   * in each and in some of them none, so it is derived per request rather
+   * than stored.
    */
-  review_root: string | null;
-  /** The base revision as the user gave it — a branch, a tag, a short id. */
   review_base_rev: string | null;
-  /**
-   * What that revision resolved to, through the merge base with HEAD. Null
-   * means the review compares against the working tree's HEAD.
-   */
-  review_base_commit: string | null;
   status: SessionStatus;
   /**
    * The extra agent set this session was created with, or null for the global
@@ -365,6 +362,19 @@ export const MIGRATIONS: string[] = [
   // nothing to preserve.
   `
   ALTER TABLE pending_requests DROP COLUMN upstream_id;
+  `,
+  // The review becomes the whole workspace rather than one repository in it,
+  // so there is no root to remember: `/workspace` is the root and a repository
+  // is an attribute of a path. With a base resolved separately in every
+  // repository the workspace holds there is no single commit to store either —
+  // only the expression, which `review_base_rev` already is.
+  //
+  // Existing sessions are not migrated. An old REVIEW.md under a subdirectory
+  // stays where it is and is simply not the review any more; it remains a file
+  // of the tree, readable and deletable like any other.
+  `
+  ALTER TABLE sessions DROP COLUMN review_root;
+  ALTER TABLE sessions DROP COLUMN review_base_commit;
   `,
 ];
 

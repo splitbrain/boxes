@@ -448,11 +448,9 @@ export class SessionManager {
       ws_volume: '',
       home_volume: dk.names.homeVolume(id),
       workspace_dir: ws.workspacePath(this.cfg.DATA_DIR, id),
-      // Resolved and remembered on first review, not now: the workspace is
-      // empty at create and the shape a clone leaves is what decides them.
-      review_root: null,
+      // No base revision until the reviewer picks one: a review compares
+      // against each repository's own working tree by default.
       review_base_rev: null,
-      review_base_commit: null,
       status: 'creating',
       agent_set_id: agentSetId,
       current_thread_id: null,
