@@ -246,6 +246,13 @@
  * its own height — and where several shared one message, with the 16px the
  * reasoning row used to carry as well.
  *
+ * Two shapes carry rows, and what separates them is what the action bar has
+ * to work with. A message that is nothing but rows has nothing to copy, so
+ * the bar and every pixel held for it go — that is this rule. A message that
+ * speaks and then goes back to work ends in rows as well, and it does have
+ * something to copy; only the room under its last row is wrong. The rule
+ * after this one moves the bar out of the flow there instead.
+ *
  * A quiet message is one whose content is nothing but the chain-of-thought
  * group and, while the turn runs, the working indicator: no prose, no image,
  * no file, no error. `:has()` asks exactly that — "no child of the content
@@ -283,29 +290,125 @@
     ) {
     padding-bottom: calc(2 * var(--spacing));
   }
+}
 
-  /* And no 24px between one of them and whatever carries on the run, which
-     cancels the group's `gap-y-6` for that pair only. Carrying on the run
-     means opening with rows of its own — usually another quiet message, but
-     also the message that reasons, calls a tool and then finally speaks,
-     which an adapter naming no message ids sends as one. What is left
-     between two rows is the 6px each trigger carries above and below its own
-     text, so they read as one list rather than a column of stranded lines.
-     The gap returns in full on either side of the run, against the prose it
-     belongs to. */
-  & + [data-slot='aui_assistant-message-root']:has(
-      > [data-slot='aui_assistant-message-content']
-        > :first-child[data-slot='aui_chain-of-thought']
-    ) {
-    margin-top: calc(-6 * var(--spacing));
+/*
+ * The tail of a message that says something and then goes back to work.
+ *
+ * The band under a message belongs to the action bar, and the bar belongs to
+ * the prose above it — but it is held after the message's last part rather
+ * than after the last thing said, so a message ending in tool calls held it
+ * under the last of them: 30px of nothing, and the group's 24px under that,
+ * beneath a 24px line. Which is most of a working turn, because a tool call
+ * carries no message id of its own and so joins whatever message is
+ * trailing — the one the agent spoke in a moment ago.
+ *
+ * Three questions, and a message has to answer all three: it says something
+ * (prose, an image, a file, an error — anything the rule above would call
+ * loud), it works (a chain-of-thought), and it does not end on what it says.
+ * The last is asked of the last child rather than of the chain-of-thought,
+ * so a turn still running — rows, then the working indicator under them —
+ * answers it too, and the band does not appear for as long as the spinner
+ * sits there and then collapse the moment it goes.
+ *
+ * `position: absolute` puts the bar in the band `pb-7.5` already holds and
+ * `-mb-7.5` already cancels. The bar does not move: the bottom of the
+ * padding box is where it sat in flow. The 30px it occupied are given back
+ * to the run of rows, and the gap left under the row is the group's own 24px
+ * — the same as under a quiet one.
+ */
+[data-slot='aui_assistant-message-root']:has(
+    > [data-slot='aui_assistant-message-content']
+      > :not(
+          [data-slot='aui_chain-of-thought'],
+          [data-slot='aui_assistant-message-indicator']
+        )
+  ):has(> [data-slot='aui_assistant-message-content'] > [data-slot='aui_chain-of-thought']):not(
+    :has(
+        > [data-slot='aui_assistant-message-content']
+          > :last-child:not(
+              [data-slot='aui_chain-of-thought'],
+              [data-slot='aui_assistant-message-indicator']
+            )
+      )
+  ) {
+  & > [data-slot='aui_assistant-message-footer'] {
+    position: absolute;
+    inset-block-end: 0;
+    inset-inline-start: 0;
   }
+
+  /* Out of the flow, the band is over whatever comes next — and what comes
+     next, in the middle of a thread, is the row the message after this one
+     opens with. So the bar goes to the other end of the line there: a row is
+     a short line and the room beside it is empty, which is the one place a
+     bar can appear over a thread without hiding a word of it. Only the last
+     message has nothing under it, and that is the message whose bar is
+     always showing, so the position anyone actually sees is the one it has
+     always had.
+
+     Nothing is under the bar while it is hidden: the primitive renders no
+     element at all, and the footer left behind is an empty flex box no
+     pixels wide. */
+  &:not(:last-child) > [data-slot='aui_assistant-message-footer'] {
+    inset-inline: auto 0;
+    background-color: var(--background);
+  }
+
+  /* And painted over that row rather than under it, for the width it does
+     cover. Every message here is a stacking context of its own —
+     `content-visibility: auto` above brings paint containment with it — so
+     without a layer of its own this one is painted in tree order, which is
+     to say first. */
+  &:hover {
+    z-index: 1;
+  }
+
+  /* The same space an open row keeps under its body in the rule above, on
+     top of the band, since here the band is no longer in the flow to hold
+     it. */
+  &:has(
+      :is([data-slot='reasoning-content'], [data-slot='tool-group-content'])[data-state='open']
+    ) {
+    padding-bottom: calc(9.5 * var(--spacing));
+  }
+}
+
+/*
+ * No 24px between a row and whatever carries on the run, which cancels the
+ * group's `gap-y-6` for that pair only.
+ *
+ * The message before does not end on what it says — it ends in rows, or in
+ * the indicator under them, whether or not it said anything at all — and the
+ * message after opens with rows of its own. Both halves are needed: this is
+ * the seam in a run, not the edge of one. What is left between the two rows
+ * is the 6px each trigger carries above and below its own text, so they read
+ * as one list rather than a column of stranded lines. The gap returns in
+ * full on either side of the run, against the prose it belongs to.
+ */
+[data-slot='aui_assistant-message-root']:has(
+    > [data-slot='aui_assistant-message-content'] > [data-slot='aui_chain-of-thought']
+  ):not(
+    :has(
+        > [data-slot='aui_assistant-message-content']
+          > :last-child:not(
+              [data-slot='aui_chain-of-thought'],
+              [data-slot='aui_assistant-message-indicator']
+            )
+      )
+  )
+  + [data-slot='aui_assistant-message-root']:has(
+    > [data-slot='aui_assistant-message-content']
+      > :first-child[data-slot='aui_chain-of-thought']
+  ) {
+  margin-top: calc(-6 * var(--spacing));
 }
 
 /*
  * The space under a chain-of-thought block, set here rather than on the
  * disclosure rows inside it — see the note in reasoning.tsx. It only applies
- * where the block has prose after it in the same message; a block that is
- * the whole message is spaced by the rule above instead.
+ * where the block has prose after it in the same message; a block a message
+ * ends on is spaced by the rules above instead.
  */
 [data-slot='aui_chain-of-thought']:not(:last-child) {
   margin-bottom: 1rem;

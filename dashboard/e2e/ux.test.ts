@@ -383,6 +383,139 @@ test('a run of reasoning and tool rows stays a list, and prose after it still br
   }
 });
 
+/*
+ * The same run, cut in half by the agent saying something.
+ *
+ * A tool call carries no message id of its own, so it joins whatever message
+ * is trailing: the one the agent has just spoken in. That message says
+ * something and ends in rows, and it kept the action bar's 30px under the
+ * last of them — with the group's 24px under that, a 54px hole in the middle
+ * of a run of 24px lines, in the shape a working turn takes most often.
+ *
+ * Measured as an ordered column of rows and paragraphs, because both
+ * readings matter: two rows together are a list whatever messages they came
+ * in, and a paragraph on either side of them still has its air.
+ */
+test('a row run stays a list across a message that speaks, and the prose in it still breathes', async () => {
+  // Message ids of the adapter's own choosing, which is what splits a turn
+  // into messages. They are not the ids the thread mints for the chunks that
+  // arrive without one, and must not collide with them.
+  const think = (id: string, text: string): SessionUpdate =>
+    ({
+      sessionUpdate: 'agent_thought_chunk',
+      messageId: id,
+      content: { type: 'text', text },
+    }) as SessionUpdate;
+  const speak = (id: string, text: string): SessionUpdate =>
+    ({
+      sessionUpdate: 'agent_message_chunk',
+      messageId: id,
+      content: { type: 'text', text },
+    }) as SessionUpdate;
+  const call = (n: number): SessionUpdate =>
+    ({
+      sessionUpdate: 'tool_call',
+      toolCallId: `s-call-${n}`,
+      title: `Step ${n}`,
+      kind: 'read',
+      status: 'completed',
+      rawInput: { path: `file-${n}.ts` },
+    }) as SessionUpdate;
+
+  await start({
+    prompts: [
+      {
+        match: () => true,
+        updates: [
+          think('s1', 'Thinking about the first step.'),
+          call(1),
+          // Prose, and then the calls it announced — one message, and the
+          // one this test is about.
+          speak('s2', 'The first run passed. Checking the stub:'),
+          call(2),
+          think('s3', 'Which is a race rather than slowness.'),
+          call(3),
+          speak('s4', 'and that is the answer'),
+        ],
+      },
+    ],
+  });
+
+  const { page, errors, close } = await openPage(stub.url, `/sessions/${SESSION.id}`);
+  try {
+    await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
+
+    const input = page.getByLabel('Message input');
+    await input.fill('work, say something, work again');
+    await input.press('Control+Enter');
+    await expect
+      .poll(() => page.getByText('and that is the answer').isVisible(), { timeout: 10_000 })
+      .toBe(true);
+    // At rest: a reasoning block is held open while it streams and collapses
+    // over 200ms when the turn moves on, and a row measured during that is
+    // as tall as the text still inside it.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          [...document.querySelectorAll('[data-slot="reasoning-content"]')].every(
+            (el) => el.getBoundingClientRect().height === 0,
+          ),
+        ),
+      )
+      .toBe(true);
+
+    // The turn as a column: every row and every paragraph in it, in the
+    // order they are read, with the space above each.
+    const column = await page.evaluate(() => {
+      const turn = [...document.querySelectorAll('[data-role="user"]')]
+        .pop()!
+        .getBoundingClientRect().bottom;
+      const seen = [
+        ...document.querySelectorAll(
+          '[data-slot="reasoning-trigger"], [data-slot="tool-group-trigger"], .aui-md',
+        ),
+      ]
+        .map((el) => ({
+          kind: el.classList.contains('aui-md') ? 'prose' : 'row',
+          box: el.getBoundingClientRect(),
+        }))
+        .filter((item) => item.box.top >= turn)
+        .sort((a, b) => a.box.top - b.box.top);
+      return seen.slice(1).map((item, i) => ({
+        from: seen[i]!.kind,
+        to: item.kind,
+        gap: Math.round(item.box.top - seen[i]!.box.bottom),
+      }));
+    });
+
+    // The shape of the turn, so the numbers below are read off the seams
+    // they are meant to be: three row-to-row, one where a sentence hands
+    // over to the calls it announced, and two where a run ends in prose.
+    const seams = (from: string, to: string): number[] =>
+      column.filter((step) => step.from === from && step.to === to).map((step) => step.gap);
+    expect(column.length).toBe(6);
+    expect(seams('row', 'row').length).toBe(3);
+    expect(seams('prose', 'row').length).toBe(1);
+    expect(seams('row', 'prose').length).toBe(2);
+
+    // A row is 24px tall. Anything over half that between two of them and the
+    // run has stopped reading as one thing — including the seam in the
+    // middle, where the run carries on out of a message that spoke.
+    for (const gap of seams('row', 'row')) expect(gap).toBeLessThanOrEqual(12);
+    // A sentence keeps the calls it announced: what separates them is the
+    // 6px the trigger carries above its own text, and nothing else.
+    for (const gap of seams('prose', 'row')) expect(gap).toBeLessThanOrEqual(12);
+    // And the space comes back in full where the run ends and the turn says
+    // something, which is the half of this that is not about tightening.
+    for (const gap of seams('row', 'prose')) expect(gap).toBeGreaterThanOrEqual(12);
+
+    await shoot(page, 'quiet-rows-interrupted');
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 // An unfinished tool call is not a question. A call with no result inherits
 // its message's requires-action status, which used to render as "Wants to
 // run" over Allow and Deny buttons — in auto mode, where nothing is being
