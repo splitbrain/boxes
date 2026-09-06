@@ -1,45 +1,22 @@
 import { useEffect, useRef } from 'react';
+import {
+  followGrew,
+  followScrolled,
+  followStart,
+  followTouched,
+  isFollowing,
+  type FollowState,
+} from '@/lib/follow-output.ts';
 
 /**
- * How near the bottom counts as against it.
+ * What each scroller is doing with its own output.
  *
- * The same distance `use-scroll-away.ts` calls pinned, for the same reason: a
- * scroller a few pixels short of its end is at its end as far as a reader is
- * concerned, and a turn's anchor leaves exactly that much rounding behind.
- */
-const AT_BOTTOM = 8;
-
-/**
- * How long after a hand touches the scroller its scrolling is still that
- * hand's.
- *
- * A wheel notch is not a scroll: it starts one, which the browser animates out
- * over a frame or ten, and a flick is several of those. Long enough to cover
- * the tail of one, short enough that the next thing to move the scroller by
- * itself is not blamed on a reader who has let go.
- */
-const REACH = 400;
-
-/**
- * How recently a scroller has to have moved with its output to still count as
- * following it.
- *
- * A thread parked at the bottom with nothing arriving is not following
- * anything; it is being read. The difference matters to the disclosures,
- * which hold the position still for a reader and must not for a turn.
- */
-const ACTIVE = 1000;
-
-/**
- * The scrollers following their own output, and when each last moved with it.
- *
- * Maps rather than attributes on the scroller: the runtime watches the
+ * A map rather than an attribute on the scroller: the runtime watches the
  * viewport's subtree for mutations and reads every non-style attribute change
  * as content arriving, so a flag written on the element would itself be a
  * reason to scroll.
  */
-const following = new WeakMap<Element, boolean>();
-const followed = new WeakMap<Element, number>();
+const state = new WeakMap<Element, FollowState>();
 
 /** The nearest thing that scrolls, which for a thread is its viewport. */
 function scrollerOf(node: Element | null): Element | null {
@@ -62,8 +39,8 @@ function scrollerOf(node: Element | null): Element | null {
  */
 export function isFollowingOutput(node: Element | null): boolean {
   const scroller = scrollerOf(node);
-  if (!scroller || following.get(scroller) !== true) return false;
-  return performance.now() - (followed.get(scroller) ?? 0) < ACTIVE;
+  const current = scroller && state.get(scroller);
+  return !!current && isFollowing(current, performance.now());
 }
 
 /**
@@ -118,46 +95,33 @@ export function useFollowOutput(): React.RefObject<HTMLDivElement | null> {
     const el = viewport.current;
     if (!el) return;
 
-    following.set(el, true);
+    state.set(el, followStart());
 
     /** How much of the thread is below the fold. */
     const behind = (): number => el.scrollHeight - el.clientHeight - el.scrollTop;
     const reserving = reserveOf(el);
+    const now = (): number => performance.now();
 
-    /**
-     * When a hand was last on the scroller.
-     *
-     * Which is asked instead of reading it off the position, because the
-     * position cannot answer it. A reader going up a hundred pixels and the
-     * browser holding the page still while a block above them collapses by a
-     * hundred both subtract a hundred from `scrollTop`, and a turn writing
-     * into the same frame moves the numbers again underneath both. Nothing
-     * the browser does to a scroller of its own accord arrives with a wheel
-     * or a finger attached, so that is the question worth asking.
-     */
-    let gesture = 0;
     const touched = (event: Event): void => {
       // A press lands on something for every reason there is — a disclosure,
       // the composer, a link — and only a press on the scroller itself is a
       // hand on its scrollbar.
       if (event.type === 'pointerdown' && event.target !== el) return;
-      gesture = performance.now();
+      state.set(el, followTouched(state.get(el) ?? followStart(), now()));
     };
 
     const onScroll = (): void => {
-      // At the bottom is following, however it got there — a reader arriving
-      // back at it is rejoining the turn.
-      if (behind() <= AT_BOTTOM) following.set(el, true);
-      else if (performance.now() - gesture < REACH) following.set(el, false);
+      const current = state.get(el);
+      if (!current) return;
+      state.set(el, followScrolled(current, { behind: behind(), now: now() }));
     };
 
     const onGrow = (): void => {
-      if (following.get(el) !== true) return;
-      // Nothing to catch up with, or somebody else's turn to: the runtime's
-      // own autoscroll while no turn is running, the anchor while one is.
-      if (behind() <= AT_BOTTOM || reserving()) return;
-      el.scrollTo({ top: el.scrollHeight, behavior: 'instant' });
-      followed.set(el, performance.now());
+      const current = state.get(el);
+      if (!current) return;
+      const grew = followGrew(current, { behind: behind(), reserving: reserving(), now: now() });
+      state.set(el, grew.state);
+      if (grew.catchUp) el.scrollTo({ top: el.scrollHeight, behavior: 'instant' });
     };
 
     el.addEventListener('scroll', onScroll);
@@ -206,8 +170,7 @@ export function useFollowOutput(): React.RefObject<HTMLDivElement | null> {
       for (const kind of gestures) el.removeEventListener(kind, touched);
       size.disconnect();
       content.disconnect();
-      following.delete(el);
-      followed.delete(el);
+      state.delete(el);
     };
   }, []);
 

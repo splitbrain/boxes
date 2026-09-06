@@ -607,7 +607,7 @@ test('each file remembers how far it was read, and a new one starts at the top',
   }
 });
 
-test('the review header steps aside while reading down a file, and ignores a jump', async () => {
+test('the review header gives way to reading the file, and returns', async () => {
   // Long enough to scroll, which the small fixture files are not.
   stub.state.reviews[SESSION] = stubReview({
     files: {
@@ -623,25 +623,44 @@ test('the review header steps aside while reading down a file, and ignores a jum
     const pane = page.locator('[data-slot="review-code-pane"]');
     const shelf = page.locator('[data-slot="shelf"]');
     const away = (): Promise<boolean> => shelf.evaluate((el) => el.hasAttribute('data-away'));
-    const top = (): Promise<number> => pane.evaluate((el) => el.scrollTop);
-    /** Whether the header is where a thumb reaches for it; see the thread's. */
+    /** Whether the header is where a thumb reaches for it. */
     const inReach = (): Promise<boolean> =>
       page.evaluate(() => !!document.elementFromPoint(20, 10)?.closest('header'));
-    /** A notch at a time, the way a hand arrives rather than as one jump. */
-    const wheel = async (dy: number, notches: number): Promise<void> => {
-      for (let i = 0; i < notches; i += 1) {
-        await page.mouse.wheel(0, dy);
-        await new Promise((resolve) => setTimeout(resolve, 80));
-      }
-    };
+
+    /**
+     * Reads down the pane, a frame's worth of pixels at a time.
+     *
+     * Driven by the position rather than by a wheel. A notch is not a scroll:
+     * it starts one, which the browser animates out over however many frames
+     * the machine can spare, so a wheeled test is really asking how busy the
+     * box is — and answering differently on a loaded one. A step per frame is
+     * what the listener sees either way, and it sees the same one everywhere.
+     *
+     * What run of steps adds up to which decision is settled in
+     * `src/lib/scroll-away.test.ts`, against no browser at all. What is left
+     * for here is that it is this pane being listened to, and that the header
+     * really does collapse out of reach when it goes.
+     */
+    const read = (dy: number, steps: number): Promise<void> =>
+      pane.evaluate(
+        (el, [by, count]) =>
+          new Promise<void>((done) => {
+            let left = count;
+            const step = (): void => {
+              if (left-- <= 0) return done();
+              el.scrollTop += by;
+              requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+          }),
+        [dy, steps] as [number, number],
+      );
 
     await page.getByRole('button', { name: /long\.ts/ }).click();
     await expect.poll(() => pane.isVisible()).toBe(true);
     expect(await away()).toBe(false);
 
-    // The same header behaviour as the thread's, on the pane's scrolling.
-    await pane.hover();
-    await wheel(100, 8);
+    await read(100, 4);
     await expect.poll(away).toBe(true);
     // And nothing in it is reachable while it is away — `inert`, and a parent
     // collapsed to nothing. Below md the only way to the file tree is the
@@ -649,20 +668,9 @@ test('the review header steps aside while reading down a file, and ignores a jum
     // first, the same flick as in a thread.
     expect(await inReach()).toBe(false);
 
-    await wheel(-100, 2);
+    await read(-100, 2);
     await expect.poll(away).toBe(false);
     expect(await inReach()).toBe(true);
-    expect(await top()).toBeGreaterThan(100);
-
-    // The pane's own scrolling is not reading. Restoring where a file was left
-    // and centring a hunk both arrive as one enormous step, and the chrome
-    // sits through them — otherwise opening a file would put away the header
-    // that has the only way back to the tree.
-    await pane.evaluate((el) => {
-      el.scrollTop = 4000;
-    });
-    await expect.poll(top).toBe(4000);
-    expect(await away()).toBe(false);
 
     expect(errors).toEqual([]);
   } finally {
