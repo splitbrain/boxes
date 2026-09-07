@@ -1310,9 +1310,17 @@ parallel UIs:
   already reaches, and the two disagree about where you are.
 - **Comments are inline**, GitHub-style, on every screen size. There is no
   right-hand sidebar to reflow away.
-- **Tap replaces hover.** Tapping a line's gutter is how a comment starts;
-  tapping a gutter marker opens the diff hunk as a sheet, which is also the
-  only place deleted lines exist. Gutter targets are 44 px on touch.
+- **Tap replaces hover**, and the row is split between the two things a reader
+  does to a line. The code is the comment: tapping it opens the composer, and
+  it is the larger target by far because commenting is the frequent act. The
+  gutter is the change: tapping it opens the hunk around that line as a sheet,
+  which is also the only place deleted lines exist. A line with no hunk behind
+  it — every line of a file git does not track yet — is not a target at all,
+  rather than one that lights up under the thumb and does nothing. The code
+  cell is a `role="button"`, not a `<button>`: WebKit and Firefox make text
+  inside one unselectable, and a line of a review is a line somebody copies
+  out, so a click that ended a drag or took a word is told from a tap and
+  ignored.
 - **Prev/next replaces the scrollbar minimap.** Annotation markers on a
   scrollbar are unusable on touch, and "the next thing that needs me" is what
   the minimap was for — so the toolbar says it directly, with counts and paired
@@ -1686,9 +1694,11 @@ threads each keeping to their own conversation are asserted against a gateway
 that behaves like the real one.
 The review pages are in that suite too, on a phone viewport and a desktop one,
 because the two arrangements are different enough that one passing says little
-about the other: browse the tree, open a file, tap a gutter marker for the hunk,
-comment on a line and see the write reach the API, edit and delete it, set a
-base revision, and hand the review to the agent with the prompt staged unsent.
+about the other: browse the tree, open a file, tap the gutter for the hunk and
+the code for the composer — including the line whose gutter is not a button
+because nothing changed there — comment on a line and see the write reach the
+API, edit and delete it, set a base revision, and hand the review to the agent
+with the prompt staged unsent.
 The degraded shapes are there as well — no git, an empty workspace, and a
 session whose workspace is still a volume.
 That is what asserts the UX properties this frontend exists for, and it is

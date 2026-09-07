@@ -303,9 +303,9 @@ Commands are capped at 120 seconds and 256 KiB of output.
 **Review the code.** **Review** on a session card, or the magnifier in a
 thread's header, opens the session's workspace as a review: browse the files,
 read one highlighted, and tap a line to leave a comment. Git statuses colour the
-tree, changed lines are marked in the gutter, and tapping a marker shows the
-diff hunk — including the lines that were deleted, which the file itself cannot
-show. **Compare against** a branch, tag or commit to review a whole branch's
+tree and changed lines are marked in the gutter: tapping the code is how a
+comment starts, and tapping the gutter beside it shows that change as a diff —
+including the lines that were deleted, which the file itself cannot show. **Compare against** a branch, tag or commit to review a whole branch's
 work rather than only what is uncommitted.
 
 The review is over the whole workspace, not over one repository in it. A box

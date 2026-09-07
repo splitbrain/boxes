@@ -166,6 +166,23 @@ export function SessionReview() {
     [file?.annotations],
   );
   /**
+   * The hunk each line sits in, which is what a tap on the gutter opens.
+   *
+   * A hunk's range covers the context git printed around the change as well as
+   * the change itself, so the lines either side of one answer "what happened
+   * here" with the same hunk — a change is read with its surroundings, and on a
+   * phone that is the difference between a target and a sliver. A hunk that
+   * only removed lines covers nothing in the file that survived; its deletion
+   * marker is the way in, and always was.
+   */
+  const hunkByLine = useMemo(() => {
+    const map = new Map<number, number>();
+    (file?.diff.hunks ?? []).forEach((hunk, index) => {
+      for (let line = hunk.startLine; line <= hunk.endLine; line++) map.set(line, index);
+    });
+    return map;
+  }, [file?.diff.hunks]);
+  /**
    * The changed lines, in order, for counting and stepping through them.
    *
    * A deletion has no line of its own, and its marker sits under the line it
@@ -412,6 +429,7 @@ export function SessionReview() {
                     tokens={file.tokens}
                     diffLines={file.diff.lines}
                     deletions={deletions}
+                    hunkByLine={hunkByLine}
                     annotations={annotations}
                     composing={composing}
                     wrap={wrap}
