@@ -12,10 +12,16 @@ import { recallScroll, rememberScroll } from '../../stores/review.ts';
  * numbers stay put, and every line is its own element — which is what makes
  * tapping one to comment possible at all.
  *
- * Tap replaces hover throughout. The desktop tool shows a diff hunk on gutter
- * hover and a comment in a tooltip; neither exists on a phone, so a gutter
- * marker is a button that opens the hunk, and comments are inline cards under
- * their line on every screen size.
+ * Tap replaces hover throughout, and the row is split between the two things
+ * a reader does to a line. The gutter is the change: tapping it opens the hunk
+ * around that line, which is where the desktop tool's hover tooltip went and
+ * the only place deleted lines exist. The code is the comment: tapping it
+ * opens the composer, and comments are inline cards under their line on every
+ * screen size.
+ *
+ * That way round because the code cell is the larger target by far and
+ * commenting is the frequent act, while a gutter with no hunk behind it —
+ * every line of a file git does not track yet — is not a target at all.
  *
  * File content and comments are agent-influenced and hostile by assumption, so
  * both are rendered as text nodes only. Highlight tokens become React
@@ -42,6 +48,12 @@ export interface CodePaneProps {
   diffLines: Record<string, ReviewLineChange>;
   /** Deletion markers, by the line they sit after. */
   deletions: Map<number, number>;
+  /**
+   * The hunk each line sits in, by line number, for the gutter to open.
+   * Context lines count: standing next to a change and asking what happened
+   * here has one answer.
+   */
+  hunkByLine: Map<number, number>;
   annotations: Map<number, ReviewAnnotation>;
   /** The line whose composer is open, or null. */
   composing: number | null;
@@ -61,6 +73,7 @@ export function CodePane({
   tokens,
   diffLines,
   deletions,
+  hunkByLine,
   annotations,
   composing,
   wrap,
@@ -124,6 +137,7 @@ export function CodePane({
           const change = diffLines[String(line)];
           const annotation = annotations.get(line);
           const under = renderUnderLine?.(line);
+          const hunkIndex = hunkByLine.get(line);
 
           return (
             <Fragment key={line}>
@@ -136,44 +150,40 @@ export function CodePane({
                   (composing === line || annotation) && 'bg-primary/8',
                 )}
               >
-                {/* The gutter is one button: tapping a line is how a comment
-                    starts, and the number is the largest thing on the row that
-                    is not code. */}
-                <button
-                  type="button"
-                  onClick={() => onSelectLine(line)}
-                  aria-label={`Comment on line ${line}`}
-                  className={cn(
-                    'sticky left-0 z-10 flex select-none items-stretch gap-1 border-r bg-background pr-1.5 pl-2 text-right text-muted-foreground',
-                    // 44px of tap target on touch. The line height is smaller
-                    // than that, so the padding does the work.
-                    'min-h-[1.55em] py-0 hover:bg-accent hover:text-accent-foreground',
-                    change && CHANGE[change].row,
-                    (composing === line || annotation) && 'bg-primary/8',
-                  )}
-                  style={{ minWidth: `${digits + 3.5}ch` }}
-                >
-                  <span
-                    aria-hidden
-                    className={cn('w-1 shrink-0 rounded-sm', change ? CHANGE[change].bar : '')}
-                  />
-                  <span className="flex-1 tabular-nums">{line}</span>
-                  {annotation ? (
-                    <span
-                      aria-hidden
-                      className={cn(
-                        'w-1 shrink-0 rounded-sm',
-                        annotation.outdated ? 'bg-idle' : 'bg-primary',
-                      )}
-                    />
-                  ) : (
-                    <span aria-hidden className="w-1 shrink-0" />
-                  )}
-                </button>
+                <Gutter
+                  line={line}
+                  digits={digits}
+                  change={change}
+                  annotated={annotation !== undefined}
+                  outdated={annotation?.outdated ?? false}
+                  active={composing === line || annotation !== undefined}
+                  hunkIndex={hunkIndex}
+                  onShowHunk={onShowHunk}
+                />
 
+                {/* Tapping the code is how a comment starts.
+                    Not a <button>: WebKit and Firefox make text inside one
+                    unselectable, and a line of a review is a line somebody
+                    copies out. So a tap and the end of a drag share this
+                    element and are told apart below.
+                    And no aria-label: a button names itself from what is
+                    inside it, so labelling this one would replace the line of
+                    code with the word "comment" for anybody listening to the
+                    file rather than looking at it. The name is the line. */}
                 <code
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    if (!selecting(event)) onSelectLine(line);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onSelectLine(line);
+                    }
+                  }}
                   className={cn(
-                    'block pr-3 pl-2',
+                    'block pr-3 pl-2 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                     wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre',
                   )}
                 >
@@ -204,6 +214,96 @@ export function CodePane({
       </div>
     </div>
   );
+}
+
+/**
+ * One line's numbers and markers, and the way into its hunk.
+ *
+ * A button only where there is a hunk to open: a file git does not track yet
+ * has every line marked added and no hunk anywhere, and a gutter that lights
+ * up under the thumb and then does nothing is worse than one that does not.
+ */
+function Gutter({
+  line,
+  digits,
+  change,
+  annotated,
+  outdated,
+  active,
+  hunkIndex,
+  onShowHunk,
+}: {
+  line: number;
+  digits: number;
+  change: ReviewLineChange | undefined;
+  annotated: boolean;
+  outdated: boolean;
+  /** The line is being commented on, or already carries a comment. */
+  active: boolean;
+  /** The hunk this line sits in, or undefined when it sits in none. */
+  hunkIndex: number | undefined;
+  onShowHunk: (hunkIndex: number) => void;
+}) {
+  const className = cn(
+    'sticky left-0 z-10 flex select-none items-stretch gap-1 border-r bg-background pr-1.5 pl-2 text-right text-muted-foreground',
+    // 44px of tap target on touch. The line height is smaller than that, so
+    // the padding does the work.
+    'min-h-[1.55em] py-0',
+    hunkIndex !== undefined && 'hover:bg-accent hover:text-accent-foreground',
+    change && CHANGE[change].row,
+    active && 'bg-primary/8',
+  );
+  const style = { minWidth: `${digits + 3.5}ch` };
+  const inside = (
+    <>
+      <span
+        aria-hidden
+        className={cn('w-1 shrink-0 rounded-sm', change ? CHANGE[change].bar : '')}
+      />
+      <span className="flex-1 tabular-nums">{line}</span>
+      {annotated ? (
+        <span
+          aria-hidden
+          className={cn('w-1 shrink-0 rounded-sm', outdated ? 'bg-idle' : 'bg-primary')}
+        />
+      ) : (
+        <span aria-hidden className="w-1 shrink-0" />
+      )}
+    </>
+  );
+
+  if (hunkIndex === undefined) {
+    return (
+      <span className={className} style={style}>
+        {inside}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onShowHunk(hunkIndex)}
+      aria-label={`Show the change at line ${line}`}
+      title="Show the change here"
+      className={className}
+      style={style}
+    >
+      {inside}
+    </button>
+  );
+}
+
+/**
+ * Whether a click was the end of selecting text rather than a tap on the line.
+ *
+ * A drag leaves a selection behind, and a double click is the browser taking a
+ * word — neither is somebody asking for the comment box, and opening it would
+ * take the focus off what they were selecting.
+ */
+function selecting(event: React.MouseEvent): boolean {
+  if (event.detail > 1) return true;
+  const selection = window.getSelection();
+  return selection !== null && !selection.isCollapsed;
 }
 
 /** One line's coloured spans. */

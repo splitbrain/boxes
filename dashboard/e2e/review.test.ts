@@ -176,6 +176,47 @@ test('a gutter marker opens the hunk, deleted lines included', async () => {
   }
 });
 
+test('the gutter opens the hunk, and the code opens the comment', async () => {
+  const { page, errors, close } = await openPage(
+    stub.url,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fboot.ts`,
+  );
+  try {
+    // The row is split: the gutter is the change, the code is the comment. A
+    // deletion marker is not the only way in, which is what it was reduced to
+    // when the gutter was spent on commenting.
+    await expect.poll(() => page.getByLabel('Show the change at line 2').isVisible()).toBe(true);
+    await page.getByLabel('Show the change at line 2').click();
+    await expect.poll(() => page.getByText('Lines 1–4').isVisible()).toBe(true);
+    await expect.poll(() => page.getByText('console.log("boot")').isVisible()).toBe(true);
+    await page.keyboard.press('Escape');
+
+    // And the code half of the same line still starts a comment.
+    await expect.poll(() => page.locator('[data-slot="sheet-content"]').count()).toBe(0);
+    await page.locator('[data-line="2"] code').click();
+    await expect.poll(() => page.getByText('Comment on line 2').isVisible()).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
+test('a line with no hunk behind it has no gutter button', async () => {
+  const { page, errors, close } = await openPage(
+    stub.url,
+    `/sessions/${SESSION}/review?path=app%2Fsrc%2Fapp.ts`,
+  );
+  try {
+    // An unchanged file has nothing to show, so its gutter is not a target
+    // that lights up under the thumb and then does nothing.
+    await expect.poll(() => page.locator('[data-line="1"] code').isVisible()).toBe(true);
+    expect(await page.getByLabel('Show the change at line 1').count()).toBe(0);
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 test('a file the change deleted is listed, and says it is gone', async () => {
   // Listed by its status alone: it is on no disk and in no ls-files, which is
   // exactly why it used to fall out of the tree the moment it mattered.
@@ -230,13 +271,15 @@ test('commenting a line on a phone writes it through the API', async () => {
     `/sessions/${SESSION}/review?path=app%2Fsrc%2Fboot.ts`,
   );
   try {
-    await expect.poll(() => page.getByLabel('Comment on line 2').isVisible()).toBe(true);
-    await page.getByLabel('Comment on line 2').click();
+    // The code half of the row, which is the comment target: it is not
+    // labelled, because a button names itself from its contents and the
+    // contents here are the line of code.
+    await expect.poll(() => page.locator('[data-line="2"] code').isVisible()).toBe(true);
+    await page.locator('[data-line="2"] code').click();
 
     // On touch the composer is a bottom sheet, so the keyboard has somewhere
     // to be that is not on top of it.
     await expect.poll(() => page.getByText('Comment on line 2').isVisible()).toBe(true);
-    await expect.poll(() => page.getByText('Saved into REVIEW.md in the workspace').isVisible()).toBe(true);
     await shoot(page, 'review-composer-phone', 'viewport');
 
     await page.getByRole('textbox', { name: 'Comment on line 2' }).fill('this TODO needs an owner');
@@ -269,14 +312,14 @@ test('commenting a line on a desktop uses the inline composer', async () => {
     'desktop',
   );
   try {
-    await expect.poll(() => page.getByLabel('Comment on line 3').isVisible()).toBe(true);
-    await page.getByLabel('Comment on line 3').click();
+    await expect.poll(() => page.locator('[data-line="3"] code').isVisible()).toBe(true);
+    await page.locator('[data-line="3"] code').click();
 
-    // Inline, so there is no sheet description to find.
+    // Inline, so nothing was put in a sheet.
     await expect
       .poll(() => page.getByRole('textbox', { name: 'Comment on line 3' }).isVisible())
       .toBe(true);
-    expect(await page.getByText('Saved into REVIEW.md in the workspace').isVisible()).toBe(false);
+    expect(await page.locator('[data-slot="sheet-content"]').count()).toBe(0);
 
     await page.getByRole('textbox', { name: 'Comment on line 3' }).fill('call this in main');
     await page.getByRole('button', { name: 'Comment', exact: true }).click();
@@ -516,7 +559,7 @@ test('a workspace with no repository still browses and comments', async () => {
     expect(await page.getByRole('button', { name: /HEAD/ }).isVisible()).toBe(false);
     // Commenting still works, which is the point of degrading rather than
     // refusing.
-    await page.getByLabel('Comment on line 1').click();
+    await page.locator('[data-line="1"] code').click();
     await page.getByRole('textbox', { name: 'Comment on line 1' }).fill('still reviewable');
     await page.getByRole('button', { name: 'Comment', exact: true }).click();
     await expect.poll(() => stub.reviewCalls.length).toBe(1);

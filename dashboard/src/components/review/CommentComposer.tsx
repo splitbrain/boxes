@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 
 /**
  * Writing a comment on a line.
@@ -136,14 +130,14 @@ export function ComposerSheet({
 }) {
   return (
     <Sheet open={line !== null} onOpenChange={(open) => (open ? undefined : onCancel())}>
-      <SheetContent side="bottom" className="gap-0">
+      {/* No description: where a comment is stored is the tool's business, not
+          something to spend a line of a phone's screen on above the keyboard.
+          Saying so explicitly is how Radix is told the omission is deliberate. */}
+      <SheetContent side="bottom" className="gap-0" aria-describedby={undefined}>
         <SheetHeader className="pb-2">
           <SheetTitle className="text-sm">
             {initial === '' ? `Comment on line ${line}` : `Edit the comment on line ${line}`}
           </SheetTitle>
-          <SheetDescription className="text-xs">
-            Saved into REVIEW.md in the workspace, where the agent can read it.
-          </SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
           {line === null ? null : (
