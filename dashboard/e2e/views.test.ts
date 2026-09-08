@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import { resolve } from 'node:path';
 import { closeBrowser, openPage, shoot } from './browser.ts';
-import { startStubOrchestrator, stubSession, type StubOrchestrator } from './stub-orchestrator.ts';
+import {
+  startStubOrchestrator,
+  stubSession,
+  stubThread,
+  type StubOrchestrator,
+} from './stub-orchestrator.ts';
 
 /**
  * The dashboard's own routes, driven in a real browser against the real
@@ -36,6 +41,10 @@ beforeAll(async () => {
       // And one that is not: a box whose agent has stopped with a build
       // still running in it.
       backgroundBusy: true,
+      // Which of its conversations that build belongs to is the row's own
+      // bullet, and the only place a list says which thread is holding the
+      // box awake.
+      threads: [stubThread({ backgroundBusy: true })],
       attachedCount: 1,
       proxyAttached: false,
     }),
@@ -55,6 +64,10 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect.poll(() => page.getByText('2 approvals waiting').isVisible()).toBe(true);
       await expect.poll(() => page.getByText('running turn').isVisible()).toBe(true);
       await expect.poll(() => page.getByText('still running').isVisible()).toBe(true);
+      // The thread that is running it, said in a dot and readable as words.
+      await expect
+        .poll(() => page.getByRole('img', { name: 'something still running' }).isVisible())
+        .toBe(true);
       await shoot(page, `list-${scheme}`);
       expect(errors).toEqual([]);
     } finally {

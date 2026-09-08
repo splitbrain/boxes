@@ -63,6 +63,16 @@ export interface ThreadSummary {
    */
   turnActive: boolean;
   /**
+   * Whether this conversation has work still running in its box, with no turn
+   * to say so.
+   *
+   * Whose work it is comes off the process; see
+   * `orchestrator/src/gateway/background.ts`. Which is what makes this worth
+   * carrying on a thread at all: a list of a box's conversations can say which
+   * one is holding it up, rather than only that something is.
+   */
+  backgroundBusy: boolean;
+  /**
    * True while the agent is producing output on this thread — text, thinking,
    * a tool call of its own.
    *

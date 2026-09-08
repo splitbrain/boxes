@@ -2,7 +2,7 @@ import { FileSearch, GitBranch, Info, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { SessionSummary, ThreadSummary } from '../../../shared/types.ts';
-import { StatusBadge, type BadgeKind } from './StatusBadge';
+import { DOT, StatusBadge, type BadgeKind } from './StatusBadge';
 import { Card } from '@/components/ui/card';
 import { api } from '../api.ts';
 import { STILL_RUNNING } from '@/lib/activity';
@@ -109,35 +109,39 @@ export function SessionCard({ session }: { session: SessionSummary }) {
       </Link>
 
       <div className="flex flex-col border-t px-2 py-2">
-        {session.threads.map((thread) => (
-          <Link
-            key={thread.id}
-            to={`/sessions/${session.id}/threads/${thread.id}`}
-            // Selecting is a side effect of opening, not a step before it:
-            // the navigation does not wait for it, and nothing breaks if it
-            // never lands.
-            onClick={() => void api.selectThread(session.id, thread.id).catch(() => {})}
-            aria-current={thread.id === session.currentThreadId ? 'true' : undefined}
-            className={cn(
-              'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm no-underline hover:bg-accent',
-              thread.id === session.currentThreadId ? 'font-medium' : 'text-muted-foreground',
-            )}
-          >
-            <span
-              aria-hidden
+        {session.threads.map((thread) => {
+          const dot = threadDot(thread);
+          return (
+            <Link
+              key={thread.id}
+              to={`/sessions/${session.id}/threads/${thread.id}`}
+              // Selecting is a side effect of opening, not a step before it:
+              // the navigation does not wait for it, and nothing breaks if it
+              // never lands.
+              onClick={() => void api.selectThread(session.id, thread.id).catch(() => {})}
+              aria-current={thread.id === session.currentThreadId ? 'true' : undefined}
               className={cn(
-                'size-1.5 shrink-0 rounded-full',
-                thread.id === session.currentThreadId ? 'bg-ok' : 'bg-idle',
+                'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm no-underline hover:bg-accent',
+                thread.id === session.currentThreadId ? 'font-medium' : 'text-muted-foreground',
               )}
-            />
-            <span className="truncate">{threadName(thread)}</span>
-            {/* With two threads live this is the only place that says which
-                one is busy, and which one is holding a question. */}
-            {threadBadges(thread).map((b) => (
-              <StatusBadge key={b.label} kind={b.kind} label={b.label} />
-            ))}
-          </Link>
-        ))}
+            >
+              {/* Which thread this is is said by the weight of the row and by
+                  aria-current; the bullet is what it is doing. */}
+              <span
+                role="img"
+                aria-label={dot.label}
+                title={dot.label}
+                className={cn('size-1.5 shrink-0 rounded-full', DOT[dot.kind])}
+              />
+              <span className="truncate">{threadName(thread)}</span>
+              {/* With two threads live this is where a question and a running
+                  turn are named, rather than only coloured. */}
+              {threadBadges(thread).map((b) => (
+                <StatusBadge key={b.label} kind={b.kind} label={b.label} />
+              ))}
+            </Link>
+          );
+        })}
 
         <div className="flex gap-1 pt-1">
           <button
@@ -186,6 +190,28 @@ export function SessionCard({ session }: { session: SessionSummary }) {
 }
 
 /**
+ * The bullet on a thread's row: what that conversation is doing, in one dot.
+ *
+ * It said which thread was the session's default until now — green for the
+ * current one, grey for the rest — which the row already says twice, in its
+ * weight and in `aria-current`, and which spent the colour that means "the
+ * container is up" on something that is not a state a thread can be in. Being
+ * up is a precondition of every one of these.
+ *
+ * The order is what outranks what, and it is the reader's order rather than
+ * the machine's: a question stops everything, talking is the next most
+ * interesting, and work still running is the quiet one worth seeing — it is
+ * the thread holding the box awake. Labelled as well as coloured, because a
+ * dot with no label is nothing at all to a screen reader.
+ */
+export function threadDot(thread: ThreadSummary): { kind: BadgeKind; label: string } {
+  if (thread.pendingCount > 0) return { kind: 'waiting', label: 'waiting for approval' };
+  if (thread.speaking) return { kind: 'turn', label: 'running a turn' };
+  if (thread.backgroundBusy) return { kind: 'task', label: 'something still running' };
+  return { kind: 'idle', label: 'idle' };
+}
+
+/**
  * What one thread is doing, if anything: a turn running on it, and a question
  * waiting on it.
  *
@@ -207,9 +233,7 @@ export function threadBadges(
     });
   }
   if (thread.speaking) badges.push({ kind: 'turn', label: 'running turn' });
-  // Work still running is the box's, not the thread's: it is read from the
-  // processes alive in the container, and those do not say which conversation
-  // started them. The session's own badge above carries it.
-
+  // Work still running gets no badge of its own: it is the quietest of the
+  // three and the bullet already says it, in the same colour this would.
   return badges;
 }

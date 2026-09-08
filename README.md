@@ -401,7 +401,9 @@ session list carries the same fact about the box as a whole.
 
 What is listed is that conversation's own work and nothing another one left
 behind: which thread a command belongs to is read off the box, from the agent
-process it is running under. **Stop** kills it — that command and anything it
+process it is running under. In the session list the same fact is the bullet
+beside each thread — dim blue for the one still running something, which is
+the conversation holding the box awake. **Stop** kills it — that command and anything it
 started, or everything the thread is running. It is a kill and not an
 interrupt, because a background command outlives the turn that started it by
 design and cancelling the conversation would leave it running.
