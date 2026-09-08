@@ -4,11 +4,29 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { useOverlayState } from "@/hooks/use-history-overlay"
 
+/**
+ * A dialog is a step the back button can take back: opening one pushes a
+ * history entry at the same URL, and back pops it instead of leaving the
+ * screen the dialog was opened over. See useHistoryOverlay — the behaviour
+ * lives here rather than at the call sites so every dialog in the app has it.
+ */
 function Dialog({
+  open,
+  defaultOpen,
+  onOpenChange,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+  const dialog = useOverlayState({ open, defaultOpen, onOpenChange })
+  return (
+    <DialogPrimitive.Root
+      data-slot="dialog"
+      open={dialog.open}
+      onOpenChange={dialog.setOpen}
+      {...props}
+    />
+  )
 }
 
 function DialogTrigger({

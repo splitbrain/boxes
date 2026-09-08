@@ -3,9 +3,28 @@ import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useOverlayState } from "@/hooks/use-history-overlay"
 
-function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+/**
+ * Like a dialog, a sheet is a step the back button can take back: it covers
+ * what is behind it, so back closes it rather than the screen underneath.
+ * See useHistoryOverlay.
+ */
+function Sheet({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  const sheet = useOverlayState({ open, defaultOpen, onOpenChange })
+  return (
+    <SheetPrimitive.Root
+      data-slot="sheet"
+      open={sheet.open}
+      onOpenChange={sheet.setOpen}
+      {...props}
+    />
+  )
 }
 
 function SheetTrigger({

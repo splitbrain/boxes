@@ -2,6 +2,7 @@ import { ArrowLeft, FileSearch, GitBranch, Info, SlidersHorizontal } from 'lucid
 import { Link } from 'react-router';
 import type { SessionConfigOption, SessionModeState } from '../stores/thread/acp-types.ts';
 import type { ConnectionState } from '../stores/thread/acp-client.ts';
+import type { Up } from '@/hooks/use-up';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
@@ -90,6 +91,7 @@ function Setting({
 export function ThreadHeader({
   sessionId,
   threadId,
+  up,
   name,
   threadLabel,
   connection,
@@ -104,6 +106,8 @@ export function ThreadHeader({
   sessionId: string;
   /** Which thread this is, so the info view can come back to it exactly. */
   threadId: string | null;
+  /** The way out, which pops the thread rather than pushing the list. */
+  up: Up;
   name: string;
   /** Which conversation of the session this is, or null while it is unknown. */
   threadLabel: string | null;
@@ -145,10 +149,13 @@ export function ThreadHeader({
 
   return (
     <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+      {/* Leaving pops the thread's own entries; it does not push the list on
+          top of them. Anything else and this button and the device's back
+          button point the same way, which is what made back unpredictable. */}
       <Button asChild variant="ghost" size="sm" className="shrink-0 px-2">
-        <Link to="/" aria-label="Back to sessions">
+        <a href={up.href} onClick={up.onClick} aria-label="Back to sessions">
           <ArrowLeft className="size-4" />
-        </Link>
+        </a>
       </Button>
 
       {/* A floor under the name, which the icon buttons cannot push past. */}

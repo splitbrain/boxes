@@ -54,9 +54,9 @@ export function sessionBadges(s: SessionSummary): Array<{ kind: BadgeKind; label
  * anybody — no live connection is pinned to the default.
  *
  * Ops live behind the info corner, and the two sit side by side rather than
- * nested, because an anchor inside an anchor is invalid markup. The info link
- * says it came from the list, which is where the details view then goes back
- * to.
+ * nested, because an anchor inside an anchor is invalid markup. Where the
+ * details view goes back to is not something this link has to say: it goes
+ * back, and the entry it goes back to is this list.
  */
 export function SessionCard({ session }: { session: SessionSummary }) {
   const navigate = useNavigate();
@@ -102,7 +102,6 @@ export function SessionCard({ session }: { session: SessionSummary }) {
       </Link>
       <Link
         to={`/sessions/${session.id}/info`}
-        state={{ from: 'list' }}
         aria-label={`Details and controls for ${session.name}`}
         className="absolute top-3 right-3 inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
       >

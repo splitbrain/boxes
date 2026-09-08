@@ -9,6 +9,7 @@ import type {
 } from '../../../shared/types.ts';
 import { api } from '../api.ts';
 import { BackLink } from '@/components/BackLink';
+import { useUp } from '@/hooks/use-up';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Notice } from '@/components/Notice';
 import { Button } from '@/components/ui/button';
@@ -38,6 +39,8 @@ import { Textarea } from '@/components/ui/textarea';
  */
 export function AgentSetEditor() {
   const { setId = '' } = useParams();
+  /** Out to the list of sets, popped rather than pushed; see useUp. */
+  const up = useUp('/agents');
 
   const [set, setSet] = useState<AgentSetDetail | null>(null);
   const [preview, setPreview] = useState<AgentBundlePreview | null>(null);
@@ -90,7 +93,7 @@ export function AgentSetEditor() {
   if (!set) {
     return (
       <div className="flex flex-col gap-4">
-        <BackLink to="/agents" label="Agent configuration" />
+        <BackLink up={up} label="Agent configuration" />
         {error ? (
           <Notice className="rounded-md border px-3 py-2">{error}</Notice>
         ) : (
@@ -106,7 +109,7 @@ export function AgentSetEditor() {
 
   return (
     <div className="flex flex-col gap-4">
-      <BackLink to="/agents" label="Agent configuration" />
+      <BackLink up={up} label="Agent configuration" />
 
       <h1 className="text-xl font-semibold">{set.name}</h1>
 

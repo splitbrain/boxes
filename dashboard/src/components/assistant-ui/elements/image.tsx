@@ -24,6 +24,7 @@ import type {
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
+import { useHistoryOverlay } from "@/hooks/use-history-overlay";
 import { Spinner } from "@/components/Spinner";
 
 const extensionForMimeType = (mimeType?: string): string => {
@@ -271,6 +272,15 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
     setIsOpen(false);
     triggerRef.current?.focus();
   }, []);
+
+  /*
+   * A zoomed image covers the thread, so the back button closes it rather
+   * than leaving the thread — the same rule the dialogs under components/ui
+   * follow, applied by hand because this overlay is its own portal rather
+   * than a Radix root. Escape below does the same on a keyboard; on a phone
+   * there is no Escape, and back is the gesture that means dismiss.
+   */
+  useHistoryOverlay(isOpen, handleClose);
 
   useEffect(() => {
     if (!isOpen) return;

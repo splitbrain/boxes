@@ -8,6 +8,7 @@ import { CopyField } from '@/components/CopyField';
 import { Notice } from '@/components/Notice';
 import { sessionBadges } from '@/components/SessionCard';
 import { StatusBadge } from '@/components/StatusBadge';
+import { useUp } from '@/hooks/use-up';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { pollWhileVisible } from '@/lib/poll';
@@ -31,25 +32,25 @@ function Meta({ label, value }: { label: string; value: string }) {
  * What a session is made of and what can be done to it. The conversation
  * lives at /sessions/:id; this route is the ops side of the same session.
  *
- * Back goes where the visitor came from: the list when the list sent them,
- * and otherwise the exact thread they were reading, which a header link says
- * — a session has several, and landing on whichever is current is not the
- * same as going back. A reload or a pasted URL carries no such state and
- * falls back to the session's current thread.
+ * Back goes where the visitor came from, by going back: the entry this view
+ * was opened from is still on the stack, whether it was the list or a thread
+ * that opened it, so there is nothing to remember and nothing to get wrong.
+ * The view used to be told which of the two had sent it and then push that
+ * one — which is how a back control ends up pointing the same way as the
+ * browser's own.
+ *
+ * The thread named in the entry's state is the fallback for the case where
+ * there is nothing to pop: a pasted link, a notification, a shortcut on a
+ * home screen. It has to be the exact thread that was open, because a session
+ * has several and whichever one is current is not the one being read.
  */
 export function SessionInfo() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
-  const from = useLocation().state as { from?: string; threadId?: string } | null;
-  const back =
-    from?.from === 'list'
-      ? { to: '/', label: 'Sessions' }
-      : {
-          to: from?.threadId
-            ? `/sessions/${id}/threads/${from.threadId}`
-            : `/sessions/${id}`,
-          label: 'Back to the thread',
-        };
+  const from = useLocation().state as { threadId?: string } | null;
+  const up = useUp(
+    from?.threadId ? `/sessions/${id}/threads/${from.threadId}` : `/sessions/${id}`,
+  );
 
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +96,12 @@ export function SessionInfo() {
     try {
       await api.deleteSession(id);
       await refresh();
-      void navigate('/');
+      // The list takes this entry's place rather than sitting on top of it:
+      // the view that acted is gone with what it acted on, and one back press
+      // out of a list is not a press back into a session that no longer
+      // exists. Entries further down may still name it — history belongs to
+      // the browser — and those land on the page that says so.
+      void navigate('/', { replace: true });
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -105,7 +111,7 @@ export function SessionInfo() {
   if (!session) {
     return (
       <div className="flex flex-col gap-4">
-        <BackLink to={back.to} label={back.label} />
+        <BackLink up={up} label="Back" />
         {error ? (
           <Notice className="rounded-md border px-3 py-2">{error}</Notice>
         ) : (
@@ -119,7 +125,7 @@ export function SessionInfo() {
 
   return (
     <div className="flex flex-col gap-4">
-      <BackLink to={back.to} label={back.label} />
+      <BackLink up={up} label="Back" />
 
       <div className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold">{session.name}</h1>
