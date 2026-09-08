@@ -973,8 +973,36 @@ The difference is an edge against a level. A count of transitions is wrong
 forever after one is missed; a reading of what is running now cannot drift,
 cannot wedge, and needs nothing reported at all — a task killed with no
 notification, an adapter restarted, a frame lost, all answer correctly on the
-next reading. A container that cannot be read at all answers "busy": stopping a
-box late is recoverable, and stopping one with a two-hour build in it is not.
+next reading. A container the daemon will not answer for at all is the one
+silence there is: the last answer stands until a reading settles it, because
+stopping a box late is recoverable and stopping one with a two-hour build in it
+is not.
+
+**An empty box is empty, whatever the reason.** A reading that finds nothing of
+ours — no adapter, no agent process — used to count as busy, on the reasoning
+that a shape this cannot understand is not evidence of an empty box. It is,
+and the reasoning cost more than it saved. Boxes spawns the adapter as an exec
+and keeps none there between connections, so a container that is up and has
+never been opened, or that has outlived the orchestrator process that opened
+it, runs the entrypoint and nothing else — and every one of them said "still
+running" on its card with no thread able to say what, *and* was never reaped,
+because the reaper asks this same question. A stopped session was the same
+answer from the other side: nothing to ask, read as nothing answering.
+
+What makes "empty" safe is the id. Work only ever sits under an adapter or
+under an agent process, an agent is recognised by the conversation on its
+command line wherever it sits, and an agent that outlived its adapter is still
+an agent — so a box that has lost its adapter still reports what its
+conversations were running, under the conversation that was running it. A box
+with neither in it has nothing running that Boxes ever started. Stopping a
+session says so at once rather than at the next reading, so a card does not
+carry the badge over the moment its box was shut down.
+
+Busy with nothing to show for it — work under an agent process that names no
+conversation — is a real state and looks exactly like a bug from the outside: a
+card saying "still running" with every one of its threads quiet. It is reported
+once, on the transition, with the commands it could not place, because the log
+is the only place that reason can go.
 
 **A level has to be pushed as well as read.** Nothing reports a build
 finishing, so a reading is the only news there is — and a reading only happens

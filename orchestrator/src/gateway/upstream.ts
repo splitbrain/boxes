@@ -244,15 +244,14 @@ export class UpstreamSession {
   ) {
     this.slog = log.session(sessionId);
     this.downstreams = new Broadcast(sessionId, (thread) => this.threadState(thread));
-    this.background = new BackgroundProbe(
-      () => this.containerProcesses(),
-      this.adapterToken(),
-      cfg.BACKGROUND_POLL_SECONDS * 1_000,
-      Date.now,
+    this.background = new BackgroundProbe({
+      list: () => this.containerProcesses(),
+      adapter: this.adapterToken(),
+      ttlMs: cfg.BACKGROUND_POLL_SECONDS * 1_000,
       // A probe that cannot read its box holds whatever it last believed, and
       // what it last believed holds the reaper off. Silence here is a session
       // that never stops for a reason nobody can see.
-      (error) =>
+      onTrouble: (error) =>
         error
           ? this.slog.warn('cannot read what is running in the box', {
               error: error.message,
@@ -262,10 +261,17 @@ export class UpstreamSession {
       // there is: a bar above a composer appears and goes away because this
       // said so, and without it the one that appeared stayed for as long as
       // the thread was open.
-      (threads) => {
+      onChange: (threads) => {
         for (const thread of threads) this.downstreams.threadState(thread);
       },
-    );
+      // And a box that says it is busy while every one of its threads says it
+      // is not looks exactly like a bug from the outside. It is a real state,
+      // and this is the only place its reason can be found.
+      onUnexplained: (why) =>
+        why
+          ? this.slog.warn('the box is busy with work no conversation claims', { why })
+          : this.slog.info('what is running in the box is accounted for again'),
+    });
     this.activity = new Activity({
       quietMs: cfg.AGENT_QUIET_SECONDS * 1000,
       settleMs: cfg.AGENT_SETTLE_SECONDS * 1000,
@@ -429,13 +435,14 @@ export class UpstreamSession {
    * What is running in this session's container, for the probe.
    *
    * A session with no container, or one that is not up, has nothing running
-   * in it — and answering that here rather than throwing keeps a stopped box
-   * from being read as one that could not be asked.
+   * in it. That is null rather than an empty table: an empty table is what a
+   * box that could not be read looks like, which counts as busy, and a
+   * stopped session was answering "still running" forever because of it.
    */
-  private async containerProcesses(): Promise<dk.ContainerProcess[]> {
+  private async containerProcesses(): Promise<dk.ContainerProcess[] | null> {
     const containerId = this.row().container_id;
-    if (!containerId) return [];
-    if ((await dk.containerState(containerId)) !== 'running') return [];
+    if (!containerId) return null;
+    if ((await dk.containerState(containerId)) !== 'running') return null;
     return dk.containerProcesses(containerId);
   }
 
@@ -1515,6 +1522,10 @@ export class UpstreamSession {
   stop(): void {
     this.stopping = true;
     this.stopPolling();
+    // The box is going away, and what was in it went with it. Said now rather
+    // than at the next reading, so a card does not carry "still running" over
+    // the moment its session was shut down.
+    this.background.clear();
     this.teardownConnection();
     this.clearThreadStates();
     this.pending.failSession(this.sessionId, 'Session stopped');

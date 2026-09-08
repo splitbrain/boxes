@@ -70,23 +70,43 @@ export interface BackgroundReading {
    */
   byThread: ReadonlyMap<string, BackgroundProcess[]>;
   /**
-   * Whether anything is running under an agent process whose conversation
-   * could not be read.
+   * Commands running under an agent process that names no conversation.
    *
-   * It counts for the box and belongs to no thread: it holds the reaper off
-   * the way any other work does, and there is no conversation to show it
-   * beside. A reading that could not be taken at all is this too — see
-   * `readBackgroundWork`.
+   * They count for the box and belong to no thread: they hold the reaper off
+   * the way any other work does, and there is no conversation to show them
+   * beside. Kept as their command lines rather than a count, because a box
+   * that says "still running" with no thread saying it is a thing somebody
+   * will have to explain, and this is the only evidence of what it was.
    */
-  unattributed: boolean;
+  unnamed: readonly string[];
 }
 
-/** Nothing running anywhere, which is what an empty box reads as. */
-const NOTHING: BackgroundReading = { byThread: new Map(), unattributed: false };
+/**
+ * Nothing running anywhere.
+ *
+ * A box that is not there, or not up, is this rather than a box that could
+ * not be read: those are opposite answers — one is knowledge and the other is
+ * silence — and conflating them said "still running" about every stopped
+ * session for as long as the orchestrator remembered it.
+ */
+const NOTHING: BackgroundReading = { byThread: new Map(), unnamed: [] };
 
 /** Whether a reading has anything in it at all, which is what the reaper asks. */
 export function anyWorkRunning(reading: BackgroundReading): boolean {
-  return reading.unattributed || reading.byThread.size > 0;
+  return reading.unnamed.length > 0 || reading.byThread.size > 0;
+}
+
+/**
+ * Why a reading is busy with nothing to show for it, or null when it is not.
+ *
+ * The one state that reads as a fault from the outside: a card saying "still
+ * running" with every one of its threads quiet. It is a legitimate answer —
+ * work Boxes can see and cannot place — but nobody can act on it without
+ * knowing which of the two ways it happened, so it is said once, in the log.
+ */
+export function unexplained(reading: BackgroundReading): string | null {
+  if (reading.unnamed.length === 0) return null;
+  return `work under an agent that names no conversation: ${reading.unnamed.join(', ')}`;
 }
 
 /**
@@ -157,6 +177,16 @@ export function commandOf(process: string): string {
  * is never work itself, so the same wrapper does not make it look busy. The
  * depth rule is kept underneath as the safe answer for an agent that names no
  * conversation: its work is real, and only who to show it to is unknown.
+ *
+ * With no adapter in the box at all, an id is the whole of the rule. Boxes
+ * spawns the adapter as an exec and does not keep one there between
+ * connections, so a container that is up and has never been opened — or that
+ * has outlived the orchestrator process that opened it — runs the entrypoint
+ * and nothing else. That used to read as a shape this could not understand,
+ * which counted as busy: every such box said "still running" and the reaper
+ * would not touch it for as long as it lasted. A box with nothing of ours in
+ * it is empty, and the id is what keeps that safe — an agent that outlived
+ * its adapter is still an agent, and its work is still found.
  */
 function readTree(
   processes: readonly ContainerProcess[],
@@ -195,9 +225,9 @@ function readTree(
     if (adapters.has(p.pid)) continue;
     const thread = threadOfAgent(p.command);
     if (thread !== null) {
-      // A stray id outside the adapter's tree is not a conversation this
-      // connection has anything to do with.
-      if (under(p, adapters)) agents.set(p.pid, thread);
+      // Under the adapter, or — with no adapter in the box at all — the only
+      // trace left of one, which is what makes an empty answer safe below.
+      if (adapters.size === 0 || under(p, adapters)) agents.set(p.pid, thread);
       continue;
     }
     if (adapters.has(p.ppid)) agents.set(p.pid, null);
@@ -228,23 +258,16 @@ export function readBackgroundWork(
   adapter: string,
   now: number = Date.now(),
 ): BackgroundReading {
-  const { adapters, agents } = readTree(processes, adapter);
-  // Nothing that looks like the adapter: the container is not running what
-  // this expects, and a shape it cannot read is not evidence of an empty box.
-  // Answering "busy" costs a session stopping later than it might; answering
-  // "idle" costs one stopped with work in it, which is the mistake that has
-  // no repair.
-  if (adapters.size === 0) return { byThread: new Map(), unattributed: true };
-
+  const { agents } = readTree(processes, adapter);
   const byThread = new Map<string, BackgroundProcess[]>();
-  let unattributed = false;
+  const unnamed: string[] = [];
   for (const p of processes) {
     if (p.pid === p.ppid) continue;
     if (agents.has(p.pid)) continue;
     if (!agents.has(p.ppid)) continue;
     const thread = agents.get(p.ppid) ?? null;
     if (thread === null) {
-      unattributed = true;
+      unnamed.push(commandOf(p.command));
       continue;
     }
     const entry: BackgroundProcess = {
@@ -254,7 +277,7 @@ export function readBackgroundWork(
     };
     byThread.set(thread, [...(byThread.get(thread) ?? []), entry]);
   }
-  return { byThread, unattributed };
+  return { byThread, unnamed };
 }
 
 /**
@@ -338,37 +361,71 @@ function changedThreads(before: BackgroundReading, after: BackgroundReading): st
  * composer goes away, and without it the bar was permanent for as long as the
  * thread stayed open.
  */
+export interface ProbeOptions {
+  /**
+   * How to ask the box what is running, or null where there is no box to ask
+   * — no container, or one that is not up. Null is an answer and not a
+   * failure: a stopped box is empty, and saying so is the difference between
+   * a session that is quiet and one that says "still running" forever.
+   *
+   * Injected so this is testable without a Docker daemon under it.
+   */
+  list: () => Promise<ContainerProcess[] | null>;
+  /** A token from the adapter's command line. */
+  adapter: string;
+  /** How long one reading stands for. */
+  ttlMs: number;
+  /** Present so a test can move time without waiting for it. */
+  now?: () => number;
+  /**
+   * Told the error when readings start failing, and null when they start
+   * working again. Only the changes, because a probe polls: a box that cannot
+   * be read would otherwise be three lines a minute for as long as it lasts,
+   * which is how a real fault gets scrolled past. The answer this holds is a
+   * guess whenever it is failing, and a guess that holds boxes awake
+   * indefinitely is worth one line saying so.
+   */
+  onTrouble?: (error: Error | null) => void;
+  /**
+   * Told which conversations' work has changed, whenever a reading differs
+   * from the one before it. Only those, so a poll over a box where nothing is
+   * happening says nothing at all.
+   */
+  onChange?: (threads: readonly string[]) => void;
+  /**
+   * Told why a reading is busy with nothing to show for it, and null when
+   * that clears. See `unexplained`: it is the state that looks like a fault
+   * from the outside, and the log is the only place the reason can go.
+   */
+  onUnexplained?: (why: string | null) => void;
+}
+
 export class BackgroundProbe {
   private reading: BackgroundReading = NOTHING;
   private readAt = -Infinity;
   private inFlight: Promise<void> | null = null;
   /** Whether the last reading failed, so the trouble is reported once. */
   private failing = false;
+  /** The last reason reported, so the same one is not reported twice. */
+  private reported: string | null = null;
 
-  /**
-   * @param list How to ask the box what is running; injected so this is
-   *   testable without a Docker daemon under it.
-   * @param adapter A token from the adapter's command line.
-   * @param ttlMs How long one reading stands for.
-   * @param now Present so a test can move time without waiting for it.
-   * @param onTrouble Told the error when readings start failing, and null
-   *   when they start working again. Only the changes, because a probe polls:
-   *   a box that cannot be read would otherwise be three lines a minute for
-   *   as long as it lasts, which is how a real fault gets scrolled past. The
-   *   answer this holds is a guess whenever it is failing, and a guess that
-   *   holds boxes awake indefinitely is worth one line saying so.
-   * @param onChange Told which conversations' work has changed, whenever a
-   *   reading differs from the one before it. Only those, so a poll over a
-   *   box where nothing is happening says nothing at all.
-   */
-  constructor(
-    private readonly list: () => Promise<ContainerProcess[]>,
-    private readonly adapter: string,
-    private readonly ttlMs: number,
-    private readonly now: () => number = Date.now,
-    private readonly onTrouble: (error: Error | null) => void = () => {},
-    private readonly onChange: (threads: readonly string[]) => void = () => {},
-  ) {}
+  private readonly list: ProbeOptions['list'];
+  private readonly adapter: string;
+  private readonly ttlMs: number;
+  private readonly now: () => number;
+  private readonly onTrouble: (error: Error | null) => void;
+  private readonly onChange: (threads: readonly string[]) => void;
+  private readonly onUnexplained: (why: string | null) => void;
+
+  constructor(options: ProbeOptions) {
+    this.list = options.list;
+    this.adapter = options.adapter;
+    this.ttlMs = options.ttlMs;
+    this.now = options.now ?? Date.now;
+    this.onTrouble = options.onTrouble ?? (() => {});
+    this.onChange = options.onChange ?? (() => {});
+    this.onUnexplained = options.onUnexplained ?? (() => {});
+  }
 
   /**
    * Whether anything at all is running in the box, and a refresh started if
@@ -402,6 +459,25 @@ export class BackgroundProbe {
     return [...this.reading.byThread.keys()];
   }
 
+  /**
+   * Forgets what was read, for a box that is going away.
+   *
+   * Stopping a session is the one moment the answer is known without asking,
+   * and waiting a poll to say so would leave "still running" on a box that
+   * has just been shut down.
+   */
+  clear(): void {
+    const before = this.reading;
+    this.reading = NOTHING;
+    this.readAt = -Infinity;
+    const changed = changedThreads(before, this.reading);
+    if (changed.length > 0) this.onChange(changed);
+    if (this.reported !== null) {
+      this.reported = null;
+      this.onUnexplained(null);
+    }
+  }
+
   /** Starts a reading if the last one has gone stale. */
   private freshen(): void {
     if (this.now() - this.readAt >= this.ttlMs) void this.refresh();
@@ -413,7 +489,10 @@ export class BackgroundProbe {
     this.inFlight = this.list()
       .then((processes) => {
         const before = this.reading;
-        this.reading = readBackgroundWork(processes, this.adapter, this.now());
+        // No box to ask is not the same as a box that would not answer: it is
+        // empty, and known to be.
+        this.reading =
+          processes === null ? NOTHING : readBackgroundWork(processes, this.adapter, this.now());
         this.readAt = this.now();
         if (this.failing) {
           this.failing = false;
@@ -421,6 +500,11 @@ export class BackgroundProbe {
         }
         const changed = changedThreads(before, this.reading);
         if (changed.length > 0) this.onChange(changed);
+        const why = unexplained(this.reading);
+        if (why !== this.reported) {
+          this.reported = why;
+          this.onUnexplained(why);
+        }
       })
       .catch((error: Error) => {
         // A box that cannot be asked is not a box known to be empty. Hold the

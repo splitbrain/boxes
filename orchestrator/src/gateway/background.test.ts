@@ -8,6 +8,7 @@ import {
   readBackgroundWork,
   startsBackgroundWork,
   threadOfAgent,
+  unexplained,
   workToStop,
 } from './background.ts';
 import type { ContainerProcess } from '../docker.ts';
@@ -177,8 +178,12 @@ test('an agent that names no conversation still holds the box awake', () => {
   );
   const reading = readBackgroundWork(procs, ADAPTER);
   assert.equal(anyWorkRunning(reading), true);
-  assert.equal(reading.unattributed, true);
+  assert.deepEqual(reading.unnamed, ['npm run build']);
   assert.equal(reading.byThread.size, 0);
+  // And it says so out loud, because a box that is busy while every one of
+  // its threads is quiet is indistinguishable from a bug when you are looking
+  // at the list rather than at the log.
+  assert.match(unexplained(reading) ?? '', /names no conversation: npm run build/);
 });
 
 test('a launcher between the adapter and the agent is not work either', () => {
@@ -199,14 +204,36 @@ test('the entrypoint the box was started with is not work', () => {
   assert.equal(anyWorkRunning(readBackgroundWork(EMPTY, ADAPTER)), false);
 });
 
-test('a container that is not running what this expects is left alone', () => {
-  // No adapter means the shape cannot be read, and a shape that cannot be
-  // read is not evidence of an empty box.
+test('a box with nothing of ours in it is empty, not unreadable', () => {
+  // Boxes spawns the adapter as an exec and keeps none there between
+  // connections, so a container that is up and has never been opened — or has
+  // outlived the orchestrator process that opened it — runs the entrypoint and
+  // nothing else. That read as a shape this could not understand, which
+  // counted as busy: the card said "still running" and the reaper would not
+  // touch the box for as long as it was up.
   const procs = table([1, 0, '/sbin/docker-init'], [7, 1, 'sleep infinity']);
-  assert.equal(anyWorkRunning(readBackgroundWork(procs, ADAPTER)), true);
-  assert.equal(anyWorkRunning(readBackgroundWork([], ADAPTER)), true);
-  // And nobody's thread is told a story about it.
+  assert.equal(anyWorkRunning(readBackgroundWork(procs, ADAPTER)), false);
+  assert.equal(anyWorkRunning(readBackgroundWork([], ADAPTER)), false);
   assert.equal(readBackgroundWork(procs, ADAPTER).byThread.size, 0);
+});
+
+test('an agent that outlived its adapter is still an agent', () => {
+  // Which is what makes the empty answer above safe. Work is only ever under
+  // one of the two, so a box with neither has none — and a box that has lost
+  // its adapter still shows what its conversations were running, under the
+  // conversation that was running it.
+  const procs = table(
+    [1, 0, '/sbin/docker-init'],
+    [7, 1, 'sleep infinity'],
+    [23019, 1, agent(23019, ONE)],
+    [23490, 23019, shell('npm run build')],
+  );
+  const reading = readBackgroundWork(procs, ADAPTER);
+  assert.equal(anyWorkRunning(reading), true);
+  assert.deepEqual(
+    reading.byThread.get(ONE)?.map((p) => p.command),
+    ['npm run build'],
+  );
 });
 
 test('a process that is its own parent does not hang the walk', () => {
@@ -311,14 +338,15 @@ test('a process that has already gone is nothing to stop', () => {
 // --- the probe -------------------------------------------------------------
 
 /** A probe over a table the test can swap, with a clock it can move. */
-function probe(initial: ContainerProcess[]): {
+function probe(initial: ContainerProcess[] | null): {
   p: BackgroundProbe;
-  set: (procs: ContainerProcess[]) => void;
+  set: (procs: ContainerProcess[] | null) => void;
   fail: (yes: boolean) => void;
   pass: (ms: number) => void;
   reads: () => number;
   trouble: () => Array<string | null>;
   changes: () => string[][];
+  unexplained: () => Array<string | null>;
   settle: () => Promise<void>;
 } {
   let procs = initial;
@@ -327,17 +355,19 @@ function probe(initial: ContainerProcess[]): {
   let now = 1_000_000;
   const trouble: Array<string | null> = [];
   const changes: string[][] = [];
-  const p = new BackgroundProbe(
-    () => {
+  const why: Array<string | null> = [];
+  const p = new BackgroundProbe({
+    list: () => {
       reads += 1;
       return failing ? Promise.reject(new Error('no daemon')) : Promise.resolve(procs);
     },
-    ADAPTER,
-    5_000,
-    () => now,
-    (error) => trouble.push(error?.message ?? null),
-    (threads) => changes.push([...threads]),
-  );
+    adapter: ADAPTER,
+    ttlMs: 5_000,
+    now: () => now,
+    onTrouble: (error) => trouble.push(error?.message ?? null),
+    onChange: (threads) => changes.push([...threads]),
+    onUnexplained: (reason) => why.push(reason),
+  });
   return {
     p,
     set: (next) => {
@@ -352,6 +382,7 @@ function probe(initial: ContainerProcess[]): {
     reads: () => reads,
     trouble: () => trouble,
     changes: () => changes,
+    unexplained: () => why,
     settle: () => p.refresh(),
   };
 }
@@ -440,6 +471,74 @@ test('one conversation starting something says nothing about another', async () 
   pass(5_000);
   await settle();
   assert.deepEqual(changes(), [[ONE], [TWO]]);
+});
+
+test('a box that is not there is empty, not unreadable', async () => {
+  // The two answers are opposites — one is knowledge, the other is silence —
+  // and they arrived here as the same empty table. So every session that had
+  // ever been started and was now stopped said "still running" for as long as
+  // the orchestrator remembered it, with no thread able to say what.
+  const { p, settle, unexplained: why } = probe(null);
+  await settle();
+  assert.equal(p.active, false);
+  assert.deepEqual(why(), []);
+});
+
+test('a box that is up with no adapter in it holds nothing awake', async () => {
+  // The reaper's own question, and the answer that kept every unopened box
+  // running: an entrypoint and nothing else is an idle box.
+  const { p, settle, unexplained: why } = probe(
+    table([1, 0, '/sbin/docker-init'], [7, 1, 'sleep infinity']),
+  );
+  await settle();
+  assert.equal(p.active, false);
+  assert.deepEqual(why(), []);
+});
+
+test('a box that stops is empty from that moment, not from the next reading', async () => {
+  // Said when the session is stopped rather than waited for: a card carrying
+  // "still running" over the moment its box was shut down is the same wrong
+  // answer, just for a shorter time.
+  const { p, set, settle } = probe(WORKING);
+  await settle();
+  assert.equal(p.active, true);
+
+  set(null);
+  p.clear();
+  assert.equal(p.active, false);
+  assert.deepEqual(p.work(ONE), []);
+});
+
+test('a thread whose box was cleared is told, so its bar goes with it', async () => {
+  const { p, changes, settle } = probe(WORKING);
+  await settle();
+  assert.deepEqual(changes(), [[ONE]]);
+
+  p.clear();
+  assert.deepEqual(changes(), [[ONE], [ONE]]);
+});
+
+test('the reason a box is busy with nothing to show is said once, and unsaid', async () => {
+  const orphaned = table(
+    ...EMPTY.map((x) => [x.pid, x.ppid, x.command] as [number, number, string]),
+    [23019, 22977, 'claude --output-format stream-json'],
+    [23490, 23019, shell('npm run build')],
+  );
+  const { set, pass, settle, unexplained: why } = probe(orphaned);
+  await settle();
+  assert.deepEqual(why(), ['work under an agent that names no conversation: npm run build']);
+
+  // Still true a minute later, and still one line.
+  for (let i = 0; i < 3; i += 1) {
+    pass(5_000);
+    await settle();
+  }
+  assert.equal(why().length, 1);
+
+  set(IDLE);
+  pass(5_000);
+  await settle();
+  assert.deepEqual(why().at(-1), null);
 });
 
 test('a box that cannot be asked keeps the answer it had', async () => {
