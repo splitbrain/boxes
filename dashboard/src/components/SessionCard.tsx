@@ -134,11 +134,6 @@ export function SessionCard({ session }: { session: SessionSummary }) {
                 className={cn('size-1.5 shrink-0 rounded-full', DOT[dot.kind])}
               />
               <span className="truncate">{threadName(thread)}</span>
-              {/* With two threads live this is where a question and a running
-                  turn are named, rather than only coloured. */}
-              {threadBadges(thread).map((b) => (
-                <StatusBadge key={b.label} kind={b.kind} label={b.label} />
-              ))}
             </Link>
           );
         })}
@@ -190,13 +185,19 @@ export function SessionCard({ session }: { session: SessionSummary }) {
 }
 
 /**
- * The bullet on a thread's row: what that conversation is doing, in one dot.
+ * The bullet on a thread's row: what that conversation is doing, in one dot,
+ * and the whole of what a row says about it.
  *
  * It said which thread was the session's default until now — green for the
  * current one, grey for the rest — which the row already says twice, in its
  * weight and in `aria-current`, and which spent the colour that means "the
  * container is up" on something that is not a state a thread can be in. Being
  * up is a precondition of every one of these.
+ *
+ * The labelled badges that used to sit at the end of a busy row are gone with
+ * it. They said in words what the dot now says in colour, on the two states
+ * out of four that had them, and a row is a place to pick a conversation out
+ * of a list rather than to read about one.
  *
  * The order is what outranks what, and it is the reader's order rather than
  * the machine's: a question stops everything, talking is the next most
@@ -211,29 +212,3 @@ export function threadDot(thread: ThreadSummary): { kind: BadgeKind; label: stri
   return { kind: 'idle', label: 'idle' };
 }
 
-/**
- * What one thread is doing, if anything: a turn running on it, and a question
- * waiting on it.
- *
- * A quiet thread gets nothing. Its row already carries its name and whether
- * it is the session's default, and a badge on every row would say only that
- * threads exist.
- */
-export function threadBadges(
-  thread: ThreadSummary,
-): Array<{ kind: BadgeKind; label: string }> {
-  const badges: Array<{ kind: BadgeKind; label: string }> = [];
-  if (thread.pendingCount > 0) {
-    badges.push({
-      kind: 'waiting',
-      label:
-        thread.pendingCount === 1
-          ? 'waiting for approval'
-          : `${thread.pendingCount} approvals waiting`,
-    });
-  }
-  if (thread.speaking) badges.push({ kind: 'turn', label: 'running turn' });
-  // Work still running gets no badge of its own: it is the quietest of the
-  // three and the bullet already says it, in the same colour this would.
-  return badges;
-}
