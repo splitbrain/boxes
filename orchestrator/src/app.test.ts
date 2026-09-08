@@ -782,3 +782,31 @@ test('starting a container for a command writes the current configuration first'
     'Open a PR.\n',
   );
 });
+
+test('stopping background work names a thread, and 404s for one that is not there', async () => {
+  insertSession('abc123');
+
+  const missing = await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/nope/background/stop',
+    payload: {},
+  });
+  assert.equal(missing.statusCode, 404);
+
+  // A thread with no conversation upstream cannot have left anything in the
+  // box, and says so without reaching Docker at all.
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO threads (id, session_id, acp_session_id, title, ordinal,
+       created_at, last_active_at)
+     VALUES ('t1', 'abc123', NULL, NULL, 1, ?, ?)`,
+  ).run(now, now);
+
+  const unminted = await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/t1/background/stop',
+    payload: { processId: 'aabbccdd' },
+  });
+  assert.equal(unminted.statusCode, 200);
+  assert.deepEqual(unminted.json(), { stopped: 0 });
+});

@@ -1,10 +1,15 @@
-import { useState } from 'react';
-import { ActivityIcon, SquareIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ActivityIcon, ChevronDownIcon, SquareIcon } from 'lucide-react';
+import type { BackgroundProcess } from '../../../shared/types.ts';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { commandsRunning } from '@/lib/activity';
+import { formatDuration } from '@/lib/task-notifications';
+import { cn } from '@/lib/utils';
 
 /**
- * That this box still has work in it, above the composer, for as long as it
- * does.
+ * What this thread has left running, above the composer, for as long as it is
+ * running.
  *
  * It matters in the one state Boxes could not otherwise express. The agent
  * has finished, the thread is quiet, the composer is waiting for you — and a
@@ -12,70 +17,142 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
  * that thread is indistinguishable from a finished one, and the only evidence
  * is an old line where the agent promised to report back.
  *
- * It says that and no more. What is running is not knowable from where the
- * answer comes from — the processes alive in the container, which carry the
- * shell the harness wrapped a command in and not the words the agent chose —
- * and the question this exists for is answered without it. The list this used
- * to show was built from a tally of the harness's own start and finish
- * reports, which counted every start and, in production, not one finish; see
+ * This thread's work and nobody else's. It was one boolean about the whole
+ * box for a while, sent to every conversation in it, so a command one thread
+ * forgot about said "something is still running" on a thread opened a minute
+ * ago — with a stop button that could not have reached it. What is listed
+ * here is what is running under this conversation's own agent process; see
  * `orchestrator/src/gateway/background.ts`.
  *
  * Quiet, at the weight of the tool rows: it is a standing fact about the box
  * rather than a thing that just happened, and it sits under whatever the
  * thread is saying.
  */
+
+/** How often the ages are re-read. A minute's work is not timed to the second. */
+const TICK_MS = 15_000;
+
+/** Now, roughly, re-read while there is something whose age is being shown. */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
 export function BackgroundBar({
-  busy,
+  processes,
   onStop,
 }: {
-  /** Whether the box still has work running in it. */
-  busy: boolean;
+  /** What this conversation is running, as the gateway last read it. */
+  processes: readonly BackgroundProcess[];
   /**
-   * Stops the work. This is `session/cancel` on the thread, which is the only
-   * lever ACP offers, and it does reach the work: the adapter settles a turn
-   * held open for its subagents and tears those subagents down with the
-   * interrupt. Named for what it does to the reader — the work stops — and
-   * confirmed first, because it is not undoable and half of why this bar
-   * exists is that the agent is *not* the thing that needs stopping.
+   * Kills it: one process and the tree under it, or everything this thread is
+   * running when given no id.
+   *
+   * A kill rather than an interrupt. The composer's own stop sends
+   * `session/cancel`, which ends a turn and tears down the subagents it was
+   * being held open for — and does nothing at all to a command still running,
+   * because that is a child of the agent's process that outlives the turn by
+   * design. This bar borrowed that button once and so offered a stop that
+   * stopped nothing.
    */
-  onStop?: () => void;
+  onStop?: (processId?: string) => void;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  if (!busy) return null;
+  /** The process a confirmation is open for, or 'all', or nothing. */
+  const [confirming, setConfirming] = useState<BackgroundProcess | 'all' | null>(null);
+  const now = useNow(processes.length > 0);
+  if (processes.length === 0) return null;
+
+  const stop = (): void => {
+    if (!confirming || !onStop) return;
+    setConfirming(null);
+    onStop(confirming === 'all' ? undefined : confirming.id);
+  };
 
   return (
     <div
       data-slot="boxes_background-bar"
       className="mx-auto w-full max-w-(--thread-max-width) px-2"
     >
-      <div className="flex items-center gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-        <ActivityIcon className="size-3.5 shrink-0" aria-hidden />
-        <span className="min-w-0 flex-1 truncate font-medium">
-          Something is still running in the background
-        </span>
-        {onStop ? (
-          <button
-            type="button"
-            onClick={() => setConfirming(true)}
-            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-accent-foreground"
-          >
-            <SquareIcon className="size-3 fill-current" aria-hidden />
-            Stop
-          </button>
-        ) : null}
-      </div>
+      <Collapsible className="rounded-lg border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <ActivityIcon className="size-3.5 shrink-0" aria-hidden />
+          <CollapsibleTrigger className="group/tasks flex min-w-0 flex-1 items-center gap-2 text-start">
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {commandsRunning(processes.length)}
+            </span>
+            <ChevronDownIcon
+              className={cn(
+                'size-3 shrink-0 -rotate-90 transition-transform duration-200',
+                'ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
+                'group-data-open/tasks:rotate-0',
+              )}
+            />
+          </CollapsibleTrigger>
+          {onStop ? (
+            <button
+              type="button"
+              aria-label="Stop everything still running"
+              onClick={() => setConfirming('all')}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-accent hover:text-accent-foreground"
+            >
+              <SquareIcon className="size-3 fill-current" aria-hidden />
+              {processes.length === 1 ? 'Stop' : 'Stop all'}
+            </button>
+          ) : null}
+        </div>
+        <CollapsibleContent
+          className={cn(
+            'overflow-hidden ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:animate-none',
+            'data-closed:animate-collapsible-up data-open:animate-collapsible-down',
+            'data-closed:fill-mode-forwards duration-200 [--tw-duration:200ms]',
+          )}
+        >
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {processes.map((process) => (
+              <li key={process.id} className="flex items-baseline gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono">{process.command}</span>
+                {/* Since it started, not since it last said anything: a
+                    command that has printed nothing for an hour is the one
+                    this bar is for. */}
+                {process.startedAt === null ? null : (
+                  <span className="shrink-0 tabular-nums opacity-80">
+                    {formatDuration(Math.max(now - process.startedAt, 0))}
+                  </span>
+                )}
+                {onStop ? (
+                  <button
+                    type="button"
+                    aria-label={`Stop ${process.command}`}
+                    onClick={() => setConfirming(process)}
+                    className="inline-flex shrink-0 items-center rounded-md px-1 py-0.5 hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <SquareIcon className="size-2.5 fill-current" aria-hidden />
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </CollapsibleContent>
+      </Collapsible>
 
       {confirming && onStop ? (
         <ConfirmDialog
-          title="Stop background work?"
-          description="Interrupts this conversation, which is what the work is running under: subagents are torn down, and anything half-done stays half-done. Nothing will report back."
+          title={confirming === 'all' && processes.length > 1 ? 'Stop everything?' : 'Stop this?'}
+          description={
+            confirming === 'all'
+              ? 'Kills what this conversation is still running, and anything those commands started. Half-done work stays half-done, and nothing will report back.'
+              : `Kills "${confirming.command}", and anything it started. Half-done work stays half-done, and nothing will report back.`
+          }
           confirmLabel="Stop"
           danger
-          onConfirm={() => {
-            setConfirming(false);
-            onStop();
-          }}
-          onCancel={() => setConfirming(false)}
+          onConfirm={stop}
+          onCancel={() => setConfirming(null)}
         />
       ) : null}
     </div>

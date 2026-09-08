@@ -56,9 +56,12 @@ export function startReaper(
       const upstream = manager.upstream(row.id);
       if (upstream.attachedCount > 0) continue;
       // A box with a command still running in it, or a monitor still watching
-      // something, is not idle however quiet it has gone. Capped inside, so a
-      // task whose ending was never reported delays this rather than
-      // cancelling it; see gateway/background.ts.
+      // something, is not idle however quiet it has gone. Read from the box
+      // rather than reported to it, so nothing has to say when the work ends
+      // for this to stop holding: it is a reading of the present, and a task
+      // that died unannounced is gone from the next one. Whose work it is
+      // does not matter here — any of the session's threads holds the box.
+      // See gateway/background.ts.
       if (upstream.backgroundActive) continue;
       if (now - row.last_active_at < idleMs) continue;
 

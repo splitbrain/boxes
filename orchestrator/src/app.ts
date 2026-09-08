@@ -205,6 +205,25 @@ export function buildApp(
     return manager.selectThread(id, threadId);
   });
 
+  /**
+   * Kills one thing that conversation left running, or everything it has.
+   *
+   * A kill and not a cancel: a background command is a child of the agent's
+   * own process that outlives the turn which started it, and interrupting the
+   * conversation does not reach it. The `processId` is the one the thread
+   * state carried; without one, everything that thread is running stops.
+   *
+   * The answer says how many processes were signalled, and zero is an
+   * ordinary one — the work can end between a browser being told about it and
+   * somebody pressing stop.
+   */
+  app.post('/api/sessions/:id/threads/:threadId/background/stop', async (req) => {
+    const { id, threadId } = req.params as { id: string; threadId: string };
+    const body = req.body as { processId?: unknown } | undefined;
+    const processId = typeof body?.processId === 'string' ? body.processId : undefined;
+    return manager.stopBackgroundWork(id, threadId, processId);
+  });
+
   app.get('/api/sessions/:id/log', async (req): Promise<AcpLogPage> => {
     const { id } = req.params as { id: string };
     const { after, limit } = req.query as { after?: string; limit?: string };

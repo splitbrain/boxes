@@ -1,7 +1,8 @@
 import type { ContainerProcess } from '../docker.ts';
+import type { BackgroundProcess } from '../../../shared/types.ts';
 
 /**
- * Whether a session still has work running in it.
+ * What is running in a session's box, and which conversation left it there.
  *
  * A turn that leaves something running in the background ends like any other:
  * the agent says it will report back, the thread goes quiet, and — with the
@@ -27,67 +28,318 @@ import type { ContainerProcess } from '../docker.ts';
  * no notification, an adapter restarted, a frame lost, all answer correctly
  * on the next reading because the question is only ever about the present.
  *
- * What it cannot do is say what the work *is*. A process carries the shell
- * the harness wrapped it in rather than the words the agent chose, so "npm
- * run build" is not recoverable from here. That was the price of the trade,
- * and the answer both readers need — the reaper, and a person wondering
- * whether the agent is finished — is the boolean.
+ * The reading is per conversation, because that is the question a reader
+ * asks. It was a boolean about the whole box once, and every thread was sent
+ * it: a shell one conversation left behind said "something is still running"
+ * on all of them, including a thread opened a minute ago that had never run
+ * anything. The box does say which conversation each process belongs to — see
+ * `readTree` — and the answer is only useful once it does, because the
+ * stop button beside it has to reach the work rather than the reader's own
+ * conversation.
  */
 
 /**
- * Whether any process in the container is work the agent started.
+ * The conversation an agent process is running, read off its command line.
+ *
+ * The SDK spawns the CLI with the session it is to be, so the id is on the
+ * process: `--session-id=<uuid>` for a conversation the adapter minted or
+ * forked, `--resume=<uuid>` for one it loaded after a restart. Both are the
+ * adapter's own id for the thread — `createSession` passes the ACP session id
+ * as one or the other — which is the id every ACP message names and the id
+ * the threads table stores. So no bookkeeping is needed to tie a process to a
+ * conversation: it is written on the process.
+ *
+ * `--session-id` wins where both appear, which is a fork: `--resume` names
+ * the conversation it was forked *from*, and its work is not that one's.
+ * `--resume-session-at` is a message id rather than a session id, and does
+ * not match — the `=` is part of what is looked for.
+ */
+export function threadOfAgent(command: string): string | null {
+  return (
+    /(?:^|\s)--session-id=(\S+)/.exec(command)?.[1] ??
+    /(?:^|\s)--resume=(\S+)/.exec(command)?.[1] ??
+    null
+  );
+}
+
+/** One reading of a box: what is running in it, by conversation. */
+export interface BackgroundReading {
+  /**
+   * Work under each conversation's agent process, by the adapter's own id for
+   * that thread. Only conversations with something running appear.
+   */
+  byThread: ReadonlyMap<string, BackgroundProcess[]>;
+  /**
+   * Whether anything is running under an agent process whose conversation
+   * could not be read.
+   *
+   * It counts for the box and belongs to no thread: it holds the reaper off
+   * the way any other work does, and there is no conversation to show it
+   * beside. A reading that could not be taken at all is this too — see
+   * `readBackgroundWork`.
+   */
+  unattributed: boolean;
+}
+
+/** Nothing running anywhere, which is what an empty box reads as. */
+const NOTHING: BackgroundReading = { byThread: new Map(), unattributed: false };
+
+/** Whether a reading has anything in it at all, which is what the reaper asks. */
+export function anyWorkRunning(reading: BackgroundReading): boolean {
+  return reading.unattributed || reading.byThread.size > 0;
+}
+
+/**
+ * A stable id for one running process, from the command line it is running.
+ *
+ * The pid cannot be it. `docker top` runs `ps` on the host, so the pids it
+ * reports are the host's and mean nothing inside the container — where the
+ * kill has to happen. The command line is the same string in both places and
+ * identifies the call on its own: the harness gives every tool call its own
+ * `/tmp/claude-<hex>-cwd` to write its working directory to, so two runs of
+ * the same command are two different strings here.
+ *
+ * FNV-1a, because this needs to be short, stable across readings, and the
+ * same on both sides of a stop request. It is not a security boundary: the
+ * stop resolves it against the box's own processes and can only ever match
+ * something the box is running.
+ */
+export function processId(command: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < command.length; i += 1) {
+    hash ^= command.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/**
+ * What the agent asked for, out of the shell the harness wrapped it in.
+ *
+ * A tool call's process is not the command the agent wrote. It is a shell
+ * restoring a snapshot, undoing an alias, then `eval`-ing the command and
+ * writing its working directory somewhere for the next call to pick up:
+ *
+ *     /bin/bash -c source /home/agent/.claude/shell-snapshots/snapshot-….sh
+ *       2>/dev/null || true && shopt -u extglob … && eval 'npm run build'
+ *       < /dev/null && pwd -P >| /tmp/claude-9138-cwd
+ *
+ * The words the agent chose are in there, between the quotes. Boxes said for
+ * a while that they were not — that a process carried the wrapper and the
+ * command was lost with it — and built the bar that says so around it. They
+ * are simply in the middle of the line.
+ *
+ * Anything that is not that shape is its own name: a process the harness did
+ * not wrap, or a wrapper of some later shape, reads better as itself than as
+ * a failed parse.
+ */
+export function commandOf(process: string): string {
+  const eval_ = /(?:^|\s)eval '((?:[^']|'\\'')*)'/.exec(process);
+  if (!eval_) return process.trim();
+  // `bash -c` is given the command single-quoted, so a quote inside it
+  // arrives as the four characters that close, escape and reopen.
+  return (eval_[1] ?? '').replaceAll(`'\\''`, `'`).trim();
+}
+
+/**
+ * The adapter processes in a box, and every agent under them with the
+ * conversation each is running — null where a process is an agent but does
+ * not say which conversation it is.
  *
  * The shape being read is the one the session image runs: the adapter Boxes
  * spawned, one agent process under it per conversation, and under those the
- * shells the agent's tool calls run in. So work is anything below an agent
- * process, and the agent processes themselves are not it.
+ * shells the agent's tool calls run in. So the adapter's own children are
+ * agents, by depth, and that alone was the rule once.
  *
- * Foreground and background tool calls are indistinguishable here — both are
- * the same shell with the same ancestry — and they do not need to be. A
- * foreground command cannot outlive the turn waiting on it, and both callers
- * ask this only of a session with no turn running: the reaper tests that
- * first, and a thread that is mid-turn already says so without help. So at
- * the moment the question is asked, a surviving shell is background work.
+ * The id on a command line is the other half. A process carrying one is an
+ * agent wherever it sits under the adapter, so a launcher or a re-exec
+ * between the two does not make the real agent look like work; and an agent
+ * is never work itself, so the same wrapper does not make it look busy. The
+ * depth rule is kept underneath as the safe answer for an agent that names no
+ * conversation: its work is real, and only who to show it to is unknown.
+ */
+function readTree(
+  processes: readonly ContainerProcess[],
+  adapter: string,
+): { adapters: ReadonlySet<number>; agents: ReadonlyMap<number, string | null> } {
+  const byPid = new Map(processes.map((p) => [p.pid, p]));
+  /** Whether any of `pids` is above a process, however far up. */
+  const under = (start: ContainerProcess, pids: ReadonlySet<number>): boolean => {
+    const seen = new Set<number>();
+    let at: ContainerProcess | undefined = start;
+    while (at && !seen.has(at.pid)) {
+      seen.add(at.pid);
+      if (pids.has(at.ppid)) return true;
+      at = byPid.get(at.ppid);
+    }
+    return false;
+  };
+
+  // The agents first, because they are what tells the adapter apart from
+  // them. `claude-agent-acp` is the name of the adapter's *package*, and the
+  // CLI it spawns lives inside that package's own node_modules — so the token
+  // Boxes launched the adapter with is on the agent's command line too, three
+  // directories into a path. What is not is a conversation id: that is on
+  // every agent and on nothing else.
+  const named = new Set(
+    processes.filter((p) => threadOfAgent(p.command) !== null).map((p) => p.pid),
+  );
+  const adapters = new Set(
+    processes
+      .filter((p) => p.command.includes(adapter) && !named.has(p.pid) && !under(p, named))
+      .map((p) => p.pid),
+  );
+
+  const agents = new Map<number, string | null>();
+  for (const p of processes) {
+    if (adapters.has(p.pid)) continue;
+    const thread = threadOfAgent(p.command);
+    if (thread !== null) {
+      // A stray id outside the adapter's tree is not a conversation this
+      // connection has anything to do with.
+      if (under(p, adapters)) agents.set(p.pid, thread);
+      continue;
+    }
+    if (adapters.has(p.ppid)) agents.set(p.pid, null);
+  }
+  return { adapters, agents };
+}
+
+/**
+ * One reading: what is running in the box, and whose it is.
+ *
+ * Work is what sits under an agent process. Each of an agent's own children
+ * is one entry — a tool call is one shell, whatever that shell then spawns —
+ * and what is under it is that entry's own tree, which the stop takes with
+ * it.
+ *
+ * Foreground and background calls are the same shell with the same ancestry,
+ * and nothing here tells them apart. It does not need to: a foreground
+ * command cannot outlive the turn waiting on it, so a shell that is still
+ * here when the thread is quiet is background work, and one that is here
+ * mid-turn is the turn — which the thread already says for itself.
  *
  * @param adapter A token from the adapter's own command line, which is the
  *   one Boxes launched and so the one thing here it names itself.
+ * @param now Epoch milliseconds, for turning an age into a start time.
  */
-export function backgroundWorkRunning(
+export function readBackgroundWork(
   processes: readonly ContainerProcess[],
   adapter: string,
-): boolean {
-  const adapters = processes.filter((p) => p.command.includes(adapter)).map((p) => p.pid);
+  now: number = Date.now(),
+): BackgroundReading {
+  const { adapters, agents } = readTree(processes, adapter);
   // Nothing that looks like the adapter: the container is not running what
   // this expects, and a shape it cannot read is not evidence of an empty box.
   // Answering "busy" costs a session stopping later than it might; answering
   // "idle" costs one stopped with work in it, which is the mistake that has
   // no repair.
-  if (adapters.length === 0) return true;
+  if (adapters.size === 0) return { byThread: new Map(), unattributed: true };
 
-  const children = new Map<number, number[]>();
+  const byThread = new Map<string, BackgroundProcess[]>();
+  let unattributed = false;
   for (const p of processes) {
     if (p.pid === p.ppid) continue;
-    children.set(p.ppid, [...(children.get(p.ppid) ?? []), p.pid]);
+    if (agents.has(p.pid)) continue;
+    if (!agents.has(p.ppid)) continue;
+    const thread = agents.get(p.ppid) ?? null;
+    if (thread === null) {
+      unattributed = true;
+      continue;
+    }
+    const entry: BackgroundProcess = {
+      id: processId(p.command),
+      command: commandOf(p.command),
+      startedAt: p.elapsedSeconds === null ? null : now - p.elapsedSeconds * 1000,
+    };
+    byThread.set(thread, [...(byThread.get(thread) ?? []), entry]);
+  }
+  return { byThread, unattributed };
+}
+
+/**
+ * The pids to kill to stop a thread's work, deepest first.
+ *
+ * One entry is a whole tree: the shell a tool call runs in, and whatever that
+ * shell started. Killing the shell alone would leave `npm run build` running
+ * with init for a parent, out of the reading — a box that looks empty with a
+ * build still in it, which is worse than not having stopped it. Children
+ * first, for the same reason: a parent killed first hands its children to
+ * init before they are signalled.
+ *
+ * `id` picks one entry; without one, everything that conversation has left
+ * running. Nothing else can be named: an agent process is never a target, and
+ * neither is work belonging to another thread.
+ *
+ * The processes must be the container's own reading, because these numbers
+ * are about to be handed to a `kill` inside it.
+ */
+export function workToStop(
+  processes: readonly ContainerProcess[],
+  adapter: string,
+  acpThreadId: string,
+  id?: string,
+): number[] {
+  const { agents } = readTree(processes, adapter);
+  const children = new Map<number, ContainerProcess[]>();
+  for (const p of processes) {
+    if (p.pid === p.ppid) continue;
+    children.set(p.ppid, [...(children.get(p.ppid) ?? []), p]);
   }
 
-  // The agents are the adapter's own children; the work is everything under
-  // those. A depth rather than a name, so nothing here has to know what the
-  // agent process is called.
-  const agents = adapters.flatMap((pid) => children.get(pid) ?? []);
-  return agents.some((pid) => (children.get(pid) ?? []).length > 0);
+  const roots = processes.filter(
+    (p) =>
+      !agents.has(p.pid) &&
+      agents.get(p.ppid) === acpThreadId &&
+      (id === undefined || processId(p.command) === id),
+  );
+
+  const doomed: number[] = [];
+  const seen = new Set<number>();
+  const walk = (p: ContainerProcess): void => {
+    if (seen.has(p.pid) || agents.has(p.pid)) return;
+    seen.add(p.pid);
+    for (const child of children.get(p.pid) ?? []) walk(child);
+    // After its own children, so the list runs from the leaves up.
+    doomed.push(p.pid);
+  };
+  for (const root of roots) walk(root);
+  return doomed;
+}
+
+/** The ids in one reading of one thread, which is what a change is measured in. */
+function shapeOf(entries: readonly BackgroundProcess[] | undefined): string {
+  return (entries ?? [])
+    .map((e) => e.id)
+    .sort()
+    .join(',');
+}
+
+/** Every thread whose work differs between two readings. */
+function changedThreads(before: BackgroundReading, after: BackgroundReading): string[] {
+  const threads = new Set([...before.byThread.keys(), ...after.byThread.keys()]);
+  return [...threads].filter(
+    (t) => shapeOf(before.byThread.get(t)) !== shapeOf(after.byThread.get(t)),
+  );
 }
 
 /**
  * The answer for one container, re-read no more often than `ttlMs`.
  *
- * Every reader wants a boolean it can have without waiting — the reaper mid
+ * Every reader wants an answer it can have without waiting — the reaper mid
  * sweep, a session summary being built for a browser — and every reader wants
  * it to be current. So it is polled behind them: a reading is served from the
  * last one until it goes stale, and refreshing is something the holder does,
  * not something a reader waits on.
+ *
+ * A level has to be pushed as well as read. Nothing reports a build finishing
+ * and nothing ever will, so a browser that is shown "still running" learns it
+ * has stopped only when this notices: `onChange` is how the bar above a
+ * composer goes away, and without it the bar was permanent for as long as the
+ * thread stayed open.
  */
 export class BackgroundProbe {
-  private busy = false;
+  private reading: BackgroundReading = NOTHING;
   private readAt = -Infinity;
   private inFlight: Promise<void> | null = null;
   /** Whether the last reading failed, so the trouble is reported once. */
@@ -105,6 +357,9 @@ export class BackgroundProbe {
    *   as long as it lasts, which is how a real fault gets scrolled past. The
    *   answer this holds is a guess whenever it is failing, and a guess that
    *   holds boxes awake indefinitely is worth one line saying so.
+   * @param onChange Told which conversations' work has changed, whenever a
+   *   reading differs from the one before it. Only those, so a poll over a
+   *   box where nothing is happening says nothing at all.
    */
   constructor(
     private readonly list: () => Promise<ContainerProcess[]>,
@@ -112,18 +367,35 @@ export class BackgroundProbe {
     private readonly ttlMs: number,
     private readonly now: () => number = Date.now,
     private readonly onTrouble: (error: Error | null) => void = () => {},
+    private readonly onChange: (threads: readonly string[]) => void = () => {},
   ) {}
 
   /**
-   * The last reading, and a refresh started if it has gone stale.
+   * Whether anything at all is running in the box, and a refresh started if
+   * the reading has gone stale.
    *
    * Never awaits: the first call answers false — an empty box is what a
    * session that has just started actually has — and the reading behind it
    * arrives before the reaper's next sweep, which is minutes away.
    */
   get active(): boolean {
-    if (this.now() - this.readAt >= this.ttlMs) this.refresh();
-    return this.busy;
+    this.freshen();
+    return anyWorkRunning(this.reading);
+  }
+
+  /**
+   * What one conversation has running, for the thread state a browser is
+   * sent. Empty for a thread that has left nothing behind, which is the
+   * answer for every thread in a box whose work belongs to another one.
+   */
+  work(acpThreadId: string): BackgroundProcess[] {
+    this.freshen();
+    return this.reading.byThread.get(acpThreadId) ?? [];
+  }
+
+  /** Starts a reading if the last one has gone stale. */
+  private freshen(): void {
+    if (this.now() - this.readAt >= this.ttlMs) void this.refresh();
   }
 
   /** Reads the box, at most one reading at a time. */
@@ -131,12 +403,15 @@ export class BackgroundProbe {
     if (this.inFlight) return this.inFlight;
     this.inFlight = this.list()
       .then((processes) => {
-        this.busy = backgroundWorkRunning(processes, this.adapter);
+        const before = this.reading;
+        this.reading = readBackgroundWork(processes, this.adapter, this.now());
         this.readAt = this.now();
         if (this.failing) {
           this.failing = false;
           this.onTrouble(null);
         }
+        const changed = changedThreads(before, this.reading);
+        if (changed.length > 0) this.onChange(changed);
       })
       .catch((error: Error) => {
         // A box that cannot be asked is not a box known to be empty. Hold the

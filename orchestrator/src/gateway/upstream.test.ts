@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import Docker from 'dockerode';
-import { Duplex } from 'node:stream';
+import { Duplex, Readable } from 'node:stream';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ import { EgressManager } from '../egress.ts';
 import { Notifier, type NotifyEvent } from '../notify.ts';
 import { AgentStore } from '../agents.ts';
 import { SessionManager } from '../sessions.ts';
+import { processId } from './background.ts';
 import type { DownstreamHandle } from './upstream.ts';
 import type { TurnStateParams } from '../../../shared/types.ts';
 
@@ -110,11 +111,35 @@ class FakeAdapter extends Duplex {
  * whether anything is still running in it. Written parent-first: the adapter
  * Boxes launched, an agent under it, and whatever the agent is running.
  */
-let processes: string[][] = [
+const BASE_PROCESSES: string[][] = [
   ['1', '0', '/sbin/docker-init'],
   ['19', '1', 'node /usr/local/bin/claude-agent-acp'],
-  ['100', '19', 'claude --output-format stream-json'],
+  // The agent process says which conversation it is running, which is how
+  // work found under it reaches that thread and no other.
+  ['100', '19', 'claude --output-format stream-json --session-id=acp-gone'],
 ];
+
+/** The box as this test is pretending to find it. Reset for every one. */
+let processes: string[][] = [...BASE_PROCESSES];
+
+/**
+ * What the box's own `ps` would print, which is not what `docker top` prints:
+ * the pids are the container's own numbering. Only the command lines are the
+ * same in both, which is why they are what a stop is asked for.
+ */
+let insideProcesses: string[][] = [];
+
+/** Every `kill` the orchestrator ran in the box, as its arguments. */
+let killed: string[][] = [];
+
+/** One hijacked exec stream carrying `text` on stdout, framed as Docker frames it. */
+function execStream(text: string): Readable {
+  const payload = Buffer.from(text, 'utf8');
+  const header = Buffer.alloc(8);
+  header[0] = 1;
+  header.writeUInt32BE(payload.length, 4);
+  return Readable.from([Buffer.concat([header, payload])]);
+}
 
 function fakeDocker(adapter: FakeAdapter | (() => FakeAdapter)): void {
   const spawn = typeof adapter === 'function' ? adapter : () => adapter;
@@ -125,10 +150,29 @@ function fakeDocker(adapter: FakeAdapter | (() => FakeAdapter)): void {
       start: async () => undefined,
       inspect: async () => ({ State: { Running: true } }),
       top: async () => ({ Titles: ['PID', 'PPID', 'COMMAND'], Processes: processes }),
-      exec: async () => ({
-        start: async () => spawn(),
-        inspect: async () => ({ ExitCode: 0 }),
-      }),
+      exec: async (opts: { Cmd?: string[] }) => {
+        const cmd = opts?.Cmd ?? [];
+        // The stop's two calls. Everything else is the adapter, which is a
+        // long-lived stream rather than a command with an answer.
+        if (cmd[0] === 'ps') {
+          const rows = insideProcesses.map(([pid, ppid, args]) => `${pid} ${ppid} ${args}`);
+          return {
+            start: async () => execStream(['  PID  PPID COMMAND', ...rows].join('\n')),
+            inspect: async () => ({ ExitCode: 0 }),
+          };
+        }
+        if (cmd[0] === 'kill') {
+          killed.push(cmd.slice(1));
+          return {
+            start: async () => execStream(''),
+            inspect: async () => ({ ExitCode: 0 }),
+          };
+        }
+        return {
+          start: async () => spawn(),
+          inspect: async () => ({ ExitCode: 0 }),
+        };
+      },
     }),
     getNetwork: () => ({
       inspect: async () => ({ Containers: {} }),
@@ -179,6 +223,9 @@ beforeEach(() => {
   db = openDb(dir);
   const cfg = config();
   announced = [];
+  processes = [...BASE_PROCESSES];
+  insideProcesses = [];
+  killed = [];
   manager = new SessionManager(
     db,
     cfg,
@@ -1174,6 +1221,133 @@ test('work the agent leaves running in the background holds the reaper off', asy
   assert.equal(up.backgroundActive, false);
 });
 
+/** The shell a tool call runs in, as the harness wraps one. */
+function shell(command: string, token = 'cfec'): string {
+  return (
+    `/bin/bash -c source ~/.claude/shell-snapshots/s.sh 2>/dev/null || true && ` +
+    `eval '${command}' < /dev/null && pwd -P >| /tmp/claude-${token}-cwd`
+  );
+}
+
+test('a thread is told what it is running, and not what another thread is', async () => {
+  // The bug this is here for: one boolean about the whole box, sent to every
+  // conversation in it. A command left running by one thread said "something
+  // is still running" on a thread opened a minute later, with a stop button
+  // beside it that could not have reached the work.
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  // A second conversation, with the other thread's id on it.
+  processes = [
+    ...processes,
+    ['300', '19', 'claude --output-format stream-json --session-id=acp-kept'],
+    ['200', '100', shell('npm run build')],
+  ];
+  await up.refreshBackgroundForTests();
+
+  assert.deepEqual(
+    up.threadState('acp-gone').background.map((p) => p.command),
+    ['npm run build'],
+  );
+  assert.deepEqual(up.threadState('acp-kept').background, []);
+});
+
+test('a thread learns its work has finished without anything reporting it', async () => {
+  // Nothing tells Boxes a build is over, so a reading is the only news there
+  // is. Without this the bar above a composer appeared and stayed for as long
+  // as the thread was open — including after the work had been stopped.
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  const watcher = fakeHandle(1, 'acp-gone');
+  up.attach(watcher);
+
+  processes = [...processes, ['200', '100', shell('npm run build')]];
+  await up.refreshBackgroundForTests();
+  const started = watcher.told.filter(
+    (params) => Array.isArray((params as TurnStateParams).background),
+  ) as TurnStateParams[];
+  assert.deepEqual(started.at(-1)?.background.map((p) => p.command), ['npm run build']);
+
+  processes = processes.filter((p) => p[0] !== '200');
+  await up.refreshBackgroundForTests();
+  const ended = watcher.told.filter(
+    (params) => Array.isArray((params as TurnStateParams).background),
+  ) as TurnStateParams[];
+  assert.deepEqual(ended.at(-1)?.background, []);
+});
+
+test('stopping work kills its tree, by the pids the box knows it by', async () => {
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  const build = shell('npm run build');
+  processes = [...processes, ['200', '100', build]];
+  await up.refreshBackgroundForTests();
+
+  // The same box, read from inside: the same commands under numbers of its
+  // own. `docker top` reports the host's pids, and a kill in here would
+  // otherwise be aimed at whatever the host happens to run at 200.
+  insideProcesses = [
+    ['1', '0', '/sbin/docker-init'],
+    ['12', '1', 'node /usr/local/bin/claude-agent-acp'],
+    ['13', '12', 'claude --output-format stream-json --session-id=acp-gone'],
+    ['14', '13', build],
+    ['15', '14', 'node .../vite build'],
+  ];
+
+  const stopped = await up.stopBackgroundWork('acp-gone', processId(build));
+  assert.equal(stopped, 2);
+  // Leaves first: a parent killed first hands its children to init, still
+  // running and no longer in any reading.
+  assert.deepEqual(killed, [['-TERM', '15', '14']]);
+});
+
+test('a stop reaches nothing but the work it was asked about', async () => {
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  insideProcesses = [
+    ['12', '1', 'node /usr/local/bin/claude-agent-acp'],
+    ['13', '12', 'claude --output-format stream-json --session-id=acp-gone'],
+    ['14', '13', shell('npm run build')],
+    ['20', '12', 'claude --output-format stream-json --session-id=acp-kept'],
+    ['21', '20', shell('npm run watch', 'aa')],
+  ];
+
+  // Everything one thread is running, and nothing of the other's.
+  assert.equal(await up.stopBackgroundWork('acp-kept'), 1);
+  assert.deepEqual(killed, [['-TERM', '21']]);
+
+  // And a thread whose work has already ended kills nothing at all.
+  killed = [];
+  assert.equal(await up.stopBackgroundWork('acp-kept', processId(shell('npm run watch', 'aa'))), 1);
+  killed = [];
+  insideProcesses = insideProcesses.filter((p) => p[0] !== '21');
+  assert.equal(await up.stopBackgroundWork('acp-kept'), 0);
+  assert.deepEqual(killed, []);
+});
+
 test('a prompt held open for background work is not the agent still talking', async () => {
   // The shape this whole distinction exists for: the adapter defers the
   // prompt's result until what the turn started settles, so the request stays
@@ -1228,14 +1402,16 @@ test('a prompt held open for background work is not the agent still talking', as
   await expect.poll(() => up.threadState('acp-gone').speaking, { timeout: 5000 }).toBe(false);
   const state = up.threadState('acp-gone');
   assert.equal(state.active, true);
-  assert.equal(state.background, false);
+  // Nothing was read out of a box — there is no container under this test —
+  // so nothing is claimed to be running in one.
+  assert.deepEqual(state.background, []);
 
   // The browser watching was told all of it, without asking.
   const told = watcher.told.filter(
     (params) => typeof (params as { speaking?: unknown }).speaking === 'boolean',
   ) as TurnStateParams[];
   assert.equal(told.at(-1)?.speaking, false);
-  assert.equal(told.at(-1)?.background, false);
+  assert.deepEqual(told.at(-1)?.background, []);
   // Nobody was notified: somebody is looking at this thread.
   assert.deepEqual(announced, []);
 

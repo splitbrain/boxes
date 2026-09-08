@@ -13,6 +13,32 @@ export type SessionStatus =
 /** What Docker reports right now, independent of what the DB believes. */
 export type DockerState = 'running' | 'exited' | 'missing' | 'unknown';
 
+/**
+ * One thing a conversation has left running in its box.
+ *
+ * Read from the processes alive in the container rather than reported by
+ * anything: nothing tells Boxes when a build finishes, and the tally that
+ * tried to keep score of it drifted permanently the first time a report went
+ * missing. See `orchestrator/src/gateway/background.ts`.
+ */
+export interface BackgroundProcess {
+  /**
+   * Stable for as long as the process lives, and what a stop names.
+   *
+   * Not the pid: `docker top` reads the host's numbering and the box has its
+   * own, so the pid Boxes sees is not one the box could be told to kill. This
+   * is derived from the command line, which is the same string in both.
+   */
+  id: string;
+  /** What the agent asked for — "npm run build" — as far as it can be read. */
+  command: string;
+  /**
+   * When it started, in epoch milliseconds, or null where the host's `ps`
+   * would not say. A build with twenty minutes behind it and one started ten
+   * seconds ago are different news.
+   */
+  startedAt: number | null;
+}
 
 /** One conversation of a session, as the API reports it. */
 export interface ThreadSummary {
@@ -72,10 +98,10 @@ export interface SessionSummary {
    * Whether the box still has work running in it — a command left running, a
    * monitor watching something — with no turn to say so.
    *
-   * A boolean rather than a list of what: it is read from the processes alive
-   * in the container, which carry the shell the harness wrapped a command in
-   * rather than the words the agent chose for it. See
-   * `orchestrator/src/gateway/background.ts`.
+   * About the box rather than any one conversation, which is the question a
+   * card in a list is answering and the one the idle reaper asks. What is
+   * running, and whose it is, is per thread and goes to the thread that owns
+   * it; see `TurnStateParams.background`.
    */
   backgroundBusy: boolean;
   /** Permission requests waiting for a browser to answer them, on any thread. */
@@ -650,6 +676,14 @@ export interface TurnStateParams {
   active: boolean;
   /** True while the agent is producing output on that thread, now. */
   speaking: boolean;
-  /** Whether the box this thread is in still has work running in it. */
-  background: boolean;
+  /**
+   * What this conversation has left running in the box, and nothing another
+   * conversation left there.
+   *
+   * It was a boolean about the whole box once, sent to every thread, which
+   * made a shell one conversation forgot about into "something is still
+   * running" on a thread opened a minute ago — with a stop button beside it
+   * that could not reach the work.
+   */
+  background: BackgroundProcess[];
 }

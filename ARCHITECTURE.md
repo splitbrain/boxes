@@ -910,17 +910,43 @@ was left was the quiet task: a command compiling for two hours, or a monitor
 watching a log that says nothing.
 
 `gateway/background.ts` asks the box what is running in it. `docker top` over
-the session's container, every `BACKGROUND_POLL_SECONDS`: the adapter Boxes
-launched is in there by the command Boxes gave it, one agent process per
-conversation sits under it, and the shells the agent's tool calls run in sit
-under those. Anything at that depth is work, and the answer is the boolean the
-reaper and a reader both want.
+the session's container: the adapter Boxes launched is in there by the command
+Boxes gave it, one agent process per conversation sits under it, and the shells
+the agent's tool calls run in sit under those. Anything under an agent is work.
+
+**Whose work it is comes off the process.** The Claude Agent SDK spawns the CLI
+as the session it is to be, so an agent process carries `--session-id=<uuid>`
+for a conversation the adapter minted or forked and `--resume=<uuid>` for one it
+loaded after a restart — and either way that uuid is the adapter's own id for
+the thread, the id every ACP message names and the id the `threads` table
+stores. A fork carries both, and `--session-id` is the one it *is*;
+`--resume-session-at` names a message and is not a session id. So work is
+attributed to a conversation with no bookkeeping at all, and each thread is
+told what it is running and nothing another thread left behind. This was one
+boolean about the whole box for a while, sent to every thread in it: a command
+one conversation forgot about read as "something is still running" on a thread
+opened a minute ago, with a stop button beside it that could not have reached
+the work.
+
+An agent is found by the id on its line rather than by its depth under the
+adapter, because the adapter's *package* name is on the agent's command line
+too — the CLI binary lives inside `claude-agent-acp/node_modules` — so the
+token that finds the adapter finds the agent as well. What tells them apart is
+that only an agent carries a conversation id. The depth rule is kept underneath
+for an agent that names no conversation: its work is real and holds the reaper
+off, and only who to show it to is unknown.
+
+**What is running is recoverable.** A tool call's process is a shell restoring a
+snapshot, undoing an alias and then `eval`-ing the command, with the words the
+agent chose in the middle of the line — `eval 'npm run build' < /dev/null &&
+pwd -P >| /tmp/claude-9138-cwd`. Boxes claimed for a while that a process
+carried only the wrapper and built a bar around saying so; the command was
+always in there. Each of an agent's own children is one entry, whatever tree
+hangs off it, and `etimes` from the same `ps` gives how long it has been going.
 
 Foreground and background calls are the same shell with the same ancestry, and
 they do not need telling apart. A foreground command cannot outlive the turn
-waiting on it, and both callers ask this only of a session with no turn
-running — the reaper tests that first, and a thread that is mid-turn already
-says so without help.
+waiting on it, and a thread that is mid-turn already says so without help.
 
 This was a tally once, kept from the adapter's own updates: a tool call that
 backgrounded something added an entry, and the harness's `<task-notification>`
@@ -936,11 +962,39 @@ The difference is an edge against a level. A count of transitions is wrong
 forever after one is missed; a reading of what is running now cannot drift,
 cannot wedge, and needs nothing reported at all — a task killed with no
 notification, an adapter restarted, a frame lost, all answer correctly on the
-next reading. The price is that a process carries the shell the harness wrapped
-a command in rather than the words the agent chose, so what the work *is* is
-not recoverable and the answer is only that there is some. A container that
-cannot be read at all answers "busy": stopping a box late is recoverable, and
-stopping one with a two-hour build in it is not.
+next reading. A container that cannot be read at all answers "busy": stopping a
+box late is recoverable, and stopping one with a two-hour build in it is not.
+
+**A level has to be pushed as well as read.** Nothing reports a build
+finishing, so a reading is the only news there is — and a reading only happens
+when somebody asks. The reaper asks when it sweeps, which is what the lazy
+refresh behind the probe is for. A person looking at a thread is the other
+reader, and nobody was asking on their behalf: the bar above their composer
+appeared and then stayed for as long as the thread was open, including after
+the work had been stopped. So the probe polls every
+`BACKGROUND_POLL_SECONDS` while a browser is attached, and pushes a fresh
+thread state to the conversations whose work changed — only those, so a poll
+over a quiet box says nothing at all.
+
+**Stopping it is a kill, not a cancel.** `session/cancel` is the composer's
+button and it is right for a turn: the adapter interrupts the query and tears
+down the subagents it was being held open for. It does nothing to a background
+command, which is a child of the CLI process that outlives its turn by design
+— so the bar, which borrowed that button, offered a stop that stopped nothing.
+`POST /api/sessions/:id/threads/:threadId/background/stop` kills instead: TERM
+to the entry's whole process tree, leaves first so nothing is orphaned into a
+reading that can no longer see it, and KILL to whatever is still there two
+seconds later.
+
+The pids need care. `docker top` runs `ps` on the *host*, so its pids are the
+host's numbering and mean nothing inside the container where the kill has to
+happen — the box is read again from inside, through `ps` there, at the moment
+the stop runs. What crosses between the two is the command line, which is the
+same string in both and identifies a call on its own: the harness gives every
+tool call its own `/tmp/claude-<hex>-cwd`, so two runs of the same command are
+two different strings. `BackgroundProcess.id` is a hash of it, and the session
+image installs procps and asserts `ps` for this reason as much as for a
+person's.
 
 ### Is the agent talking, or is it your turn
 

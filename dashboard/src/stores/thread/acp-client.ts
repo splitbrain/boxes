@@ -275,11 +275,15 @@ export class AcpClient {
         sessionId: params?.sessionId ?? '',
         active: params?.active === true,
         speaking: params?.speaking === true,
-        // An older orchestrator sent a list of what was running; anything in
-        // it meant the same as `true` does now.
+        // An orchestrator of the version in between sent one boolean about
+        // the whole box. It is not knowable here whose work it was, and a bar
+        // that says something unnamed is running is what that version could
+        // say for itself.
         background: Array.isArray(params?.background)
-          ? params.background.length > 0
-          : params?.background === true,
+          ? params.background
+          : params?.background === true
+            ? [{ id: 'unnamed', command: 'Something is still running', startedAt: null }]
+            : [],
       });
     }
   }

@@ -822,6 +822,24 @@ export class SessionManager {
     return toThreadSummary(this.upstream(id).switchThread(threadId));
   }
 
+  /**
+   * Stops one thing that conversation left running, or all of it.
+   *
+   * A thread the adapter has no conversation for cannot have left anything in
+   * the box: work is a process under an agent process, and it has none.
+   */
+  async stopBackgroundWork(
+    id: string,
+    threadId: string,
+    processId?: string,
+  ): Promise<{ stopped: number }> {
+    this.mustGet(id);
+    const row = getThread(this.db, threadId);
+    if (!row || row.session_id !== id) throw new HttpError(404, 'Thread not found');
+    if (!row.acp_session_id) return { stopped: 0 };
+    return { stopped: await this.upstream(id).stopBackgroundWork(row.acp_session_id, processId) };
+  }
+
   // --- boot reconciliation --------------------------------------------------
 
   /**
