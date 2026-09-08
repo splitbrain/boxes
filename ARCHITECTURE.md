@@ -290,21 +290,25 @@ marked, so the list is the tree. Each row is a plain link to that thread,
 because opening one is a plain navigation now: the connection names its own
 thread, so nothing has to be switched first. Opening a thread still makes it
 the session's default, as a fire-and-forget POST that neither blocks the
-navigation nor disturbs anybody. A row carries its own badges — a running
-turn, a waiting approval — because with two threads live that is the only
-place that says which one is busy. **New thread** and **Fork** sit under them,
-the second only when the adapter offers it.
+navigation nor disturbs anybody. **New thread** and **Fork** sit under the
+rows, the second only when the adapter offers it.
 
-The bullet on a row is that thread's state, in the one colour vocabulary
-`StatusBadge` holds: amber for a question waiting on it, blue for the agent
-talking on it, dim blue for work still running in it, grey for a thread with
-nothing going on. It marked the session's *default* thread until the work
-below arrived — green for that one, grey for the rest — which the row already
-says in its weight and in `aria-current`, and which spent the colour that
-means "the container is up" on something that is not a state a thread can be
-in. Being up is a precondition of all four. The dim blue is the one that could
-not be shown before: it is the conversation holding the box awake, which a
-list of them had no way to point at.
+A row is a name and a bullet, and the bullet is that thread's state, in the
+one colour vocabulary `StatusBadge` holds: amber for a question waiting on it,
+blue for the agent talking on it, dim blue for work still running in it, grey
+for a thread with nothing going on. It marked the session's *default* thread
+until the work below arrived — green for that one, grey for the rest — which
+the row already says in its weight and in `aria-current`, and which spent the
+colour that means "the container is up" on something that is not a state a
+thread can be in. Being up is a precondition of all four. The dim blue is the
+one that could not be shown before: it is the conversation holding the box
+awake, which a list of them had no way to point at.
+
+Rows carried labelled badges of their own beside the name, for two of those
+four states. They are gone: they said in words what the dot says in colour,
+and a row is for picking a conversation out of a list rather than for reading
+about one. The card keeps its badges, because a card is the whole box and has
+things to report that no dot covers.
 
 The thread view names which thread it is on beside the session's name,
 *always* rather than only when the session has more than one: two tabs on one
@@ -827,8 +831,8 @@ wire allows it — the ACP SDK keys pending responses by JSON-RPC id with no
 write queue, so two `session/prompt` calls naming different threads can be in
 flight on one connection — but `claude-agent-acp` holds every thread of a
 session in one process and may queue the second behind the first. Nothing in
-the UI claims otherwise: the per-thread badges report what a thread is doing,
-which is true either way.
+the UI claims otherwise: each thread's own bullet reports what that thread is
+doing, which is true either way.
 
 The adapter is not the source of truth for which threads exist. `session/list`
 returns only threads that have a transcript on disk, and a thread minted but
