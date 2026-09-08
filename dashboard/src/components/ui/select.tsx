@@ -3,11 +3,27 @@ import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useOverlayState } from "@/hooks/use-history-overlay"
 
+/**
+ * An open select blocks what is behind it, so it is a step back can take
+ * back, the same way a dialog is. See useHistoryOverlay.
+ */
 function Select({
+  open,
+  defaultOpen,
+  onOpenChange,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Root>) {
-  return <SelectPrimitive.Root data-slot="select" {...props} />
+  const select = useOverlayState({ open, defaultOpen, onOpenChange })
+  return (
+    <SelectPrimitive.Root
+      data-slot="select"
+      open={select.open}
+      onOpenChange={select.setOpen}
+      {...props}
+    />
+  )
 }
 
 function SelectGroup({

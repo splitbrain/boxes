@@ -4,7 +4,7 @@ import {
   type AppendMessage,
 } from '@assistant-ui/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 import type { SessionDetail, ThreadSummary } from '../../../shared/types.ts';
 import { Thread } from '@/components/assistant-ui/elements/thread.aui';
 import { BackgroundBar } from '@/components/BackgroundBar';
@@ -14,6 +14,8 @@ import { TokenWarning } from '@/components/TokenWarning';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { api } from '../api.ts';
 import { useDocumentTitle } from '@/hooks/use-document-title';
+import { useUp } from '@/hooks/use-up';
+import { takeStagedPrompt } from '@/lib/staged-prompt';
 import { threadTitle, type TabState } from '@/lib/tab-title';
 import { useSessions } from '../stores/sessions.ts';
 import { createAttachmentAdapter } from '../stores/thread/attachments.ts';
@@ -87,8 +89,12 @@ export function SessionThread() {
    * REVIEW.md and address the comments in it". Staged, never sent: what to do
    * with a review is the reviewer's call, and a prompt that fires itself on
    * navigation is a prompt nobody agreed to.
+   *
+   * Taken from beside the router rather than out of the history entry's
+   * state, which the browser replays: back and then forward used to re-stage
+   * it, and a turn nobody typed would reappear in the composer.
    */
-  const prefill = (useLocation().state as { prefill?: string } | null)?.prefill ?? null;
+  const [prefill, setPrefill] = useState<string | null>(null);
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The thread a fork just made, revealed as a link rather than opened. */
@@ -108,6 +114,16 @@ export function SessionThread() {
       live = false;
     };
   }, [id]);
+
+  // On arrival, and once: taking it clears it, and the guard is what makes a
+  // second run — React mounting effects twice in development — harmless.
+  useEffect(() => {
+    const staged = takeStagedPrompt(id);
+    if (staged !== null) setPrefill(staged);
+  }, [id]);
+
+  /** The way out of the thread: the session list, popped rather than pushed. */
+  const up = useUp('/');
 
   const { store, state } = useThread(id, threadId ?? null, session?.wsToken ?? null);
 
@@ -245,6 +261,7 @@ export function SessionThread() {
               <ThreadHeader
                 sessionId={id}
                 threadId={thread?.id ?? null}
+                up={up}
                 name={session?.name ?? id}
                 threadLabel={threadLabel}
                 // Nothing is connecting while the session itself could not be
@@ -310,9 +327,13 @@ export function SessionThread() {
                   <p className="text-sm text-muted-foreground">
                     It may have been deleted. Nothing can be sent to it from here.
                   </p>
-                  <Link to="/" className="text-sm font-medium underline">
+                  {/* The same step out as the header's, so a session that
+                      turned out to be gone is left the same way any other is:
+                      whatever sent the visitor here, not a list pushed over
+                      it. */}
+                  <a href={up.href} onClick={up.onClick} className="text-sm font-medium underline">
                     Back to sessions
-                  </Link>
+                  </a>
                 </div>
               ) : state.loading ? (
                 // Nothing to type into and nothing to read yet: the box may

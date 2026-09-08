@@ -302,6 +302,17 @@ export async function startStubOrchestrator(
       const found = state.sessions.find((s) => s.id === detail[1]);
       return found ? json(res, 200, found) : json(res, 404, { error: 'Not found' });
     }
+    // Removed from the list for real, so what the browser does next — the
+    // list it lands on, and the entry it must not be able to go back to — is
+    // answered by a deployment that no longer has the session.
+    if (detail && req.method === 'DELETE') {
+      const at = state.sessions.findIndex((s) => s.id === detail[1]);
+      if (at === -1) return json(res, 404, { error: 'Not found' });
+      state.sessions.splice(at, 1);
+      res.writeHead(204);
+      res.end();
+      return undefined;
+    }
     const threads = /^\/api\/sessions\/([^/]+)\/threads$/.exec(url);
     if (threads) {
       const found = state.sessions.find((s) => s.id === threads[1]);

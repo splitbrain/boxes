@@ -512,6 +512,108 @@ otherwise would hide the very question holding up the turn. And ACP's
 permission vocabulary maps onto assistant-ui's approval vocabulary by rename
 alone: `allow_once` to `allow-once`, `optionId`/`name` to `id`/`label`.
 
+### Going back
+
+Boxes is driven from a phone, where back is *the* navigation control — and in
+an installed app on iOS it is the only one, since there is no browser chrome
+and no Escape key. It used to be the least predictable thing in the dashboard,
+for two reasons that compound.
+
+Every back control was a `<Link>`. Leaving a view therefore pushed the view it
+left to, so sessions → thread → *back* left the stack as sessions, thread,
+sessions, and the device's own back button then went *forward* into the thread
+that had just been left. Two controls pointing the same way is what "back goes
+somewhere unexpected" actually was, and no amount of remembering where a
+visitor came from fixes it — the details view did remember, with a `from:
+'list'` in the history entry's state, and still pushed.
+
+And dialogs were component state, which the back gesture cannot see. The press
+went to the router, so the screen *behind* the dialog was torn down while the
+dialog was the thing meant to be dismissed. The review had both halves of it:
+a hunk sheet survived the press that closed the file underneath it and stayed
+up over the tree, showing lines of a file that was no longer open; the comment
+composer went *with* the file in a single press, taking whatever had been
+typed.
+
+So every surface in the app is now one of three kinds, and the kind decides
+what a press does.
+
+**Places** are routes — the list, a thread, the review, the details, the
+forms. Only these push. Each has one structural parent, and leaving one pops
+rather than pushes (`use-up.ts`): the entry the visitor came from is still on
+the stack, so it is the one they get, and there is nothing to remember and
+nothing to get wrong. The pop takes *everything* the view pushed in one step —
+the files a review opened, the entries its dialogs left — so leaving is one
+press and nothing of the view is left for a later press to fall into. Where
+there is nothing of the app's below (a pasted link, a notification, a
+home-screen shortcut, all of which start the stack inside the app) the parent
+replaces the current entry instead: back then leads out of the app the way it
+did before, which is what the browser's own button is for, and up leads to the
+parent, which is what the app's control is for. The one thing a page can read
+about entries it is not on is the running index React Router keeps in each
+entry's state, and that index is what makes "leave" a computed delta rather
+than a guess (`lib/history.ts`).
+
+**Drill-downs** are a step inside a place: the review's open file, which is in
+the search string so it stays linkable. It pushes on a phone, where the file
+takes the screen from the tree, and *replaces* from `md` up, where the tree
+stays beside it and picking a file is selecting in a sidebar rather than
+travelling — an entry per file there would have back walking a reading history
+nobody asked it to keep, while the header's own control says it leaves the
+review. Closing pops when there is an entry to pop and rewrites the search
+string when there is not, so both arrangements are right and so is a phone
+turned between them.
+
+**Modal surfaces** — dialogs, sheets, selects, the image lightbox — push a
+*marker*: one history entry at the same URL. Nothing about the page changes,
+which is the point; the entry exists to be popped. Back pops it and the
+surface closes with the screen behind it untouched. Closing from the inside —
+the X, the backdrop, Escape, a saved comment — pops the marker too, so a spent
+entry is never left for a later press to spend itself on. The marker is pushed
+before the paint that shows the surface, not after, or a press in the gap
+would be spent on the screen underneath.
+
+Two details of the marker are load-bearing. It carries the entry's state
+forward, because a view reads its own state — which thread a review was opened
+from — and an entry that dropped it would change how the view behaves purely
+because a dialog had been open. And it is popped only while both the index and
+the URL still match what was pushed: a replace keeps the index, and a
+confirmation that acts and leaves does exactly that (deleting a session
+replaces the entry with the list while its dialog is still mounted), so an
+index-only check would pop the visitor back onto the session they had just
+deleted.
+
+All of it lives in the primitives under `components/ui`, so every dialog and
+sheet in the app has the behaviour without its call site knowing, and the next
+one added gets it too. The exceptions are deliberate: a popover and a native
+select are dismissed by a tap anywhere and never cover the screen, and a
+marker there would race the tap that dismisses them — Radix closes on the way
+down, the click lands on whatever was underneath on the way up, and a pop
+arriving after that link's push would undo the visitor's own navigation. So
+back with a popover open leaves the view, and the popover is closed by the tap
+that took the visitor there.
+
+Terminal actions replace rather than push, which is the rest of the rule:
+deleting a session lands on the list in place of the view that acted, and
+submitting the new-session form spends the form's entry on the thread it made
+rather than leaving a form underneath that would make a second box. What sits
+*below* those entries may still name a session that is gone — history is the
+browser's, not the app's — and the app already answers that with a page saying
+so rather than a composer over nothing.
+
+One thing that had to leave the router entirely: the review's "Hand to agent"
+stages a prompt in the thread's composer, and that used to travel in the
+history entry's state. The browser replays state, so back and then forward
+re-staged it and a turn nobody typed reappeared. History state describes an
+entry; this describes a handover, so it now lives beside the router in a
+consume-once module (`lib/staged-prompt.ts`).
+
+`e2e/back.test.ts` drives all of it through `page.goBack()` against the real
+bundle — the stack index after each press, the sheet that closes while its
+file stays open, the confirmation that a back press must never answer, and the
+deep link with nothing beneath it. Nothing in the suite pressed back before,
+which is how the two halves of this came to disagree in the first place.
+
 ## The ACP gateway
 
 Two halves, in `orchestrator/src/gateway/`.
@@ -1287,11 +1389,12 @@ the agent controls:
 ### The review view
 
 `/sessions/:id/review`, with the open file in the search string
-(`?path=src/app.ts`) so a file is linkable and the back button works — which on
-a phone is also one step of the navigation stack: sessions → thread → file list
-→ file, out of each by the back button in the header and by no other control.
-From `md` up the list and the file are one view, so the stack is a step shorter
-there and back always leaves the review. Entry points: a
+(`?path=src/app.ts`) so a file is linkable — and on a phone it is a step of the
+navigation stack too: sessions → thread → file list → file, out of each by the
+header's own control or by the phone's back gesture, which do the same thing
+rather than each adding to what the other has to walk back through (see *Going
+back*). From `md` up the list and the file are one view, so the file is not a
+step there and back leaves the review. Entry points: a
 Review action in the thread header next to Fork, and one on the session card,
 where it works whether or not the box is running. The view owns the whole
 viewport the way the thread view does.
@@ -1623,6 +1726,11 @@ dashboard/
         convert.ts      That model in the shape the runtime reads
         exec.ts         !bang commands against the exec endpoint
     hooks/              What the views share: the header stepping aside, a thread following its own output
+      use-up.ts         Leaving a view by popping what it pushed, never by pushing its parent
+      use-history-overlay.ts  A dialog as a history entry, so back closes it and not the screen behind it
+    lib/
+      history.ts        Where in the stack the browser is, which both of the above read
+      staged-prompt.ts  A prompt handed from one view to another, consumed once, out of history's reach
     views/              SessionList, SessionCreate, SessionThread, SessionInfo, AgentSets
     components/
       Spinner.tsx       The one thing that says "working": blocks-wave, in every running state
@@ -1701,6 +1809,12 @@ API, edit and delete it, set a base revision, and hand the review to the agent
 with the prompt staged unsent.
 The degraded shapes are there as well — no git, an empty workspace, and a
 session whose workspace is still a volume.
+The back button has a file of its own (`e2e/back.test.ts`), because it is the
+navigation control on the platform this is driven from and nothing in the suite
+used to press it: every assertion there is a `page.goBack()` or a control the
+app calls back, checked against where it landed *and* against the depth of the
+stack it left behind — a pop that lands on the right screen by pushing a copy
+of it looks identical on screen, and only the count gives it away.
 That is what asserts the UX properties this frontend exists for, and it is
 where a component upgrade is reviewed: `/playground` renders every part kind over a
 canned store, so a registry re-run shows up on one page.

@@ -1,6 +1,6 @@
 import { ArrowLeft, FilePlus2, Send } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import type { ReviewDiffHunk, ReviewRepo } from '../../../shared/types.ts';
 import { Notice } from '@/components/Notice';
 import { Shelf } from '@/components/Shelf';
@@ -16,7 +16,10 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { useDocumentTitle } from '@/hooks/use-document-title';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { useScrollAway } from '@/hooks/use-scroll-away';
+import { useUp } from '@/hooks/use-up';
 import { useViewportLock } from '@/hooks/use-viewport-lock';
+import { historyIndex } from '@/lib/history';
+import { stagePrompt } from '@/lib/staged-prompt';
 import { cn } from '@/lib/utils';
 import { useSessions } from '../stores/sessions.ts';
 import {
@@ -50,7 +53,9 @@ const HANDOFF_PROMPT = 'Read REVIEW.md and address the comments in it.';
  * The open file is in the search string, so a file is linkable and the
  * browser's own back button works — which on a phone is also one step of the
  * stack: sessions → thread → file list → file, out of each by the same back
- * button in the header and by no other control.
+ * button in the header and by no other control. That button pops the step; it
+ * never pushes one, so the header's arrow and the phone's own back gesture
+ * always agree with each other.
  *
  * The layout collapses the desktop tool's three panels into patterns that work
  * at both sizes rather than two parallel UIs: the tree is a column beside the
@@ -100,6 +105,19 @@ export function SessionReview() {
   const [origin] = useState<string | null>(
     () => (location.state as { threadId?: string } | null)?.threadId ?? null,
   );
+  const name = session?.name ?? id;
+  const thread = origin ?? session?.currentThreadId;
+  /**
+   * The way out of the review: the conversation it was opened from.
+   *
+   * A pop, so the thread is the one that is already on the stack rather than
+   * a second copy of it pushed on top — and one pop, however many files were
+   * opened on the way, because every one of those is an entry this view
+   * pushed. The path is what a deep link falls back to, and what the link's
+   * href says for a middle click.
+   */
+  const threadPath = thread ? `/sessions/${id}/threads/${thread}` : `/sessions/${id}`;
+  const up = useUp(threadPath);
   const navigate = useNavigate();
   /**
    * Whether the tree and the pane are side by side, which decides what the
@@ -128,33 +146,66 @@ export function SessionReview() {
 
   // The URL is the source of truth for which file is open, so a back button, a
   // pasted link and a tree tap all go through the same path.
+  //
+  // The hunk sheet goes with the file it belongs to. It is the one surface
+  // here that is not the store's, and leaving it up over a file that has
+  // closed — or over the next file, showing the last one's lines — is what a
+  // back press used to do.
   useEffect(() => {
+    setHunk(null);
     if (path) void loadFile(path);
     else closeFile();
   }, [path]);
 
+  /**
+   * Opens a file — a step of the stack on a phone, and not one on a pointer.
+   *
+   * Below md the file takes the screen from the tree, so it is somewhere the
+   * visitor went and back is how they leave it. From md up the tree stays
+   * beside it and picking a file is selecting in a sidebar, not travelling;
+   * an entry per file there would have back walking a reading history nobody
+   * asked it to keep, while the header's own button says it leaves the
+   * review. Replacing keeps those two answers the same.
+   */
   const openPath = useCallback(
     (next: string) => {
-      setParams((current) => {
-        const params = new URLSearchParams(current);
-        params.set('path', next);
-        return params;
-      });
+      setParams(
+        (current) => {
+          const params = new URLSearchParams(current);
+          params.set('path', next);
+          return params;
+        },
+        { replace: wide },
+      );
       setScrollTo(null);
     },
-    [setParams],
+    [setParams, wide],
   );
 
-  const back = useCallback(() => {
-    setParams((current) => {
-      const params = new URLSearchParams(current);
-      params.delete('path');
-      return params;
-    });
+  /**
+   * Closes the open file, back to the tree.
+   *
+   * By popping the entry that opened it, so the header's arrow and the
+   * phone's back gesture do the same thing rather than each adding to what
+   * the other has to walk through. Where there is no such entry — a pasted
+   * link straight to a file, or the pointer arrangement, which replaces — the
+   * search string is rewritten in place instead.
+   */
+  const closeOpenFile = useCallback(() => {
+    if (historyIndex() > up.entry) navigate(-1);
+    else
+      setParams(
+        (current) => {
+          const params = new URLSearchParams(current);
+          params.delete('path');
+          return params;
+        },
+        { replace: true },
+      );
     // File → tree does not remount, so without this nothing would refetch and
     // the tree would keep the statuses and counts it was painted with.
     void loadTree();
-  }, [setParams]);
+  }, [up.entry, navigate, setParams]);
 
   /** Deletion markers by the line they sit after, for the pane. */
   const deletions = useMemo(
@@ -245,6 +296,21 @@ export function SessionReview() {
     [file, annotations, composing, saving, wide],
   );
 
+  /**
+   * Hands the review to the agent: stage the prompt, then go to the thread.
+   *
+   * Back out of the review when the thread is what opened it, so the
+   * conversation is the one already on the stack rather than a second copy
+   * pushed over the review. Otherwise the review's own entry is spent getting
+   * there — the comments have been handed over, so there is nothing here to
+   * come back to.
+   */
+  const handoff = useCallback((): void => {
+    stagePrompt(id, HANDOFF_PROMPT);
+    if (origin) up.go();
+    else void navigate(threadPath, { replace: true });
+  }, [id, origin, up, navigate, threadPath]);
+
   /** Steps to the next or previous entry of a sorted line list. */
   const step = (lines: number[], direction: -1 | 1): void => {
     if (lines.length === 0) return;
@@ -255,9 +321,6 @@ export function SessionReview() {
         : ([...lines].reverse().find((line) => line < from) ?? lines.at(-1)!);
     setScrollTo(next);
   };
-
-  const name = session?.name ?? id;
-  const thread = origin ?? session?.currentThreadId;
 
   // The code pane is the scroller here, the same way the thread is in a
   // thread: the document must not acquire one of its own.
@@ -281,26 +344,30 @@ export function SessionReview() {
               On a phone the stack is sessions → thread → file list → file, so
               a file's parent is the list and the list's parent is the thread.
               From md up the list and the file are one view side by side, so
-              there is nothing between the review and the thread. */}
+              there is nothing between the review and the thread.
+
+              Neither branch can be caught out by a phone turned since the
+              file was opened. Closing the file pops the entry that opened it
+              when there is one and rewrites the search string when there is
+              not, and leaving pops every entry this view pushed in one step
+              — so whichever control the breakpoint puts here, it steps out
+              once and lands where it says. */}
           {file && !wide ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
               className="shrink-0 px-2"
-              onClick={back}
+              onClick={closeOpenFile}
               aria-label="Back to the file list"
             >
               <ArrowLeft className="size-4" />
             </Button>
           ) : (
             <Button asChild variant="ghost" size="sm" className="shrink-0 px-2">
-              <Link
-                to={thread ? `/sessions/${id}/threads/${thread}` : `/sessions/${id}`}
-                aria-label="Back to the thread"
-              >
+              <a href={up.href} onClick={up.onClick} aria-label="Back to the thread">
                 <ArrowLeft className="size-4" />
-              </Link>
+              </a>
             </Button>
           )}
 
@@ -348,11 +415,10 @@ export function SessionReview() {
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() =>
-                void navigate(thread ? `/sessions/${id}/threads/${thread}` : `/sessions/${id}`, {
-                  state: { prefill: HANDOFF_PROMPT },
-                })
-              }
+              // Back to the conversation, not a second copy of it pushed on
+              // top — and the prompt handed over beside the router rather
+              // than in the entry's state, which back and forward replay.
+              onClick={handoff}
               title="Open the thread with a prompt to address these comments"
             >
               <Send className="size-3.5" />

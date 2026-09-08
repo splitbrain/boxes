@@ -4,6 +4,7 @@ import { Link } from 'react-router';
 import type { AgentSetSummary } from '../../../shared/types.ts';
 import { api } from '../api.ts';
 import { BackLink } from '@/components/BackLink';
+import { useUp } from '@/hooks/use-up';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Notice } from '@/components/Notice';
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,8 @@ import { Label } from '@/components/ui/label';
  * it is explained, because nowhere else in the UI has room for it.
  */
 export function AgentSets() {
+  /** Out to the session list, popped rather than pushed; see useUp. */
+  const up = useUp('/');
   const [sets, setSets] = useState<AgentSetSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -73,7 +76,7 @@ export function AgentSets() {
 
   return (
     <div className="flex flex-col gap-4">
-      <BackLink to="/" label="Sessions" />
+      <BackLink up={up} label="Sessions" />
 
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Agent configuration</h1>

@@ -4,6 +4,7 @@ import type { AgentSetSummary } from '../../../shared/types.ts';
 import { api } from '../api.ts';
 import { refresh } from '../stores/sessions.ts';
 import { Notice } from '@/components/Notice';
+import { useUp } from '@/hooks/use-up';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,6 +22,8 @@ const NO_SET = 'none';
 /** The new-session form, which opens the session's thread on success. */
 export function SessionCreate() {
   const navigate = useNavigate();
+  /** Out to the session list, whether the form was cancelled or submitted. */
+  const up = useUp('/');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,7 +59,10 @@ export function SessionCreate() {
         agentSet: agentSet === NO_SET ? null : agentSet,
       });
       await refresh();
-      void navigate(`/sessions/${created.id}`);
+      // The form's entry is spent on the thread it made rather than left
+      // under it: the box exists now, and back onto a form that would make a
+      // second one is not where anybody meant to go.
+      void navigate(`/sessions/${created.id}`, { replace: true });
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -110,7 +116,7 @@ export function SessionCreate() {
       ) : null}
 
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={() => void navigate('/')} disabled={busy}>
+        <Button type="button" variant="outline" onClick={up.go} disabled={busy}>
           Cancel
         </Button>
         <Button type="submit" disabled={busy || !name.trim()}>
