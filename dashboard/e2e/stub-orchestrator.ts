@@ -53,6 +53,7 @@ export function stubThread(over: Partial<ThreadSummary> = {}): ThreadSummary {
     ordinal: 1,
     turnActive: false,
     speaking: false,
+    backgroundBusy: false,
     pendingCount: 0,
     createdAt: Date.parse('2026-08-01T10:00:00Z'),
     lastActiveAt: Date.parse('2026-08-30T09:30:00Z'),

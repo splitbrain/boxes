@@ -1257,6 +1257,36 @@ test('a thread is told what it is running, and not what another thread is', asyn
   assert.deepEqual(up.threadState('acp-kept').background, []);
 });
 
+test('the session list says which thread is holding the box awake', async () => {
+  // The list shows every conversation of a box at once, and until now the
+  // only thing it could say was that the box had something running. Which one
+  // to open was left to the reader.
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  processes = [
+    ...processes,
+    ['300', '19', 'claude --output-format stream-json --session-id=acp-kept'],
+    ['200', '100', shell('npm run build')],
+  ];
+  await up.refreshBackgroundForTests();
+
+  const [session] = await manager.list();
+  assert.equal(session?.backgroundBusy, true);
+  assert.deepEqual(
+    session?.threads.map((t) => [t.id, t.backgroundBusy]),
+    [
+      ['t1', true],
+      ['t2', false],
+    ],
+  );
+});
+
 test('a thread learns its work has finished without anything reporting it', async () => {
   // Nothing tells Boxes a build is over, so a reading is the only news there
   // is. Without this the bar above a composer appeared and stayed for as long

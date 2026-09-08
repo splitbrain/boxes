@@ -714,6 +714,7 @@ export class SessionManager {
     // moment. `upstreams.get` rather than `upstream()`, which would start one.
     const upstream = this.upstreams.get(row.id);
     const speaking = new Set(upstream?.speakingThreads ?? []);
+    const working = new Set(upstream?.workingThreads ?? []);
     return {
       id: row.id,
       name: row.name,
@@ -730,7 +731,7 @@ export class SessionManager {
       attachedCount: upstream?.attachedCount ?? 0,
       wsToken: this.cfg.WS_AUTH_TOKEN,
       threads: listThreads(this.db, row.id).map((thread) =>
-        toThreadSummary(thread, pendingByThread, speaking),
+        toThreadSummary(thread, pendingByThread, speaking, working),
       ),
       currentThreadId: row.current_thread_id,
       // False until the adapter has been reached and has advertised it. The
@@ -912,6 +913,7 @@ function toThreadSummary(
   row: ThreadRow,
   pendingByThread: Map<string, number> = new Map(),
   speaking: ReadonlySet<string> = new Set(),
+  working: ReadonlySet<string> = new Set(),
 ): ThreadSummary {
   const acp = row.acp_session_id;
   return {
@@ -920,10 +922,11 @@ function toThreadSummary(
     title: row.title,
     ordinal: row.ordinal,
     turnActive: row.turn_active === 1,
-    // Both of these are the live gateway's, keyed by the adapter's own id: a
+    // These three are the live gateway's, keyed by the adapter's own id: a
     // thread the adapter has forgotten has nothing running in it and nobody
     // talking on it, by definition.
     speaking: acp ? speaking.has(acp) : false,
+    backgroundBusy: acp ? working.has(acp) : false,
     pendingCount: acp ? (pendingByThread.get(acp) ?? 0) : 0,
     createdAt: row.created_at,
     lastActiveAt: row.last_active_at,

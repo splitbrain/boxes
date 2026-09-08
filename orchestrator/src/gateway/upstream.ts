@@ -444,6 +444,11 @@ export class UpstreamSession {
     return this.activity.speakingThreads;
   }
 
+  /** The threads of this session with work still running in them. */
+  get workingThreads(): string[] {
+    return this.background.workingThreads;
+  }
+
   /**
    * Everything a browser is told about a thread: whether a prompt of its own
    * is open, whether the agent is talking, and what it has left running.

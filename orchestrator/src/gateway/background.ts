@@ -393,6 +393,15 @@ export class BackgroundProbe {
     return this.reading.byThread.get(acpThreadId) ?? [];
   }
 
+  /**
+   * The conversations with something running, for a list that shows every
+   * thread of a box at once and has to say which of them is holding it up.
+   */
+  get workingThreads(): string[] {
+    this.freshen();
+    return [...this.reading.byThread.keys()];
+  }
+
   /** Starts a reading if the last one has gone stale. */
   private freshen(): void {
     if (this.now() - this.readAt >= this.ttlMs) void this.refresh();

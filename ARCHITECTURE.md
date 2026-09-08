@@ -295,6 +295,17 @@ turn, a waiting approval — because with two threads live that is the only
 place that says which one is busy. **New thread** and **Fork** sit under them,
 the second only when the adapter offers it.
 
+The bullet on a row is that thread's state, in the one colour vocabulary
+`StatusBadge` holds: amber for a question waiting on it, blue for the agent
+talking on it, dim blue for work still running in it, grey for a thread with
+nothing going on. It marked the session's *default* thread until the work
+below arrived — green for that one, grey for the rest — which the row already
+says in its weight and in `aria-current`, and which spent the colour that
+means "the container is up" on something that is not a state a thread can be
+in. Being up is a precondition of all four. The dim blue is the one that could
+not be shown before: it is the conversation holding the box awake, which a
+list of them had no way to point at.
+
 The thread view names which thread it is on beside the session's name,
 *always* rather than only when the session has more than one: two tabs on one
 session are otherwise indistinguishable, which is the whole point. It also
