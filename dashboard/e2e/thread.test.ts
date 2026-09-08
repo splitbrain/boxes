@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { afterAll, afterEach, beforeEach, expect, test } from 'vitest';
 import { resolve } from 'node:path';
 import type { SessionUpdate } from '../src/stores/thread/acp-types.ts';
@@ -393,12 +394,13 @@ test('a turn held open for background work still hands the composer back', async
     expect(await page.getByLabel('Stop generating').count()).toBe(0);
 
     // And what is still going on says so, above the composer, where the
-    // transcript cannot say it.
+    // transcript cannot say it — by name, because the box's own process
+    // carries the command the agent asked for.
     const bar = page.locator('[data-slot="boxes_background-bar"]');
     await expect.poll(() => bar.isVisible()).toBe(true);
-    await expect
-      .poll(() => page.getByText('Something is still running in the background').isVisible())
-      .toBe(true);
+    await expect.poll(() => page.getByText('1 command still running').isVisible()).toBe(true);
+    await page.getByText('1 command still running').click();
+    await expect.poll(() => bar.getByText('npm run build').isVisible()).toBe(true);
 
     // Including for a browser that arrives afterwards and has only the
     // replay to go on — it reaches that one with the thread state.
@@ -406,7 +408,19 @@ test('a turn held open for background work still hands the composer back', async
     await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
     await expect.poll(() => bar.isVisible()).toBe(true);
 
-    // And when the work is over, the bar goes with it.
+    // Stopping it is a kill of that process, aimed at the thread it belongs
+    // to and the one command named — not a `session/cancel`, which would
+    // interrupt the conversation and leave the command running.
+    await bar.getByLabel('Stop everything still running').click();
+    await page.getByRole('button', { name: 'Stop', exact: true }).click();
+    await expect.poll(() => stub.backgroundStops.length).toBe(1);
+    assert.deepEqual(stub.backgroundStops[0], {
+      sessionId: SESSION.id,
+      threadId: SESSION.threads[0]!.id,
+    });
+
+    // And when the work is over, the bar goes with it — on the gateway's own
+    // next reading of the box, which is the only thing that ever says so.
     stub.gateway.finishTasks();
     await expect.poll(() => bar.isVisible()).toBe(false);
 

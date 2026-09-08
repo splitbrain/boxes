@@ -80,6 +80,20 @@ export const api = {
       method: 'POST',
     }),
   /**
+   * Kills what a conversation left running in its box: one process, or all of
+   * them.
+   *
+   * Not `session/cancel`, which is what the composer's stop sends. That
+   * interrupts the conversation and reaches the subagents a turn is being
+   * held open for; it does nothing to a command still running, which is a
+   * child of the agent's own process and outlives the turn by design.
+   */
+  stopBackgroundWork: (id: string, threadId: string, processId?: string) =>
+    request<{ stopped: number }>(`/api/sessions/${id}/threads/${threadId}/background/stop`, {
+      method: 'POST',
+      body: JSON.stringify({ processId }),
+    }),
+  /**
    * Stores one file the user attached, and answers with where it landed.
    *
    * The bytes go up as themselves rather than as a form or as base64: this

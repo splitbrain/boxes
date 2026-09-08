@@ -3,11 +3,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Docker from 'dockerode';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from './config.ts';
 import { EgressManager } from './egress.ts';
 import {
+  containerProcesses,
+  containerProcessesFromInside,
   createContainer,
+  killInContainer,
+  resetPsFormatForTests,
   sessionEnv,
   setDockerForTests,
   type CreateContainerSpec,
@@ -192,4 +197,141 @@ describe('the container template', () => {
     assert.equal(host['Privileged'], false);
     assert.deepEqual(host['SecurityOpt'], ['no-new-privileges:true']);
   }, 30_000);
+});
+
+/**
+ * How the box's process table is read, which is what says whether a
+ * conversation has anything still running in it.
+ */
+describe('reading what is running in a container', () => {
+  afterEach(() => {
+    setDockerForTests(null);
+    resetPsFormatForTests();
+  });
+
+  /** A daemon whose `top` answers, or refuses, per format. */
+  function fakeTop(answer: (args: string) => { Titles: string[]; Processes: string[][] }): {
+    asked: string[];
+  } {
+    const asked: string[] = [];
+    setDockerForTests({
+      getContainer: () => ({
+        top: async ({ ps_args }: { ps_args: string }) => {
+          asked.push(ps_args);
+          return answer(ps_args);
+        },
+      }),
+    } as unknown as Docker);
+    return { asked };
+  }
+
+  it('reads the columns by name and leaves the command whole', async () => {
+    fakeTop(() => ({
+      Titles: ['PID', 'PPID', 'ELAPSED', 'COMMAND'],
+      Processes: [['200', '100', '154', "/bin/bash -c eval 'npm run build' < /dev/null"]],
+    }));
+    const [p] = await containerProcesses('c1');
+    assert.equal(p?.pid, 200);
+    assert.equal(p?.ppid, 100);
+    assert.equal(p?.elapsedSeconds, 154);
+    assert.equal(p?.command, "/bin/bash -c eval 'npm run build' < /dev/null");
+  });
+
+  it("asks again without the elapsed time where the host's ps will not take it", async () => {
+    // A reading that fails holds every box on the host awake, so the format
+    // is the one thing here worth retrying — once, and remembered.
+    const { asked } = fakeTop((args) => {
+      if (args.includes('etimes')) throw new Error('ps: unknown user-defined format specifier');
+      return { Titles: ['PID', 'PPID', 'COMMAND'], Processes: [['200', '100', 'sleep 300']] };
+    });
+    const [first] = await containerProcesses('c1');
+    assert.equal(first?.command, 'sleep 300');
+    // No age rather than a made-up one.
+    assert.equal(first?.elapsedSeconds, null);
+    await containerProcesses('c1');
+    assert.deepEqual(asked, [
+      '-eo pid,ppid,etimes,args',
+      '-eo pid,ppid,args',
+      '-eo pid,ppid,args',
+    ]);
+  });
+
+  it('treats a table with no tree in it as no answer', async () => {
+    // Which the caller reads as "the box could not be asked" rather than as
+    // "nothing is running", because only one of those is safe to be wrong
+    // about.
+    fakeTop(() => ({ Titles: ['USER', 'COMMAND'], Processes: [['agent', 'sleep 300']] }));
+    await expect(containerProcesses('c1')).rejects.toThrow(/PID\/PPID/);
+  });
+});
+
+/**
+ * The same table from inside the box, which is the only numbering a kill in
+ * there can be given.
+ */
+describe('reading and signalling from inside a container', () => {
+  afterEach(() => setDockerForTests(null));
+
+  /** A daemon whose execs answer with `output` and record their commands. */
+  function fakeExec(output: string, exitCode = 0): { ran: string[][] } {
+    const ran: string[][] = [];
+    const modem = new Docker({ socketPath: '/var/run/docker.sock' }).modem;
+    setDockerForTests({
+      modem,
+      getContainer: () => ({
+        exec: async ({ Cmd }: { Cmd: string[] }) => {
+          ran.push(Cmd);
+          const payload = Buffer.from(output, 'utf8');
+          const header = Buffer.alloc(8);
+          header[0] = 1;
+          header.writeUInt32BE(payload.length, 4);
+          return {
+            start: async () => Readable.from([Buffer.concat([header, payload])]),
+            inspect: async () => ({ ExitCode: exitCode }),
+          };
+        },
+      }),
+    } as unknown as Docker);
+    return { ran };
+  }
+
+  it('parses what the box\'s own ps prints, spaces and all', async () => {
+    const { ran } = fakeExec(
+      [
+        '    PID    PPID COMMAND',
+        '      1       0 /sbin/docker-init',
+        '  23490   23019 /bin/bash -c eval \'sleep 300; echo done\'',
+      ].join('\n'),
+    );
+    const processes = await containerProcessesFromInside('c1');
+    assert.deepEqual(ran, [['ps', '-eo', 'pid,ppid,args']]);
+    assert.deepEqual(processes, [
+      { pid: 1, ppid: 0, command: '/sbin/docker-init', elapsedSeconds: null },
+      {
+        pid: 23490,
+        ppid: 23019,
+        command: "/bin/bash -c eval 'sleep 300; echo done'",
+        elapsedSeconds: null,
+      },
+    ]);
+  });
+
+  it('says so when the box has no ps to ask', async () => {
+    // Rather than answering "nothing is running", which would make a stop
+    // look like it had found its target already gone.
+    fakeExec('ps: command not found', 127);
+    await expect(containerProcessesFromInside('c1')).rejects.toThrow(/exited 127/);
+  });
+
+  it('signals pids as arguments, never as a line for a shell to take apart', async () => {
+    const { ran } = fakeExec('');
+    await killInContainer('c1', 'TERM', [15, 14]);
+    assert.deepEqual(ran, [['kill', '-TERM', '15', '14']]);
+  });
+
+  it('has nothing to signal for an empty list', async () => {
+    const { ran } = fakeExec('');
+    await killInContainer('c1', 'KILL', []);
+    assert.deepEqual(ran, []);
+  });
 });

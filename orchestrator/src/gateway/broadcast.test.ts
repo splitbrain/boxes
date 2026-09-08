@@ -463,12 +463,16 @@ test('the state a browser is told is the one the gateway supplies', () => {
     sessionId: thread,
     active: false,
     speaking: thread === T1,
-    background: thread === T1,
+    background:
+      thread === T1 ? [{ id: 'aabbccdd', command: 'npm run build', startedAt: null }] : [],
   }));
   const a = fakeDownstream(1);
   b.add(a);
 
   b.threadState(T1);
-  assert.equal(a.states.at(-1)?.background, true);
+  assert.deepEqual(
+    a.states.at(-1)?.background.map((p) => p.command),
+    ['npm run build'],
+  );
   assert.equal(a.states.at(-1)?.speaking, true);
 });

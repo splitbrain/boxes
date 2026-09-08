@@ -35,10 +35,15 @@ RUN install -d -m 0755 /etc/apt/keyrings \
  && apt-get update && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
+# procps is not only for a person in a terminal: Boxes reads the box's own
+# process table to find what a conversation has left running in it, and the
+# stop button beside that list kills by a pid only `ps` in here can give it.
+# See orchestrator/src/gateway/background.ts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       ripgrep \
       jq \
+      procps \
       build-essential \
       python3 \
       python3-venv \
@@ -382,6 +387,7 @@ RUN test "$(id -u)" = "${AGENT_UID}" \
  && test -w /home/agent/.local/bin \
  && test "$(npm config get prefix)" = "/home/agent/.local" \
  && test "$(command -v claude-agent-acp)" = "/usr/local/bin/claude-agent-acp" \
+ && ps -eo pid,ppid,args >/dev/null \
  && bash -lc 'set -eu; . /etc/boxes/image-path; IFS=:; for d in $BOXES_IMAGE_PATH; do \
       case ":$PATH:" in *":$d:"*) ;; *) echo "a login shell lost $d" >&2; exit 1 ;; esac; \
     done'

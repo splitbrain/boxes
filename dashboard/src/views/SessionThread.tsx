@@ -145,7 +145,7 @@ export function SessionThread() {
    */
   const tabState: TabState =
     state.awaiting ??
-    (state.isRunning ? 'running' : state.background ? 'waiting' : 'idle');
+    (state.isRunning ? 'running' : state.background.length > 0 ? 'waiting' : 'idle');
   useDocumentTitle(threadTitle(tabState, session?.name ?? id, threadLabel));
 
   // The thread's viewport is the only scroller this route has; the document
@@ -179,6 +179,30 @@ export function SessionThread() {
       .catch((err: Error) => setForkError(err.message))
       .finally(() => setForking(false));
   }, [id, thread, forking]);
+
+  /**
+   * Kills what this conversation left running: one command, or all of them.
+   *
+   * Nothing is done here with the answer, and the bar is not touched. What it
+   * shows is the gateway's own reading of the box, and the row goes away when
+   * a reading says the process has — a couple of seconds later, once what was
+   * signalled has had time to be gone. Guessing here would be this browser
+   * inventing an ending for work it cannot see.
+   *
+   * A stop that found nothing left to kill is not a failure either: the work
+   * ended between the reading and the tap. A stop that could not be *made* is,
+   * and it goes where the rest of this thread's trouble goes.
+   */
+  const stopBackground = useCallback(
+    async (forThread: string, processId?: string): Promise<void> => {
+      try {
+        await api.stopBackgroundWork(id, forThread, processId);
+      } catch (err) {
+        store?.reportError((err as Error).message);
+      }
+    },
+    [id, store],
+  );
 
   // Commands already run in this session, appended once the thread is up.
   // ACP replay carries no timestamps, so they go after the transcript rather
@@ -344,11 +368,15 @@ export function SessionThread() {
                 <Thread
                   aboveComposer={
                     <BackgroundBar
-                      busy={state.background}
-                      // Nothing to stop it with while the store is being
-                      // built; the bar drops the button rather than offering
-                      // one that does nothing.
-                      onStop={store ? () => store.cancel() : undefined}
+                      processes={state.background}
+                      // Nothing to stop with until there is a thread to name;
+                      // the bar drops the button rather than offering one
+                      // that does nothing.
+                      onStop={
+                        thread
+                          ? (processId) => void stopBackground(thread.id, processId)
+                          : undefined
+                      }
                     />
                   }
                 />

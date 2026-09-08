@@ -230,6 +230,13 @@ export interface StubOrchestrator {
   attachmentUploads: Array<{ sessionId: string; name: string; bytes: Buffer }>;
   /** Bodies posted to the exec endpoint, in order. */
   execCalls: Array<{ sessionId: string; command: string }>;
+  /**
+   * Every stop of background work the browser asked for, in order.
+   *
+   * `processId` is absent where the reader asked for all of a thread's work
+   * rather than one command of it.
+   */
+  backgroundStops: Array<{ sessionId: string; threadId: string; processId?: string }>;
   /** Combined output the exec endpoint streams back, by command. */
   execOutput: (command: string) => { output: string; exitCode: number };
   /** What GET /exec reports, as if from a previous session. */
@@ -257,6 +264,7 @@ export async function startStubOrchestrator(
   const reviewCalls: StubOrchestrator['reviewCalls'] = [];
   const attachmentUploads: StubOrchestrator['attachmentUploads'] = [];
   const execCalls: StubOrchestrator['execCalls'] = [];
+  const backgroundStops: StubOrchestrator['backgroundStops'] = [];
   const execLog: ExecRecord[] = [];
   let execOutput: StubOrchestrator['execOutput'] = (command) => ({
     output: `${command}\n`,
@@ -352,6 +360,26 @@ export async function startStubOrchestrator(
       found.acpSessionId = thread.acpSessionId;
       if (thread.acpSessionId) gateway.select(thread.acpSessionId);
       return json(res, 200, thread);
+    }
+    const stopBackground = /^\/api\/sessions\/([^/]+)\/threads\/([^/]+)\/background\/stop$/.exec(
+      url,
+    );
+    if (stopBackground && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      req.on('end', () => {
+        const asked = (JSON.parse(body || '{}') as { processId?: string }).processId;
+        backgroundStops.push({
+          sessionId: stopBackground[1] ?? '',
+          threadId: stopBackground[2] ?? '',
+          ...(asked === undefined ? {} : { processId: asked }),
+        });
+        // The real one kills processes and says how many it signalled. What
+        // the browser does with the answer is nothing: the bar is redrawn
+        // from the gateway's next reading, which is the stub's `finishTasks`.
+        json(res, 200, { stopped: 1 });
+      });
+      return undefined;
     }
     const attach = /^\/api\/sessions\/([^/]+)\/attachments$/.exec(url);
     if (attach && req.method === 'POST') {
@@ -466,6 +494,7 @@ export async function startStubOrchestrator(
     gateway,
     attachmentUploads,
     execCalls,
+    backgroundStops,
     execLog,
     reviewCalls,
     get execOutput() {

@@ -541,10 +541,67 @@ export async function containerState(containerId: string | null): Promise<Docker
 
 /** One process inside a container, as `docker top` reports it. */
 export interface ContainerProcess {
+  /**
+   * The pid, in whichever namespace it was read.
+   *
+   * `docker top` runs `ps` on the *host*, so what it reports is the host's
+   * pid for a process and not the one the container knows it by. Good enough
+   * to walk the tree, which is all the reading needs; not something to hand a
+   * `kill` inside the box. See `containerProcessesFromInside`.
+   */
   pid: number;
   ppid: number;
   /** The whole command line, which is how a process is recognised. */
   command: string;
+  /** How long it has been running, or null where `ps` would not say. */
+  elapsedSeconds: number | null;
+}
+
+/**
+ * The `ps` format the reading wants, and the one every `ps` has.
+ *
+ * `etimes` is procps' own — an age in whole seconds, which is what turns a
+ * list of what is running into a list of what has been running for an hour.
+ * A host whose `ps` does not know it fails the whole call, and a failed
+ * reading holds every box on that host awake; so the answer is remembered on
+ * the first refusal and the plain format used from then on.
+ */
+const PS_FORMATS = ['-eo pid,ppid,etimes,args', '-eo pid,ppid,args'] as const;
+let psFormat: (typeof PS_FORMATS)[number] | null = null;
+
+/** Test seam: forget which `ps` format this host was found to take. */
+export function resetPsFormatForTests(): void {
+  psFormat = null;
+}
+
+/** What the daemon answers a `top` with: whatever titles `ps` printed, and rows. */
+interface ProcessListing {
+  Titles?: string[];
+  Processes?: string[][];
+}
+
+/** One `docker top`, in a format known to work here. */
+async function top(containerId: string): Promise<ProcessListing> {
+  const container = docker().getContainer(containerId);
+  const ask = async (ps_args: string): Promise<ProcessListing> =>
+    (await container.top({ ps_args })) as ProcessListing;
+
+  if (psFormat) return ask(psFormat);
+  try {
+    const rich = await ask(PS_FORMATS[0]);
+    psFormat = PS_FORMATS[0];
+    return rich;
+  } catch (err) {
+    // Only the format is retried, and only once. A daemon that is down, or a
+    // container that has gone, fails the plain call too and throws from there
+    // — which is the "no answer" the caller has to keep treating as one.
+    log.debug('docker top rejected the elapsed-time format; asking without it', {
+      error: (err as Error).message,
+    });
+    const plain = await ask(PS_FORMATS[1]);
+    psFormat = PS_FORMATS[1];
+    return plain;
+  }
 }
 
 /**
@@ -562,14 +619,9 @@ export interface ContainerProcess {
  * "nothing running" — see `background.ts` for why that direction matters.
  */
 export async function containerProcesses(containerId: string): Promise<ContainerProcess[]> {
-  const top = (await docker()
-    .getContainer(containerId)
-    .top({ ps_args: '-eo pid,ppid,args' })) as {
-    Titles?: string[];
-    Processes?: string[][];
-  };
+  const listing = await top(containerId);
 
-  const titles = top.Titles ?? [];
+  const titles = listing.Titles ?? [];
   const pidAt = titles.indexOf('PID');
   const ppidAt = titles.indexOf('PPID');
   // Without both columns there is no tree to read, and guessing at positions
@@ -577,17 +629,119 @@ export async function containerProcesses(containerId: string): Promise<Container
   if (pidAt === -1 || ppidAt === -1) {
     throw new Error(`docker top returned no PID/PPID columns: ${titles.join(',')}`);
   }
+  // `etimes` prints under the same title as `etime` and is only ever asked
+  // for as one of the two, so the title is enough to find it. Absent where
+  // this host's `ps` would not take it.
+  const elapsedAt = titles.indexOf('ELAPSED');
   // Whatever ps put last is the command; the daemon leaves its spaces alone.
   const commandAt = titles.length - 1;
 
   const processes: ContainerProcess[] = [];
-  for (const row of top.Processes ?? []) {
+  for (const row of listing.Processes ?? []) {
     const pid = Number(row[pidAt]);
     const ppid = Number(row[ppidAt]);
     if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
-    processes.push({ pid, ppid, command: row[commandAt] ?? '' });
+    const elapsed = elapsedAt === -1 ? NaN : Number(row[elapsedAt]);
+    processes.push({
+      pid,
+      ppid,
+      command: row[commandAt] ?? '',
+      elapsedSeconds: Number.isFinite(elapsed) ? elapsed : null,
+    });
   }
   return processes;
+}
+
+/**
+ * The same reading, taken from inside the container.
+ *
+ * Only the stop needs this, and only because of the namespace: a pid from
+ * `docker top` is the host's, and the box has its own numbering for the same
+ * process. A `kill` has to be told the box's, so the tree is read again from
+ * in there at the moment it is used — which is also the freshest it can be,
+ * and a process that ended in between is simply not in it.
+ *
+ * `ps` is the session image's, which is why the image installs procps and
+ * asserts it. A box without it throws, and a stop that cannot find its target
+ * says so rather than killing something else.
+ */
+export async function containerProcessesFromInside(
+  containerId: string,
+): Promise<ContainerProcess[]> {
+  const { output, exited } = await runExec(containerId, ['ps', '-eo', 'pid,ppid,args']);
+  const text = await readAll(output);
+  const code = await exited;
+  if (code !== 0) throw new Error(`ps in the container exited ${code ?? 'unknown'}: ${text.trim()}`);
+
+  const processes: ContainerProcess[] = [];
+  for (const line of text.split('\n').slice(1)) {
+    // Three fields, and the third keeps its spaces: `ps` pads the numbers on
+    // the left, so what is wanted is the first two runs of digits and then
+    // everything after them.
+    const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!row) continue;
+    processes.push({
+      pid: Number(row[1]),
+      ppid: Number(row[2]),
+      command: row[3] ?? '',
+      elapsedSeconds: null,
+    });
+  }
+  return processes;
+}
+
+/**
+ * Signals processes inside a container, as the agent user.
+ *
+ * The pids must be the container's own, and are only ever ones this read out
+ * of it a moment earlier. They travel as separate arguments to `kill`, never
+ * as a string a shell has to take apart. A pid that has already gone makes
+ * `kill` complain and exit non-zero, which is not a failure worth reporting:
+ * the point was for it to be gone.
+ */
+export async function killInContainer(
+  containerId: string,
+  signal: 'TERM' | 'KILL',
+  pids: readonly number[],
+): Promise<void> {
+  if (pids.length === 0) return;
+  const { output, exited } = await runExec(containerId, [
+    'kill',
+    `-${signal}`,
+    ...pids.map((pid) => String(pid)),
+  ]);
+  const text = await readAll(output);
+  const code = await exited;
+  if (code !== 0) {
+    log.debug('kill in container reported trouble', { signal, pids, code, error: text.trim() });
+  }
+}
+
+/** Everything a stream will produce, as one string. */
+async function readAll(stream: Readable): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** One short exec with its output demuxed into a single stream. */
+async function runExec(
+  containerId: string,
+  cmd: string[],
+): Promise<{ output: Readable; exited: Promise<number | null> }> {
+  const exec = await docker().getContainer(containerId).exec({
+    Cmd: cmd,
+    AttachStdin: false,
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
+    User: sessionUser(),
+  });
+  const stream = (await exec.start({ hijack: true, stdin: false })) as Duplex;
+  const output = new PassThrough();
+  docker().modem.demuxStream(stream, output, output);
+  const { exited } = execCompletion(stream, exec, () => output.end());
+  return { output, exited };
 }
 
 /**

@@ -70,7 +70,13 @@ const schema = z.object({
    * free — and it is also what a browser is shown, so it should not lag a
    * build finishing by much. There is no cap on the answer itself and no need
    * of one: it is a reading rather than a tally, so a stale one is at most
-   * this old and never wrong for longer. See gateway/background.ts.
+   * this old and never wrong for longer.
+   *
+   * Two readers on two clocks. The reaper asks when it sweeps, and the lazy
+   * refresh behind the probe is enough for that. A person watching a thread
+   * is the other, and nothing reports a build finishing — so while a browser
+   * is attached this is the clock the bar above their composer goes away on.
+   * See gateway/background.ts.
    */
   BACKGROUND_POLL_SECONDS: z.coerce.number().int().positive().default(20),
 

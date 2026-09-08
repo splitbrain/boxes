@@ -391,13 +391,20 @@ build and closing the tab is safe, and a task that ends without reporting —
 killed, crashed, or simply quiet — stops holding the box the moment it is
 actually gone.
 
-**Work still running says so.** A thread in a box with something left going
-says so above the composer, and
-the session list carries the same count. That is the difference between a
-thread that has finished and one that is waiting for you with a build still
-in it — and the composer is yours in both, because a turn the adapter is
-holding open for a background subagent is not an agent that is still
-talking.
+**Work still running says so.** A thread that has left something going says so
+above the composer, and names it: expand the bar and each command is there with
+how long it has been running. That is the difference between a thread that has
+finished and one that is waiting for you with a build still in it — and the
+composer is yours in both, because a turn the adapter is holding open for a
+background subagent is not an agent that is still talking. A card in the
+session list carries the same fact about the box as a whole.
+
+What is listed is that conversation's own work and nothing another one left
+behind: which thread a command belongs to is read off the box, from the agent
+process it is running under. **Stop** kills it — that command and anything it
+started, or everything the thread is running. It is a kill and not an
+interrupt, because a background command outlives the turn that started it by
+design and cancelling the conversation would leave it running.
 
 ## Notifications
 

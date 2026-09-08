@@ -27,7 +27,7 @@ import * as dk from '../docker.ts';
 import { log, type Logger } from '../log.ts';
 import type { NotifyKind, Notifier } from '../notify.ts';
 import { Activity } from './activity.ts';
-import { BackgroundProbe } from './background.ts';
+import { BackgroundProbe, workToStop } from './background.ts';
 import { Broadcast, threadOf } from './broadcast.ts';
 import type { PendingStore } from './pending.ts';
 import type { TurnStateParams } from '../../../shared/types.ts';
@@ -187,6 +187,14 @@ function pickModel(options: Array<{ value: string }>, wanted: string): string | 
   return options.find((option) => option.value.startsWith(`${wanted}[`))?.value ?? null;
 }
 
+/**
+ * How long work gets to stop politely before it is killed.
+ *
+ * Long enough for a shell to run a trap and a build to put its files down;
+ * short enough that a person who pressed stop sees it stop.
+ */
+const TERM_GRACE_MS = 2_000;
+
 /** Why a thread cannot be forked yet; the API turns this into a 409. */
 export const NOTHING_TO_FORK = 'That thread has nothing to fork from yet';
 
@@ -215,6 +223,8 @@ export class UpstreamSession {
   private stopping = false;
   /** Loads in flight, which is what says an update is history; see below. */
   private replaying = 0;
+  /** The reading's own timer while a browser is watching; see pollWhileWatched. */
+  private polling: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     readonly sessionId: string,
@@ -236,9 +246,7 @@ export class UpstreamSession {
     this.downstreams = new Broadcast(sessionId, (thread) => this.threadState(thread));
     this.background = new BackgroundProbe(
       () => this.containerProcesses(),
-      // The adapter names itself: this is the command Boxes launched, so it
-      // is the one thing in the box guaranteed to be recognisable from here.
-      JSON.parse(this.row().agent_cmd)[0] as string,
+      this.adapterToken(),
       cfg.BACKGROUND_POLL_SECONDS * 1_000,
       Date.now,
       // A probe that cannot read its box holds whatever it last believed, and
@@ -250,6 +258,13 @@ export class UpstreamSession {
               error: error.message,
             })
           : this.slog.info('reading what is running in the box again'),
+      // Nothing reports a build finishing, so a reading is the only news
+      // there is: a bar above a composer appears and goes away because this
+      // said so, and without it the one that appeared stayed for as long as
+      // the thread was open.
+      (threads) => {
+        for (const thread of threads) this.downstreams.threadState(thread);
+      },
     );
     this.activity = new Activity({
       quietMs: cfg.AGENT_QUIET_SECONDS * 1000,
@@ -286,6 +301,131 @@ export class UpstreamSession {
   }
 
   /**
+   * A token from the adapter's command line, which is the command Boxes
+   * launched and so the one thing in the box guaranteed to be recognisable
+   * from out here.
+   */
+  private adapterToken(): string {
+    return JSON.parse(this.row().agent_cmd)[0] as string;
+  }
+
+  /**
+   * Keeps the reading current while a browser is watching, and stops when the
+   * last one leaves.
+   *
+   * A reading answers two questions on two clocks. The reaper's is answered
+   * by asking when it sweeps, which is where the lazy refresh behind `active`
+   * is enough. A person looking at a thread is the other: nothing reports a
+   * build finishing, so the bar above their composer can only go away when a
+   * reading notices, and a reading only happens when somebody asks. Nobody
+   * asked, so the bar stayed.
+   *
+   * Only while watched, because that is who this clock is for — an unwatched
+   * box is read once a minute by the reaper and that is plenty.
+   */
+  private pollWhileWatched(): void {
+    if (this.polling || this.downstreams.size === 0) return;
+    this.polling = setInterval(
+      () => void this.background.refresh(),
+      this.cfg.BACKGROUND_POLL_SECONDS * 1_000,
+    );
+    this.polling.unref?.();
+    // And once now: a browser that has just arrived is the most likely to be
+    // shown a reading taken before whatever it came back to look at.
+    void this.background.refresh();
+  }
+
+  /** Stops the reading's own clock. The lazy refresh behind `active` remains. */
+  private stopPolling(): void {
+    if (!this.polling) return;
+    clearInterval(this.polling);
+    this.polling = null;
+  }
+
+  /**
+   * Stops what a conversation left running in its box: one process tree, or
+   * everything that thread has running.
+   *
+   * A kill rather than a cancel. `session/cancel` is what the composer's stop
+   * button sends and it is right for a turn — the adapter interrupts the
+   * query and tears down the subagents it was holding open for. It does
+   * nothing to a shell, which is the whole point of a background command: it
+   * is a child of the CLI process that outlives the turn that started it, by
+   * design, and no interrupt is going to reach it. The bar borrowed cancel
+   * anyway, and so had a stop button that could not stop anything.
+   *
+   * The pids are read from inside the container at this moment and used
+   * immediately, because they are the box's own numbering and because a
+   * process that has ended in the meantime should simply not be found. TERM
+   * first, and whatever is still there after a moment is sent KILL — the
+   * escalation is not waited for, so the answer here is about what was
+   * signalled rather than what has already died.
+   *
+   * @returns How many processes were signalled. Zero is a normal answer: the
+   *   work ended between the reading a browser is showing and this call.
+   */
+  async stopBackgroundWork(acpThreadId: string, id?: string): Promise<number> {
+    const containerId = this.row().container_id;
+    if (!containerId) return 0;
+    if ((await dk.containerState(containerId)) !== 'running') return 0;
+
+    const doomed = workToStop(
+      await dk.containerProcessesFromInside(containerId),
+      this.adapterToken(),
+      acpThreadId,
+      id,
+    );
+    if (doomed.length === 0) {
+      // Nothing to kill is still news: what the browser is showing is a
+      // reading that has been overtaken, and a fresh one puts it right.
+      void this.background.refresh();
+      return 0;
+    }
+
+    this.slog.info('stopping background work', { acpThreadId, id: id ?? null, pids: doomed });
+    await dk.killInContainer(containerId, 'TERM', doomed);
+    // No reading here: a process signalled a millisecond ago is very likely
+    // still in the table, and a reading that says so would put the bar back
+    // for a poll's length. The escalation takes one when it settles, which
+    // is the first moment the answer can be true either way.
+    this.escalate(containerId, acpThreadId, id);
+    return doomed.length;
+  }
+
+  /**
+   * KILLs whatever a TERM did not stop, a moment later.
+   *
+   * Detached from the request, which has been answered: a stop is judged by
+   * the next reading, not by this. What it re-reads is the same question
+   * rather than the same pids — a pid that has gone is not this thread's work
+   * any more, and one that has not is still exactly what was asked to stop.
+   */
+  private escalate(containerId: string, acpThreadId: string, id?: string): void {
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const left = workToStop(
+            await dk.containerProcessesFromInside(containerId),
+            this.adapterToken(),
+            acpThreadId,
+            id,
+          );
+          if (left.length === 0) return;
+          this.slog.info('background work ignored TERM; killing', { acpThreadId, pids: left });
+          await dk.killInContainer(containerId, 'KILL', left);
+        } catch (err) {
+          this.slog.warn('could not finish stopping background work', {
+            error: (err as Error).message,
+          });
+        } finally {
+          void this.background.refresh();
+        }
+      })();
+    }, TERM_GRACE_MS);
+    timer.unref?.();
+  }
+
+  /**
    * What is running in this session's container, for the probe.
    *
    * A session with no container, or one that is not up, has nothing running
@@ -317,7 +457,7 @@ export class UpstreamSession {
       sessionId: acpThreadId,
       active: this.downstreams.isPrompting(acpThreadId),
       speaking: this.activity.speaking(acpThreadId),
-      background: this.background.active,
+      background: this.background.work(acpThreadId),
     };
   }
 
@@ -338,6 +478,7 @@ export class UpstreamSession {
    */
   attach(handle: DownstreamHandle): void {
     this.downstreams.add(handle);
+    this.pollWhileWatched();
     this.slog.info('downstream attached', { attached: this.downstreams.size });
   }
 
@@ -430,6 +571,7 @@ export class UpstreamSession {
   /** Removes a browser from the broadcast set, leaving the upstream running. */
   detach(handle: DownstreamHandle): void {
     this.downstreams.remove(handle);
+    if (this.downstreams.size === 0) this.stopPolling();
     this.slog.info('downstream detached', { attached: this.downstreams.size });
   }
 
@@ -532,6 +674,10 @@ export class UpstreamSession {
       try {
         await this.spawnAndInitialize(row);
         this.onStatus('running');
+        // A browser that stayed attached through a stop and start is still
+        // watching, and the clock its bar goes away on was cleared with the
+        // connection.
+        this.pollWhileWatched();
         return;
       } catch (err) {
         lastError = err;
@@ -1111,10 +1257,11 @@ export class UpstreamSession {
       // The same name the dashboard shows, so a notification and the list
       // agree about which conversation this is.
       threadName: thread ? thread.title?.trim() || `Thread ${thread.ordinal}` : null,
-      // What is still going on in there, which is what makes the difference
-      // between a thread you can come back to later and one that is about to
-      // say something on its own.
-      background: this.background.active,
+      // What is still going on in that conversation, which is what makes the
+      // difference between a thread you can come back to later and one that
+      // is about to say something on its own. Another thread's work is not
+      // news about this one.
+      background: acpThreadId ? this.background.work(acpThreadId).length > 0 : false,
     });
   }
 
@@ -1362,6 +1509,7 @@ export class UpstreamSession {
   /** Stops the connection deliberately, which suppresses the reconnect. */
   stop(): void {
     this.stopping = true;
+    this.stopPolling();
     this.teardownConnection();
     this.clearThreadStates();
     this.pending.failSession(this.sessionId, 'Session stopped');

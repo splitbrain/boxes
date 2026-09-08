@@ -1,4 +1,3 @@
-
 /**
  * Words for the work a thread has left running, wherever it is shown.
  *
@@ -17,13 +16,16 @@
  */
 
 /**
- * What a box with work still in it is called, wherever there is room to say
- * so.
+ * What a box with work still in it is called, wherever there is only room for
+ * a phrase.
  *
- * No count and no names: the orchestrator reads this from the processes alive
- * in the container, which carry the shell a command was wrapped in rather than
- * the words the agent chose for it. "Something is still running" is the whole
- * of what can honestly be said, and it is also the whole of what the question
- * — is this thread finished? — needs answering.
+ * No count, because the places that use it — a card in the session list — are
+ * about the box rather than one conversation, and a box's total is not a
+ * number anybody acts on. The thread that owns the work gets the list.
  */
 export const STILL_RUNNING = 'still running';
+
+/** "2 commands still running", where there is room for the count. */
+export function commandsRunning(count: number): string {
+  return count === 1 ? '1 command still running' : `${count} commands still running`;
+}

@@ -54,7 +54,7 @@ const NOOP_SUBSCRIBE = (): (() => void) => () => {};
 const INITIAL: ThreadSnapshot = {
   messages: [],
   isRunning: false,
-  background: false,
+  background: [],
   awaiting: null,
   connection: 'connecting',
   modes: null,

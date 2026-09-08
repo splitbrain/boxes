@@ -1,3 +1,4 @@
+import type { BackgroundProcess } from '../../../../shared/types.ts';
 import type {
   AvailableCommand,
   ContentBlock,
@@ -54,11 +55,11 @@ export interface ThreadSnapshot {
    */
   isRunning: boolean;
   /**
-   * Whether the box this thread is in still has work running in it — a
-   * command left running, a monitor watching something. Usually false, and
-   * while it is not, a quiet thread is quiet with something still going on.
+   * What this conversation has left running in its box — a command still
+   * going, a monitor watching something. Usually empty, and while it is not,
+   * a quiet thread is quiet with something still going on.
    */
-  background: boolean;
+  background: readonly BackgroundProcess[];
   /** What the thread is waiting for an answer to, or null. */
   awaiting: Awaiting | null;
   connection: ConnectionState;
@@ -119,7 +120,7 @@ export class ThreadStore {
    * again on every transition.
    */
   private speakingUpstream = false;
-  private backgroundUpstream = false;
+  private backgroundUpstream: readonly BackgroundProcess[] = [];
   private nextApprovalId = 1;
   private nextExecId = 1;
   /** Exec records already replayed, so a re-attach does not double them. */
@@ -143,7 +144,7 @@ export class ThreadStore {
     this.snapshot = {
       messages: [],
       isRunning: false,
-      background: false,
+      background: [],
       awaiting: null,
       connection: 'connecting',
       modes: null,
@@ -296,7 +297,7 @@ export class ThreadStore {
     // what is still running in the background, which is the only way this
     // browser can learn it.
     this.speakingUpstream = false;
-    this.backgroundUpstream = false;
+    this.backgroundUpstream = [];
     this.failOpenApprovals();
     this.replaying = true;
     // A snapshot with no patch: what the thread is doing is re-derived — the

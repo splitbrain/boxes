@@ -152,9 +152,12 @@ test('subscribers are woken on every update', () => {
   expect(listener).toHaveBeenCalled();
 });
 
+/** One command still running, as the gateway reads it out of the box. */
+const BUILD = { id: 'aabbccdd', command: 'npm run build', startedAt: null };
+
 /** What the gateway says about a thread, defaulting to a quiet one. */
 function threadState(patch: Partial<TurnStateParams> = {}): TurnStateParams {
-  return { sessionId: 'acp-1', active: false, speaking: false, background: false, ...patch };
+  return { sessionId: 'acp-1', active: false, speaking: false, background: [], ...patch };
 }
 
 test('a prompt of this browser\'s own does not claim the agent is talking', async () => {
@@ -203,16 +206,16 @@ test('a thread that has stopped talking with work still in it is not running', (
   // The state this whole vocabulary exists for: the agent has finished, the
   // composer is yours, and a build is still going in the box.
   client.handlers.onTurnState(
-    threadState({ active: true, speaking: false, background: true }),
+    threadState({ active: true, speaking: false, background: [BUILD] }),
   );
   assert.equal(store.getSnapshot().isRunning, false);
-  assert.equal(store.getSnapshot().background, true);
+  assert.deepEqual(store.getSnapshot().background, [BUILD]);
 });
 
 test('a replay drops the turn state it was told before it', () => {
   const { store, client } = makeStore();
   client.handlers.onTurnState(
-    threadState({ speaking: true, background: true }),
+    threadState({ speaking: true, background: [BUILD] }),
   );
   assert.equal(store.getSnapshot().isRunning, true);
 
@@ -221,7 +224,7 @@ test('a replay drops the turn state it was told before it', () => {
   // and a task nobody has said is still running.
   client.handlers.onResetThread();
   assert.equal(store.getSnapshot().isRunning, false);
-  assert.equal(store.getSnapshot().background, false);
+  assert.deepEqual(store.getSnapshot().background, []);
 });
 
 test('cancel stops a turn this browser did not start', () => {

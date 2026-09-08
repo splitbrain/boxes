@@ -33,9 +33,12 @@ export interface NotifyEvent {
   /** What that conversation is called, or null for an untitled one. */
   threadName: string | null;
   /**
-   * Whether the box still has work running in it, for an event that
+   * Whether that conversation still has work running in it, for an event that
    * knows. The difference between "come back when you like" and "come back,
    * it will interrupt you", and worth the words it costs on a lock screen.
+   *
+   * This thread's own work: another conversation in the same box having a
+   * build running says nothing about whether this one is finished.
    */
   background?: boolean;
 }
@@ -70,9 +73,10 @@ export function wording(event: NotifyEvent): { title: string; body: string } {
       body: `${where} is waiting for a permission decision.`,
     };
   }
-  // Not what is running, which the box cannot say — only that something is,
-  // which is the difference between a thread to come back to later and one
-  // that is about to say something on its own.
+  // That something is, rather than what: the thread's own bar names the
+  // commands, and a lock screen is not the place to read one. The difference
+  // this is carrying is between a thread to come back to later and one that
+  // is about to say something on its own.
   const still = event.background ? ' Something is still running.' : '';
   return {
     title: 'Boxes: waiting for you',
