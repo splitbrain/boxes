@@ -141,6 +141,9 @@ function execStream(text: string): Readable {
   return Readable.from([Buffer.concat([header, payload])]);
 }
 
+/** Whether the box this test is pretending to have is up. */
+let containerRunning = true;
+
 function fakeDocker(adapter: FakeAdapter | (() => FakeAdapter)): void {
   const spawn = typeof adapter === 'function' ? adapter : () => adapter;
   const modem = new Docker({ socketPath: '/var/run/docker.sock' }).modem;
@@ -148,7 +151,7 @@ function fakeDocker(adapter: FakeAdapter | (() => FakeAdapter)): void {
     modem,
     getContainer: () => ({
       start: async () => undefined,
-      inspect: async () => ({ State: { Running: true } }),
+      inspect: async () => ({ State: { Running: containerRunning } }),
       top: async () => ({ Titles: ['PID', 'PPID', 'COMMAND'], Processes: processes }),
       exec: async (opts: { Cmd?: string[] }) => {
         const cmd = opts?.Cmd ?? [];
@@ -226,6 +229,7 @@ beforeEach(() => {
   processes = [...BASE_PROCESSES];
   insideProcesses = [];
   killed = [];
+  containerRunning = true;
   manager = new SessionManager(
     db,
     cfg,
@@ -1315,6 +1319,75 @@ test('a thread learns its work has finished without anything reporting it', asyn
     (params) => Array.isArray((params as TurnStateParams).background),
   ) as TurnStateParams[];
   assert.deepEqual(ended.at(-1)?.background, []);
+});
+
+test('a box nobody has opened is idle, so the reaper can have it', async () => {
+  // Boxes keeps no adapter in a container between connections, so this is
+  // what an untouched running box looks like: the entrypoint and nothing
+  // else. It read as a shape that could not be understood, which counted as
+  // busy — a badge on the card and a session the reaper would never stop.
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+  processes = [
+    ['1', '0', '/sbin/docker-init -- /usr/local/bin/entrypoint.sh'],
+    ['7', '1', 'sleep infinity'],
+  ];
+
+  const up = manager.upstream('s1');
+  await up.refreshBackgroundForTests();
+  assert.equal(up.backgroundActive, false);
+});
+
+test('a box that is not up has nothing running in it, and says so', async () => {
+  // The two ways of having nothing to read arrived here as the same empty
+  // process table: a box that is down, and a box that would not answer. The
+  // second counts as busy, so every stopped session that the orchestrator
+  // still had in memory said "still running" — on the card, forever, with no
+  // thread able to say what was.
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  processes = [...processes, ['200', '100', shell('npm run build')]];
+  await up.refreshBackgroundForTests();
+  assert.equal(up.backgroundActive, true);
+
+  containerRunning = false;
+  await up.refreshBackgroundForTests();
+  assert.equal(up.backgroundActive, false);
+  const [session] = await manager.list();
+  assert.equal(session?.backgroundBusy, false);
+  assert.deepEqual(
+    session?.threads.map((t) => t.backgroundBusy),
+    [false, false],
+  );
+});
+
+test('stopping a session stops it claiming work, without waiting for a reading', async () => {
+  const adapter = new FakeAdapter((msg) => {
+    if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+    return {};
+  });
+  fakeDocker(adapter);
+
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+  processes = [...processes, ['200', '100', shell('npm run build')]];
+  await up.refreshBackgroundForTests();
+  assert.equal(up.backgroundActive, true);
+
+  // The box is going away and what was in it goes with it, so the answer is
+  // known without asking. Waiting for the next reading would leave the badge
+  // on a session that has just been shut down.
+  up.stop();
+  assert.equal(up.backgroundActive, false);
 });
 
 test('stopping work kills its tree, by the pids the box knows it by', async () => {
