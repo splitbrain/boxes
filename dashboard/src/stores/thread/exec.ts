@@ -15,6 +15,19 @@ const TRAILER = /\n\[exit (\d+|null)(?: (truncated|timed out|truncated, timed ou
 /** The prefix that makes a composer line a local command. */
 export const BANG = '!';
 
+/**
+ * Where a thread's commands are run and listed.
+ *
+ * A thread is named when the browser is on one; the short path means whichever
+ * thread the session has current, which is what the route without a thread in
+ * its URL is connected to as well.
+ */
+function execUrl(sessionId: string, threadId: string | null): string {
+  return threadId
+    ? `/api/sessions/${sessionId}/threads/${threadId}/exec`
+    : `/api/sessions/${sessionId}/exec`;
+}
+
 /** The command in a bang line, or null when it is not one. */
 export function bangCommand(text: string): string | null {
   if (!text.startsWith(BANG)) return null;
@@ -37,11 +50,12 @@ export interface ExecOutcome {
  */
 export async function runExec(
   sessionId: string,
+  threadId: string | null,
   command: string,
   onChunk: (outputSoFar: string) => void,
   signal?: AbortSignal,
 ): Promise<ExecOutcome> {
-  const res = await fetch(`/api/sessions/${sessionId}/exec`, {
+  const res = await fetch(execUrl(sessionId, threadId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ command }),
@@ -88,13 +102,13 @@ function readTrailer(text: string): ExecOutcome {
 }
 
 /**
- * Every command already run in this session.
+ * Every command already run in this thread.
  *
  * ACP replay carries no timestamps, so these are appended after the replayed
  * transcript rather than interleaved into it.
  */
-export async function listExec(sessionId: string): Promise<ExecRecord[]> {
-  const res = await fetch(`/api/sessions/${sessionId}/exec`);
+export async function listExec(sessionId: string, threadId: string | null): Promise<ExecRecord[]> {
+  const res = await fetch(execUrl(sessionId, threadId));
   if (!res.ok) return [];
   const page = (await res.json()) as ExecLogPage;
   return page.records ?? [];

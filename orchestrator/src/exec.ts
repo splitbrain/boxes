@@ -131,16 +131,21 @@ export function trailer(outcome: ExecOutcome): string {
  * The outcome carries the output, which is the shape {@link runCommand}
  * returns: passing the two separately let a caller store one run's text
  * against another's exit code.
+ *
+ * The thread is what the run is listed under. Null when the session had no
+ * thread to log it against, which stores a row nobody is shown.
  */
 export function record(
   db: Db,
   sessionId: string,
+  threadId: string | null,
   command: string,
   outcome: ExecOutcome & { output: string },
   startedAt: number,
 ): void {
   try {
     appendExecLog(db, sessionId, {
+      thread_id: threadId,
       command,
       output: truncateToBytes(outcome.output, MAX_OUTPUT_BYTES),
       exit_code: outcome.exitCode,
@@ -169,7 +174,7 @@ function toRecord(row: ExecRow): ExecRecord {
   };
 }
 
-/** Every command already run in one session, oldest first. */
-export function history(db: Db, sessionId: string): ExecRecord[] {
-  return listExecLog(db, sessionId).map(toRecord);
+/** Every command already run in one thread, oldest first. */
+export function history(db: Db, sessionId: string, threadId: string): ExecRecord[] {
+  return listExecLog(db, sessionId, threadId).map(toRecord);
 }

@@ -149,7 +149,11 @@ test('a !bang command runs in the container and never reaches the agent', async 
 
     // It went to the exec endpoint, not to the adapter.
     await expect.poll(() => stub.execCalls.length).toBe(1);
-    expect(stub.execCalls[0]).toEqual({ sessionId: SESSION.id, command: 'echo hi' });
+    expect(stub.execCalls[0]).toEqual({
+      sessionId: SESSION.id,
+      threadId: null,
+      command: 'echo hi',
+    });
     expect(stub.gateway.prompts).toEqual([]);
 
     // The output is printed as code, with nothing to open first.

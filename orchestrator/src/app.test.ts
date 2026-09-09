@@ -69,7 +69,12 @@ let dir: string;
 let db: Db;
 let orchestrator: Orchestrator;
 
-/** A running session row, which is all the exec routes need to exist. */
+/**
+ * A running session row with one thread, made current.
+ *
+ * The thread is what a local command is logged against, so a session without
+ * one runs commands nobody is ever shown.
+ */
 function insertSession(id: string): void {
   const now = Date.now();
   db.prepare(
@@ -77,8 +82,19 @@ function insertSession(id: string): void {
        network_name, subnet, ws_volume, home_volume, status, current_thread_id,
        created_at, last_active_at)
      VALUES (?, 'test', 'DEFAULT', 'img', '["claude-agent-acp"]', 'c1',
-       ?, '10.200.0.0/24', ?, ?, 'running', NULL, ?, ?)`,
-  ).run(id, `sn-${id}`, `ws-${id}`, `home-${id}`, now, now);
+       ?, '10.200.0.0/24', ?, ?, 'running', ?, ?, ?)`,
+  ).run(id, `sn-${id}`, `ws-${id}`, `home-${id}`, `${id}-t1`, now, now);
+  insertThread(id, `${id}-t1`, 1);
+}
+
+/** One conversation of a session. Which one is current is set on the session. */
+function insertThread(sessionId: string, threadId: string, ordinal: number): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO threads (id, session_id, acp_session_id, title, ordinal,
+       created_at, last_active_at)
+     VALUES (?, ?, NULL, NULL, ?, ?, ?)`,
+  ).run(threadId, sessionId, ordinal, now, now);
 }
 
 beforeEach(() => {
@@ -497,6 +513,53 @@ test('a session with no container cannot run a command', async () => {
     payload: { command: 'ls' },
   });
   assert.equal(res.statusCode, 409);
+});
+
+test('one thread cannot see another thread commands', async () => {
+  insertSession('abc123');
+  insertThread('abc123', 'abc123-t2', 2);
+  fakeDocker('mine\n');
+
+  await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/abc123-t1/exec',
+    payload: { command: 'whoami' },
+  });
+
+  const own = await orchestrator.app.inject({
+    url: '/api/sessions/abc123/threads/abc123-t1/exec',
+  });
+  assert.equal((own.json() as { records: unknown[] }).records.length, 1);
+
+  const other = await orchestrator.app.inject({
+    url: '/api/sessions/abc123/threads/abc123-t2/exec',
+  });
+  assert.deepEqual((other.json() as { records: unknown[] }).records, []);
+});
+
+test('a path naming no thread means the session current one', async () => {
+  insertSession('abc123');
+  fakeDocker('mine\n');
+
+  await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/exec',
+    payload: { command: 'whoami' },
+  });
+
+  const res = await orchestrator.app.inject({
+    url: '/api/sessions/abc123/threads/abc123-t1/exec',
+  });
+  assert.equal((res.json() as { records: unknown[] }).records.length, 1);
+});
+
+test('a thread of another session is a 404 rather than a way into it', async () => {
+  insertSession('aaa');
+  insertSession('bbb');
+  fakeDocker('');
+
+  const res = await orchestrator.app.inject({ url: '/api/sessions/aaa/threads/bbb-t1/exec' });
+  assert.equal(res.statusCode, 404);
 });
 
 test('one session cannot see another session commands', async () => {

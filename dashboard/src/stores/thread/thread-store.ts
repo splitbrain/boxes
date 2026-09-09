@@ -94,9 +94,15 @@ export interface ThreadStoreDeps {
   createClient: (handlers: ConstructorParameters<typeof AcpClient>[2]) => AcpClient;
   /** The Boxes session id, which the exec endpoint is scoped to. */
   sessionId: string;
+  /**
+   * The thread within it, and null on the route that means whichever thread
+   * the session has current. Local commands are logged per thread, so this is
+   * what decides which of them this thread is shown.
+   */
+  threadId: string | null;
   /** Runs a local command, streaming its output. Swapped in tests. */
   runExec?: typeof runExec;
-  /** Lists the commands already run in this session. Swapped in tests. */
+  /** Lists the commands already run in this thread. Swapped in tests. */
   listExec?: typeof listExec;
 }
 
@@ -472,7 +478,7 @@ export class ThreadStore {
 
     const exec = this.deps.runExec ?? runExec;
     try {
-      const outcome = await exec(this.deps.sessionId, command, (soFar) => {
+      const outcome = await exec(this.deps.sessionId, this.deps.threadId, command, (soFar) => {
         output = soFar;
         this.setExecOutput(execId, output);
       });
@@ -483,7 +489,7 @@ export class ThreadStore {
   }
 
   /**
-   * Appends the commands already run in this session, after whatever the
+   * Appends the commands already run in this thread, after whatever the
    * replay produced.
    *
    * ACP replay carries no timestamps, so interleaving them into the
@@ -493,7 +499,7 @@ export class ThreadStore {
     const list = this.deps.listExec ?? listExec;
     let records;
     try {
-      records = await list(this.deps.sessionId);
+      records = await list(this.deps.sessionId, this.deps.threadId);
     } catch {
       return;
     }
