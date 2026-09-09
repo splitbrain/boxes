@@ -1,5 +1,6 @@
 import { Plus, SlidersHorizontal } from 'lucide-react';
 import { Link } from 'react-router';
+import { ImageFooter } from '@/components/ImageFooter';
 import { Notice } from '@/components/Notice';
 import { PushToggle } from '@/components/PushToggle';
 import { SessionCard } from '@/components/SessionCard';
@@ -9,7 +10,7 @@ import { useSessions } from '../stores/sessions.ts';
 
 /** The dashboard's home: every session as a card, and the card is the thread. */
 export function SessionList() {
-  const { sessions, claudeTokenConfigured, error, loading } = useSessions();
+  const { sessions, claudeTokenConfigured, images, error, loading } = useSessions();
 
   return (
     <div className="flex flex-col gap-3">
@@ -58,6 +59,10 @@ export function SessionList() {
       {sessions.map((s) => (
         <SessionCard key={s.id} session={s} />
       ))}
+
+      {/* What this deployment is built from. Under the list because it is a
+          fact about the whole of it, and the last thing anybody scrolls to. */}
+      <ImageFooter images={images} />
     </div>
   );
 }

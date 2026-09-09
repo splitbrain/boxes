@@ -122,6 +122,17 @@ Each carries `latest` and an immutable `sha-<short>`. A deployment that wants
 to be rolled forward by something like watchtower follows `latest`; one that
 must not move under itself pins the sha.
 
+A deployment moved that way gives nobody the chance to note which build it
+landed on, so the session list says so in a footer: each image's digest,
+abbreviated the way Docker abbreviates an id, when it was built, and how much
+disk it takes. The full digest is in the line's `title`.
+
+A digest that came from a registry is the manifest digest, which is what a
+published tag is compared against; an image built out of a checkout has none,
+so its local config id stands in. The size is the daemon's own figure — every
+layer uncompressed, so it is larger than the download was, and a layer two of
+these images share is counted in both.
+
 The session image needs nothing special of the deployment: point
 `SESSION_IMAGE` at `latest` and the orchestrator keeps it current itself. What
 it must **not** have is an outside updater, because compose does not own those

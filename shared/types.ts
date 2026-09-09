@@ -246,6 +246,40 @@ export interface AcpLogPage {
   cursor: number;
 }
 
+/**
+ * Which copy of one image the deployment is running, and when it was built.
+ *
+ * The digest is the registry's manifest digest wherever there is one, because
+ * that is what a published tag is compared against. An image built on this
+ * host has never been in a registry and has none, so its own config digest
+ * stands in: it names the same one image, just to nobody else.
+ */
+export interface ImageInfo {
+  /** `sha256:...`, of the manifest where there is one and of the config otherwise. */
+  digest: string;
+  /** When the image was built, in epoch milliseconds, or null where it says nothing. */
+  builtAt: number | null;
+  /**
+   * What the image takes on this host, in bytes, or null where it says
+   * nothing.
+   *
+   * The daemon's own figure, which is the uncompressed size of every layer
+   * rather than the download — layers shared with another image are counted
+   * here and are not fetched twice.
+   */
+  sizeBytes: number | null;
+}
+
+/**
+ * The three images a deployment runs, each null where the daemon could not be
+ * asked or has nothing under that name.
+ */
+export interface DeploymentImages {
+  orchestrator: ImageInfo | null;
+  proxy: ImageInfo | null;
+  session: ImageInfo | null;
+}
+
 /** Answer to a health probe. */
 export interface HealthResponse {
   ok: boolean;
@@ -262,6 +296,8 @@ export interface HealthResponse {
   claudeTokenConfigured: boolean;
   /** How many browsers are registered for Web Push. */
   pushSubscriptions: number;
+  /** Which build of each of the deployment's own images is running. */
+  images: DeploymentImages;
 }
 
 /** The deployment's VAPID public key, which a browser subscribes with. */
