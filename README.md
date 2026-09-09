@@ -277,6 +277,18 @@ its own way from there. A fork starts in `plan` mode, because it shares the orig
 checkout and two agents editing the same files at once is a mess neither can
 see; flip it to `auto` under the header's sliders when that is what you want.
 
+**Read the list at a glance.** Every thread row ends with how long ago that
+conversation last did anything — `12s`, `5h`, `14d` — so the one you were in
+is findable in a box that holds six, and a session nobody has touched in a
+fortnight says so without being opened. Every card says how much disk its
+workspace is taking, `4.0 MB` or `2.4 GB`, which is where the box that has
+been fetching models all week shows up. Both are deliberately rough: the exact
+timestamp is on the details view, and the exact byte count is nobody's
+question. The size is measured in the background: a running box is re-measured
+at most every quarter of an hour, a stopped one is measured once and then left
+alone — nothing in it is changing — and a session created a moment ago shows
+none at all until the first measurement lands.
+
 **Attach a file.** The `+` under the composer takes anything — drop it on the
 thread or paste it, on a phone as much as on a desktop. Whatever it is, it is
 uploaded into that session's workspace under `.boxes/attachments/`, and the

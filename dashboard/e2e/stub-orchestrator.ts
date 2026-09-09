@@ -56,7 +56,11 @@ export function stubThread(over: Partial<ThreadSummary> = {}): ThreadSummary {
     backgroundBusy: false,
     pendingCount: 0,
     createdAt: Date.parse('2026-08-01T10:00:00Z'),
-    lastActiveAt: Date.parse('2026-08-30T09:30:00Z'),
+    // Relative to now, unlike everything else here: the row shows how long ago
+    // this was as a rough age, so a fixed date would make the list's screenshot
+    // read "40d" one month and "70d" the next. A test that cares which unit it
+    // lands in says so itself.
+    lastActiveAt: Date.now() - 3 * 60_000,
     ...over,
   };
 }
@@ -81,6 +85,7 @@ export function stubSession(over: Partial<SessionDetail> = {}): SessionDetail {
     canFork: true,
     agentSetId: null,
     agentSetName: null,
+    workspaceBytes: 348 * 1024 * 1024,
     createdAt: Date.parse('2026-08-01T10:00:00Z'),
     lastActiveAt: Date.parse('2026-08-30T09:30:00Z'),
     image: 'boxes-session:latest',

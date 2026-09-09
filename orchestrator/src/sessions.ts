@@ -23,6 +23,7 @@ import {
   type SessionRow,
   type ThreadRow,
 } from './db.ts';
+import { WorkspaceUsage, WORKSPACE_SIZE_TTL_MS } from './diskusage.ts';
 import * as dk from './docker.ts';
 import { HttpError } from './http-error.ts';
 import { log } from './log.ts';
@@ -46,6 +47,19 @@ export class SessionManager {
 
   /** Permission requests waiting for a browser, across all sessions. */
   readonly pending: PendingStore;
+
+  /**
+   * How big each session's workspace has got, measured off the request path
+   * and rarely: the list is polled every few seconds, a walk of a checkout is
+   * not something to do per request, and a box that is down is not something
+   * to walk twice. See diskusage.ts.
+   */
+  private readonly usage = new WorkspaceUsage({
+    pathOf: (id) => this.workspacePathOf(id),
+    ttlMs: WORKSPACE_SIZE_TTL_MS,
+    onTrouble: (id, error) =>
+      log.session(id).warn('could not measure the workspace', { error: error.message }),
+  });
 
   /**
    * Host-side path of DATA_DIR, which is what a workspace bind source has to
@@ -612,6 +626,7 @@ export class SessionManager {
     for (const table of ['pending_requests', 'acp_log', 'exec_log', 'threads']) {
       this.db.prepare(`DELETE FROM ${table} WHERE session_id = ?`).run(id);
     }
+    this.usage.forget(id);
     this.setStatus(id, 'deleted');
     log.session(id).info('session deleted', { name: row.name });
   }
@@ -687,6 +702,20 @@ export class SessionManager {
     touchSession(this.db, id);
   }
 
+  /**
+   * Says the orchestrator has written into a session's workspace, so its size
+   * is measured again rather than answered from what a stopped box was left
+   * at.
+   *
+   * A box that is down cannot grow on its own, which is what lets a stopped
+   * session be measured once and then left alone. An upload is the exception
+   * — the one way enough bytes arrive in a workspace with nothing running in
+   * it to move the figure — and this is it saying so.
+   */
+  workspaceChanged(id: string): void {
+    this.usage.forget(id);
+  }
+
   /** Summaries of every live session. */
   async list(): Promise<SessionSummary[]> {
     const rows = this.allRows();
@@ -739,6 +768,19 @@ export class SessionManager {
       canFork: upstream?.canFork ?? false,
       agentSetId: row.agent_set_id,
       agentSetName: this.agents.nameOf(row.agent_set_id),
+      // What was last measured, and null until there is a measurement. Never
+      // waits for one: this is a card's rough indicator, and the list behind
+      // it is polled every five seconds.
+      //
+      // A container known to be down is measured once and then left alone —
+      // nothing is running in it, so nothing in it is changing. 'unknown' is
+      // not 'exited': a Docker read that failed says nothing about whether
+      // the agent is working, and a size frozen on that would be frozen on a
+      // guess. See diskusage.ts.
+      workspaceBytes: this.usage.bytes(
+        row.id,
+        dockerState !== 'exited' && dockerState !== 'missing',
+      ),
       createdAt: row.created_at,
       lastActiveAt: row.last_active_at,
     };

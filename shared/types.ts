@@ -151,6 +151,21 @@ export interface SessionSummary {
   agentSetId: string | null;
   /** That set's current name, for the UI. Null whenever `agentSetId` is. */
   agentSetName: string | null;
+  /**
+   * How much disk this session's workspace is taking up, in bytes, or null
+   * when there is no answer yet.
+   *
+   * Rough on purpose, and a reading rather than a tally: the orchestrator
+   * walks the directory in the background and answers list requests from what
+   * it last measured. A running box is re-measured at most every quarter of
+   * an hour, and a stopped one is measured once and then not again — nothing
+   * is running in it, so nothing in it is changing. Null covers both "not
+   * measured yet" — the first poll after the orchestrator started — and a
+   * session with no workspace directory at all, which is one still backed by
+   * a named volume. Zero would be a claim; null is the absence of one. See
+   * `orchestrator/src/diskusage.ts`.
+   */
+  workspaceBytes: number | null;
   createdAt: number;
   lastActiveAt: number;
 }

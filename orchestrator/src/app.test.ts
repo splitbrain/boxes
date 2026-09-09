@@ -129,6 +129,58 @@ test('an attachment is stored in the workspace and its path reported back', asyn
   assert.equal(readFileSync(join(workspace, stored.path), 'utf8'), 'PNGDATA');
 });
 
+/**
+ * Lists sessions until one reports a workspace size, or gives up.
+ *
+ * A measurement happens off the request path on purpose — the list must never
+ * wait for a disk walk — so a test that wants one has to ask again. See
+ * diskusage.ts.
+ */
+async function measuredSize(id: string): Promise<number | null> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const res = await orchestrator.app.inject({ url: '/api/sessions' });
+    const listed = res.json() as Array<{ id: string; workspaceBytes: number | null }>;
+    const size = listed.find((s) => s.id === id)?.workspaceBytes ?? null;
+    if (size !== null) return size;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return null;
+}
+
+test('a workspace is measured off the request path and reported on the list', async () => {
+  const workspace = insertWorkspaceSession('abc123');
+  writeFileSync(join(workspace, 'checkout.bin'), Buffer.alloc(4096));
+
+  // The first list answers with no size rather than waiting for the walk it
+  // starts. A card shows nothing; a zero would be a claim.
+  const first = await orchestrator.app.inject({ url: '/api/sessions' });
+  assert.equal(
+    (first.json() as Array<{ workspaceBytes: number | null }>)[0]!.workspaceBytes,
+    null,
+  );
+
+  assert.equal(await measuredSize('abc123'), 4096);
+});
+
+test('an upload is what says a workspace grew, since nothing else can say it', async () => {
+  const workspace = insertWorkspaceSession('abc123');
+  writeFileSync(join(workspace, 'checkout.bin'), Buffer.alloc(4096));
+  assert.equal(await measuredSize('abc123'), 4096);
+
+  await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/attachments?name=shot.png',
+    headers: { 'content-type': 'application/octet-stream' },
+    payload: Buffer.alloc(2048),
+  });
+
+  // A measurement stands for a quarter of an hour, and a stopped box's stands
+  // for as long as it is stopped — so the one thing that puts bytes in a
+  // workspace from out here has to drop it rather than wait for it to expire.
+  const after = await measuredSize('abc123');
+  assert.ok(after !== null && after >= 4096 + 2048, `grew to ${String(after)}`);
+});
+
 test('an attachment name that is a path is reduced to a name', async () => {
   const workspace = insertWorkspaceSession('abc123');
 
