@@ -234,13 +234,21 @@ export class UpstreamSession {
     private readonly notifier: Notifier,
     private readonly onStatus: (status: SessionRow['status']) => void,
     /**
-     * Run just before the container is started, to write out this session's
-     * agent configuration. Opening a thread on a stopped box is the other way
-     * a container starts, and the entrypoint installs whatever is on disk at
-     * that moment — so it has to be current here too, not only after an
-     * explicit start.
+     * Run, and awaited, just before the container is started: it writes out
+     * this session's agent configuration and rebuilds the container if Docker
+     * no longer has it.
+     *
+     * Opening a thread on a stopped box is the other way a container starts,
+     * so neither repair can live only in `SessionManager.start`. The
+     * entrypoint installs whatever is on disk at that moment, so the
+     * configuration has to be current here too — and a box something pruned
+     * has to be made again here too, or opening a thread on one is a 404 from
+     * the daemon with nothing to do about it.
+     *
+     * It may therefore change the session's container id, which is why the
+     * row is read again below rather than before.
      */
-    private readonly beforeStart: () => void,
+    private readonly beforeStart: () => Promise<void>,
   ) {
     this.slog = log.session(sessionId);
     this.downstreams = new Broadcast(sessionId, (thread) => this.threadState(thread));
@@ -669,10 +677,14 @@ export class UpstreamSession {
   /** Starts the container and spawns the adapter, retrying with a backoff. */
   private async start(): Promise<void> {
     this.stopping = false;
+    if (!this.row().container_id) throw new Error('Session has no container');
+
+    // Awaited, and the row read after it: this may have rebuilt the container
+    // the row named, and the id to start is the one it left behind.
+    await this.beforeStart();
     const row = this.row();
     if (!row.container_id) throw new Error('Session has no container');
 
-    this.beforeStart();
     await dk.startContainer(row.container_id);
     await dk.ensureProxyAttached(row.network_name, this.cfg);
 

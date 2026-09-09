@@ -47,6 +47,8 @@ interface Fake {
   imagesRemoved: string[];
   /** What a pull does to `images`, which is how a tag moves in a test. */
   onPull?: (image: string) => void;
+  /** Networks the daemon has. A prune takes the container's with it. */
+  networks: Set<string>;
   next: number;
 }
 
@@ -55,7 +57,12 @@ function notFound(what: string): Error {
 }
 
 function install(fake: Fake): void {
-  dk.setDockerForTests({
+  dk.setDockerForTests(dockerFor(fake));
+}
+
+/** The fake daemon itself, so a test can replace one part of it. */
+function dockerFor(fake: Fake): Docker {
+  return {
     getImage: (name: string) => ({
       inspect: async () => {
         const id = fake.images.get(name);
@@ -93,7 +100,10 @@ function install(fake: Fake): void {
       },
       start: async () => {
         const c = fake.containers.get(id);
-        if (c) c.running = true;
+        // A daemon asked to start a container it does not have says so, which
+        // is the whole of what a pruned box looks like from here.
+        if (!c) throw notFound('container');
+        c.running = true;
       },
       stop: async () => {
         const c = fake.containers.get(id);
@@ -122,20 +132,26 @@ function install(fake: Fake): void {
       fake.onPull?.(image);
       return new PassThrough();
     },
-    // Networks are not this suite's subject, and every call the start path
-    // makes on one already tolerates a daemon that says no.
-    getNetwork: () => ({
+    getNetwork: (name: string) => ({
       inspect: async () => {
-        throw notFound('network');
+        if (!fake.networks.has(name)) throw notFound('network');
+        // Enough of one for ensureProxyAttached, which tolerates whatever it
+        // finds; what this suite reads is `fake.networks` itself.
+        return { Containers: {} };
       },
+      connect: async () => {},
     }),
+    createNetwork: async (opts: { Name: string }) => {
+      fake.networks.add(opts.Name);
+      return {};
+    },
     modem: {
       followProgress: (
         _stream: NodeJS.ReadableStream,
         onFinished: (err: Error | null, out: unknown[]) => void,
       ) => onFinished(null, []),
     },
-  } as unknown as Docker);
+  } as unknown as Docker;
 }
 
 let dir: string;
@@ -143,8 +159,20 @@ let db: Db;
 let orchestrator: Orchestrator;
 let fake: Fake;
 
-/** A stopped, directory-backed session with a container on `imageId`. */
-function insertSession(id: string, containerId: string, imageId: string): void {
+/**
+ * A stopped session with a container on `imageId`, shaped the way every
+ * session created today is: both of its mounts are directories.
+ *
+ * `home` makes the older shape instead — a session from before homes became
+ * directories, which keeps its named volume and goes on mounting it. Nothing
+ * migrates it, so both shapes have to keep working.
+ */
+function insertSession(
+  id: string,
+  containerId: string,
+  imageId: string,
+  home: 'directory' | 'volume' = 'directory',
+): void {
   const now = Date.now();
   fake.containers.set(containerId, {
     image: imageId,
@@ -156,11 +184,21 @@ function insertSession(id: string, containerId: string, imageId: string): void {
   });
   db.prepare(
     `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
-       network_name, subnet, ws_volume, home_volume, workspace_dir, status,
-       current_thread_id, created_at, last_active_at)
+       network_name, subnet, ws_volume, home_volume, workspace_dir, home_dir,
+       status, current_thread_id, created_at, last_active_at)
      VALUES (?, 'test', 'DEFAULT', ?, '["claude-agent-acp"]', ?,
-       ?, '10.200.0.0/24', '', ?, ?, 'stopped', NULL, ?, ?)`,
-  ).run(id, IMAGE, containerId, `sn-${id}`, `home-${id}`, `${dir}/workspaces/${id}`, now, now);
+       ?, '10.200.0.0/24', '', ?, ?, ?, 'stopped', NULL, ?, ?)`,
+  ).run(
+    id,
+    IMAGE,
+    containerId,
+    `sn-${id}`,
+    home === 'volume' ? `home-${id}` : '',
+    `${dir}/workspaces/${id}`,
+    home === 'volume' ? null : `${dir}/homes/${id}`,
+    now,
+    now,
+  );
 }
 
 beforeEach(async () => {
@@ -174,6 +212,7 @@ beforeEach(async () => {
     untagged: new Map(),
     imagesInUse: new Set(),
     imagesRemoved: [],
+    networks: new Set(['sn-a1', 'sn-a2', 'sn-a3', 'sn-a4', 'sn-a5', 'sn-gone']),
     next: 0,
   };
   install(fake);
@@ -207,7 +246,7 @@ describe('starting a session whose image has moved', () => {
     assert.equal(fake.containers.get(detail.containerId!)?.running, true);
   });
 
-  it('brings the workspace and the home volume across untouched', async () => {
+  it('brings the workspace and the home across untouched', async () => {
     insertSession('a2', 'c1', 'sha256:one');
     fake.images.set(IMAGE, 'sha256:two');
 
@@ -218,10 +257,27 @@ describe('starting a session whose image has moved', () => {
     const host = fake.created[0]!['HostConfig'] as { Binds: string[] };
     assert.deepEqual(host.Binds, [
       `${dir}/workspaces/a2:/workspace`,
-      'home-a2:/home/agent',
+      `${dir}/homes/a2:/home/agent`,
       // The agent configuration comes across too, read-only. It is derived
       // from the database rather than durable in itself, but the mount has to
       // be there or the box starts with nothing configured.
+      `${dir}/agents/a2:/boxes/agent:ro`,
+    ]);
+  });
+
+  it('keeps mounting the volume of a session whose home is one', async () => {
+    // Nothing migrates a home, so a session created before homes became
+    // directories goes on mounting its volume for as long as it lives —
+    // including through a rebuild of its container.
+    insertSession('a2', 'c1', 'sha256:one', 'volume');
+    fake.images.set(IMAGE, 'sha256:two');
+
+    await orchestrator.manager.start('a2');
+
+    const host = fake.created[0]!['HostConfig'] as { Binds: string[] };
+    assert.deepEqual(host.Binds, [
+      `${dir}/workspaces/a2:/workspace`,
+      'home-a2:/home/agent',
       `${dir}/agents/a2:/boxes/agent:ro`,
     ]);
   });
@@ -256,6 +312,103 @@ describe('starting a session whose image has moved', () => {
 
     assert.deepEqual(fake.removed, []);
     assert.equal(detail.containerId, 'c1');
+  });
+});
+
+describe('starting a session Docker has forgotten', () => {
+  it('rebuilds a container something pruned, and starts it', async () => {
+    insertSession('a1', 'c1', 'sha256:one');
+    // `docker container prune` takes every stopped container, and an idle
+    // Boxes session is a stopped container. Nothing durable goes with it:
+    // both of a session's mounts are directories on the data volume.
+    fake.containers.delete('c1');
+
+    const detail = await orchestrator.manager.start('a1');
+
+    assert.equal(fake.created.length, 1);
+    assert.notEqual(detail.containerId, 'c1');
+    assert.equal(fake.containers.get(detail.containerId!)?.running, true);
+    // And the row names the container that exists, so the next start is an
+    // ordinary one.
+    assert.equal(detail.status, 'running');
+  });
+
+  it('brings the workspace and the home back with it', async () => {
+    insertSession('a2', 'c1', 'sha256:one');
+    fake.containers.delete('c1');
+
+    await orchestrator.manager.start('a2');
+
+    // The point of the rebuild: a container is reproducible from the row, and
+    // what is not reproducible is in these two directories — which the new
+    // container mounts exactly as the old one did.
+    const host = fake.created[0]!['HostConfig'] as { Binds: string[] };
+    assert.deepEqual(host.Binds, [
+      `${dir}/workspaces/a2:/workspace`,
+      `${dir}/homes/a2:/home/agent`,
+      `${dir}/agents/a2:/boxes/agent:ro`,
+    ]);
+  });
+
+  it('makes the network again when that went with it', async () => {
+    insertSession('a3', 'c1', 'sha256:one');
+    // What `docker system prune` does: the container, and then the network
+    // that has nothing left on it. A container cannot be created into a
+    // network that is not there.
+    fake.containers.delete('c1');
+    fake.networks.delete('sn-a3');
+
+    await orchestrator.manager.start('a3');
+
+    assert.ok(fake.networks.has('sn-a3'));
+    const host = fake.created[0]!['HostConfig'] as { NetworkMode: string };
+    assert.equal(host.NetworkMode, 'sn-a3');
+  });
+
+  it('leaves a container that is merely stopped alone', async () => {
+    insertSession('a4', 'c1', 'sha256:one');
+
+    const detail = await orchestrator.manager.start('a4');
+
+    // The ordinary case, and the one this must not touch: a stopped container
+    // is started, not replaced.
+    assert.deepEqual(fake.created, []);
+    assert.deepEqual(fake.removed, []);
+    assert.equal(detail.containerId, 'c1');
+  });
+
+  it('does not rebuild on a daemon that would not answer', async () => {
+    insertSession('a5', 'c1', 'sha256:one');
+    // 500 rather than 404: the difference between a container that is gone
+    // and a daemon that is unwell. Rebuilding on the second would replace a
+    // container that is running perfectly well behind a failed inspect.
+    dk.setDockerForTests({
+      ...(dockerFor(fake) as unknown as Record<string, unknown>),
+      getContainer: () => ({
+        inspect: async () => {
+          throw Object.assign(new Error('daemon is unwell'), { statusCode: 500 });
+        },
+        start: async () => {
+          throw Object.assign(new Error('daemon is unwell'), { statusCode: 500 });
+        },
+      }),
+    } as unknown as Docker);
+
+    await assert.rejects(() => orchestrator.manager.start('a5'));
+    assert.deepEqual(fake.created, []);
+  });
+
+  it('rebuilds for a local command too', async () => {
+    insertSession('a1', 'c1', 'sha256:one');
+    fake.containers.delete('c1');
+
+    // Opening a thread and running a `!bang` command both start a stopped box
+    // without going through start(), so the repair cannot live only there.
+    const target = await orchestrator.manager.execTarget('a1');
+
+    assert.equal(fake.created.length, 1);
+    assert.notEqual(target.containerId, 'c1');
+    assert.equal(fake.containers.get(target.containerId)?.running, true);
   });
 });
 
