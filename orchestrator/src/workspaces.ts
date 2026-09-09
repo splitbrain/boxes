@@ -3,19 +3,26 @@ import { join, posix } from 'node:path';
 import { log } from './log.ts';
 
 /**
- * Session workspaces as directories on the orchestrator's own data volume.
+ * What a session is made of on disk: its workspace, and its home.
  *
- * A workspace used to be the named volume `ws-<id>`, mounted only into its
- * session container: the orchestrator had no filesystem path to it, and
- * reaching the files meant a `docker exec`. Here each workspace is a directory
- * under DATA_DIR that is bind-mounted into the session container instead, so
- * the orchestrator reads and writes the agent's files as ordinary files and
- * runs git over them itself — with no container running, which is the natural
- * moment to review one.
+ * Both used to be named volumes — `ws-<id>` and `home-<id>` — mounted only
+ * into the session container, which left the orchestrator with no filesystem
+ * path to either: reaching a file meant a `docker exec`. Both are now
+ * directories under DATA_DIR, bind-mounted in, so the orchestrator reads and
+ * writes them as ordinary files, runs git over the workspace itself with no
+ * container running, and can measure what a session is costing by walking two
+ * directories.
  *
- * The home volume is deliberately not moved: it holds transcripts and whatever
- * credentials a login inside the session created, and nothing outside the
- * container has business there.
+ * The workspace moved first, for review. The home followed for the plainer
+ * reason: everything a session is should be in one place. Its content is
+ * different in kind — thread transcripts, the tool caches an agent installs
+ * at runtime, and whatever credential a login inside the box wrote — and
+ * nothing outside the container reads it. But a named volume was never a
+ * boundary against this process, only a path it did not have: the volume sits
+ * on the same host, under the same root. What it actually cost was that the
+ * biggest thing a session owns was the one thing Boxes could not see.
+ *
+ * `homes/` is 0700 for that content, the same as `workspaces/`.
  */
 
 /**
@@ -63,6 +70,9 @@ export function sessionOwner(): { readonly uid: number; readonly gid: number } {
 /** Directory under DATA_DIR holding one directory per session workspace. */
 export const WORKSPACES_SUBDIR = 'workspaces';
 
+/** Directory under DATA_DIR holding one directory per session home. */
+export const HOMES_SUBDIR = 'homes';
+
 /** The parent of every workspace directory. */
 export function workspacesRoot(dataDir: string): string {
   return join(dataDir, WORKSPACES_SUBDIR);
@@ -87,16 +97,32 @@ export function hostWorkspacePath(hostDataDir: string, sessionId: string): strin
   return posix.join(hostDataDir, WORKSPACES_SUBDIR, sessionId);
 }
 
+/** The parent of every home directory. */
+export function homesRoot(dataDir: string): string {
+  return join(dataDir, HOMES_SUBDIR);
+}
+
+/** Where a session's home lives, as this process sees them. */
+export function homePath(dataDir: string, sessionId: string): string {
+  return join(homesRoot(dataDir), sessionId);
+}
+
+/** A session's home as the Docker daemon sees it, for the bind source. */
+export function hostHomePath(hostDataDir: string, sessionId: string): string {
+  return posix.join(hostDataDir, HOMES_SUBDIR, sessionId);
+}
+
 /**
- * Creates the workspaces parent, mode 0700.
+ * Creates the workspaces and homes parents, mode 0700.
  *
- * One session's workspace must not be readable from another session, and the
- * only thing that reads across all of them is this process. 0700 on the parent
+ * One session's files must not be readable from another session, and the only
+ * thing that reads across all of them is this process. 0700 on the parents
  * says so on the data volume itself, where a stray `docker run -v boxes-data`
  * would otherwise see everything.
  */
 export function ensureWorkspacesRoot(dataDir: string): void {
   mkdirSync(workspacesRoot(dataDir), { recursive: true, mode: 0o700 });
+  mkdirSync(homesRoot(dataDir), { recursive: true, mode: 0o700 });
 }
 
 /**
@@ -111,11 +137,35 @@ export function createWorkspace(dataDir: string, sessionId: string): string {
   return path;
 }
 
+/**
+ * Creates a session's home directory, empty.
+ *
+ * Empty is not usable on its own: a bind mount covers whatever the image put
+ * in `/home/agent`, and unlike a named volume Docker does not seed it. What
+ * fills it is `seedHomeFromImage` in docker.ts, which copies the image's own
+ * home in and hands it to the agent — the mode and owner set here are only
+ * what stands until it does.
+ */
+export function createHome(dataDir: string, sessionId: string): string {
+  ensureWorkspacesRoot(dataDir);
+  const path = homePath(dataDir, sessionId);
+  // 0700 rather than the workspace's 0755: a home holds the credentials a
+  // login inside the box wrote, and nothing but the agent reads it.
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  chownToAgent(path);
+  return path;
+}
+
 /** Removes a session's workspace directory and everything in it. */
 export function removeWorkspace(dataDir: string, sessionId: string): void {
   // recursive removal unlinks symlinks rather than following them, so a link
   // planted in the tree cannot reach out of it.
   rmSync(workspacePath(dataDir, sessionId), { recursive: true, force: true });
+}
+
+/** Removes a session's home directory and everything in it. */
+export function removeHome(dataDir: string, sessionId: string): void {
+  rmSync(homePath(dataDir, sessionId), { recursive: true, force: true });
 }
 
 /**

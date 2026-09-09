@@ -2,8 +2,14 @@ import { readdir, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
- * How much disk a session's workspace is taking up, measured in the
- * background and read from a cache.
+ * How much disk a session is taking up, measured in the background and read
+ * from a cache.
+ *
+ * Two directories rather than one: the workspace the agent works in, and the
+ * home its thread history, tool caches and runtime installs are in — which on
+ * a box that has been working is usually the larger of the two. They are
+ * summed rather than reported apart, because the question a card is answering
+ * is how big this box has got.
  *
  * The session list is polled every five seconds, and walking a workspace is
  * the most expensive thing anything on that path could do: a checkout with a
@@ -42,7 +48,7 @@ import { join } from 'node:path';
  * hour. A box that has just been created is not made to wait for it — there
  * is no measurement yet, and the first read starts one.
  */
-export const WORKSPACE_SIZE_TTL_MS = 15 * 60_000;
+export const SESSION_SIZE_TTL_MS = 15 * 60_000;
 
 /**
  * Apparent size of everything under a directory, in bytes.
@@ -92,14 +98,18 @@ export async function directorySize(root: string): Promise<number> {
 
 export interface UsageOptions {
   /**
-   * Where a session's workspace is on this process's filesystem, or null when
-   * it has none — an unknown session, or one still backed by a named volume.
+   * The directories a session is made of, on this process's own filesystem.
+   *
+   * Nulls are expected and dropped: an unknown session has none of them, and
+   * a session from before homes became directories has a workspace and a home
+   * volume nothing out here can walk. All-null means there is nothing to
+   * measure, and the session reports no size rather than a zero.
    */
-  pathOf: (sessionId: string) => string | null;
+  pathsOf: (sessionId: string) => Array<string | null>;
   /** How long a measurement stands. */
   ttlMs: number;
   now?: () => number;
-  /** Test seam: how a directory is measured. */
+  /** Test seam: how one directory is measured. */
   measure?: (path: string) => Promise<number>;
   onTrouble?: (sessionId: string, error: Error) => void;
 }
@@ -120,8 +130,8 @@ interface Measurement {
   live: boolean;
 }
 
-/** Workspace sizes, measured off the request path and cached per session. */
-export class WorkspaceUsage {
+/** Session sizes, measured off the request path and cached per session. */
+export class SessionUsage {
   private readonly measured = new Map<string, Measurement>();
   /** Sessions with a walk running or queued, so a poll cannot pile them up. */
   private readonly walking = new Set<string>();
@@ -135,14 +145,14 @@ export class WorkspaceUsage {
    */
   private queue: Promise<void> = Promise.resolve();
 
-  private readonly pathOf: UsageOptions['pathOf'];
+  private readonly pathsOf: UsageOptions['pathsOf'];
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly measure: (path: string) => Promise<number>;
   private readonly onTrouble: (sessionId: string, error: Error) => void;
 
   constructor(options: UsageOptions) {
-    this.pathOf = options.pathOf;
+    this.pathsOf = options.pathsOf;
     this.ttlMs = options.ttlMs;
     this.now = options.now ?? Date.now;
     this.measure = options.measure ?? directorySize;
@@ -163,10 +173,10 @@ export class WorkspaceUsage {
    * that would be freezing it on a guess.
    */
   bytes(sessionId: string, live: boolean): number | null {
-    const path = this.pathOf(sessionId);
-    if (path === null) return null;
+    const paths = this.pathsOf(sessionId).filter((p): p is string => p !== null);
+    if (paths.length === 0) return null;
     const last = this.measured.get(sessionId);
-    if (this.due(last, live)) this.start(sessionId, path, live);
+    if (this.due(last, live)) this.start(sessionId, paths, live);
     return last?.bytes ?? null;
   }
 
@@ -206,13 +216,20 @@ export class WorkspaceUsage {
     return this.queue;
   }
 
-  /** Queues one walk, unless this session already has one coming. */
-  private start(sessionId: string, path: string, live: boolean): void {
+  /**
+   * Queues one session's walks, unless it already has some coming.
+   *
+   * Its directories are walked one after another and summed, and a failure in
+   * either abandons the pair: half a session's size, reported as the whole of
+   * it, is worse than the answer this held a minute ago.
+   */
+  private start(sessionId: string, paths: readonly string[], live: boolean): void {
     if (this.walking.has(sessionId)) return;
     this.walking.add(sessionId);
     this.queue = this.queue.then(async () => {
       try {
-        const bytes = await this.measure(path);
+        let bytes = 0;
+        for (const path of paths) bytes += await this.measure(path);
         // Recorded against the state the box was in when the walk was asked
         // for, not the state it is in now. A session stopped while its own
         // settling walk was queued is one whose next read asks again, which

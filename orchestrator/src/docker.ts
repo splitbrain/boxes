@@ -77,14 +77,15 @@ export function setDockerForTests(d: Docker | null): void {
 /**
  * Docker object names derived from a session id.
  *
- * There is no workspace volume here any more: a workspace is a directory on
- * the orchestrator's data volume, and the `ws-<id>` volume of a session from
- * before that change is read off its row rather than derived.
+ * There are no volumes here any more: a workspace and a home are both
+ * directories on the orchestrator's data volume, and the `ws-<id>` or
+ * `home-<id>` volume of a session from before each of those changes is read
+ * off its row rather than derived. Boxes creates no volume at all now, and so
+ * needs no name for one.
  */
 export const names = {
   container: (id: string) => `session-${id}`,
   network: (id: string) => `sn-${id}`,
-  homeVolume: (id: string) => `home-${id}`,
 };
 
 /**
@@ -124,7 +125,13 @@ export interface CreateContainerSpec {
    * remove what a previous start installed.
    */
   agentConfigSource: string;
-  homeVolume: string;
+  /**
+   * What is mounted at `/home/agent`: the host-side path of the session's
+   * home directory, or — for a session created before homes became
+   * directories — the name of its volume. A bind source and a volume name are
+   * the same field to Docker, and which one this is is the caller's business.
+   */
+  homeSource: string;
   profile: SessionProfile;
   egress: SessionEgress;
 }
@@ -247,11 +254,6 @@ export async function isProxyAttached(networkName: string, cfg: Config): Promise
   } catch {
     return false;
   }
-}
-
-/** Creates a volume labelled with its session. */
-export async function createVolume(name: string, sessionId: string): Promise<void> {
-  await docker().createVolume({ Name: name, Labels: { [LABEL]: sessionId } });
 }
 
 // --- resolving this process's own host-side paths ---------------------------
@@ -393,16 +395,78 @@ export async function copyVolumeToDirectory(
   image: string,
   sessionId: string,
 ): Promise<void> {
+  await oneShot({
+    what: `copy of ${volumeName}`,
+    image,
+    sessionId,
+    binds: [`${volumeName}:/from:ro`, `${hostDirectory}:/to`],
+    script: 'cp -a /from/. /to/',
+  });
+}
+
+/**
+ * Fills a session's empty home directory from the image's own `/home/agent`.
+ *
+ * A named volume is seeded by Docker from the image, once, when it is
+ * created. A bind mount is the opposite: it covers whatever the image put
+ * there, so a fresh home directory would start out empty — and the image's
+ * `/home/agent` is deliberately near-empty already, which makes it easy to
+ * assume nothing is lost.
+ *
+ * `.profile` is what is lost. Debian's `/etc/profile` *reassigns* PATH for a
+ * login shell, and the skeleton `.profile` that `useradd -m` leaves is what
+ * puts `~/.local/bin` back — which is where `npm install -g` puts the agent's
+ * own tools. Exec runs `bash -lc`, so without it a tool the agent installed
+ * would stop being found by the command that installed it, silently, in login
+ * shells only.
+ *
+ * So the image's home is copied in, as root and with `cp -a`, which preserves
+ * the ownership the image gave it. The directory itself is chowned in the
+ * same breath: that is the one thing `cp -a` of the *contents* does not
+ * cover, and doing it here rather than from the orchestrator is what makes a
+ * home come out right even where this process is not root and cannot chown.
+ */
+export async function seedHomeFromImage(
+  hostDirectory: string,
+  image: string,
+  sessionId: string,
+): Promise<void> {
+  const { uid, gid } = sessionOwner();
+  await oneShot({
+    what: 'home seed',
+    image,
+    sessionId,
+    binds: [`${hostDirectory}:/to`],
+    script: `cp -a /home/agent/. /to/ && chown ${uid}:${gid} /to`,
+  });
+}
+
+/**
+ * Runs one short-lived container over a session's files and waits for it.
+ *
+ * `cp -a` preserves ownership, which keeps the agent's files the agent's;
+ * that needs root in the helper, so these are the containers Boxes creates
+ * that do not drop to the session user. They have no network and a read-only
+ * rootfs, and the script is fixed at each call site — no part of it comes
+ * from anything a user typed.
+ */
+async function oneShot(spec: {
+  what: string;
+  image: string;
+  sessionId: string;
+  binds: string[];
+  script: string;
+}): Promise<void> {
   const container = await docker().createContainer({
-    Image: image,
+    Image: spec.image,
     User: 'root',
     // The image's own entrypoint holds a container open; this one has a job
     // and exits, so the entrypoint is replaced rather than run.
     Entrypoint: ['sh', '-c'],
-    Cmd: ['cp -a /from/. /to/'],
-    Labels: { [LABEL]: sessionId },
+    Cmd: [spec.script],
+    Labels: { [LABEL]: spec.sessionId },
     HostConfig: {
-      Binds: [`${volumeName}:/from:ro`, `${hostDirectory}:/to`],
+      Binds: spec.binds,
       NetworkMode: 'none',
       ReadonlyRootfs: true,
       SecurityOpt: ['no-new-privileges:true'],
@@ -416,9 +480,7 @@ export async function copyVolumeToDirectory(
     const { StatusCode } = (await container.wait()) as { StatusCode: number };
     if (StatusCode !== 0) {
       const logs = await container.logs({ stdout: true, stderr: true, tail: 20 });
-      throw new Error(
-        `copy of ${volumeName} exited ${StatusCode}: ${logs.toString('utf8').trim()}`,
-      );
+      throw new Error(`${spec.what} exited ${StatusCode}: ${logs.toString('utf8').trim()}`);
     }
   } finally {
     try {
@@ -457,13 +519,13 @@ export async function createContainer(spec: CreateContainerSpec, cfg: Config): P
     HostConfig: {
       NetworkMode: spec.networkName,
       Binds: [
-        // The workspace is a directory on the orchestrator's data volume, so
-        // that reviewing a session's files needs no exec and no running
-        // container. The home volume stays a named volume: it holds
-        // transcripts and session-local credentials, and nothing outside the
-        // container reads it.
+        // Both are directories on the orchestrator's data volume, so that
+        // reviewing a session's files needs no exec and no running container,
+        // and so that what a session is costing can be read by walking two
+        // paths. A session from before homes became directories names its
+        // volume here instead, and Docker takes either.
         `${spec.workspaceSource}:${WORKSPACE_DIR}`,
-        `${spec.homeVolume}:/home/agent`,
+        `${spec.homeSource}:/home/agent`,
         // Read-only: what the dashboard says a box is configured with is not
         // something the agent inside it gets to rewrite.
         `${spec.agentConfigSource}:${AGENT_CONFIG_DIR}:ro`,

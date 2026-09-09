@@ -173,7 +173,7 @@ env file for everything else.
 
 Without it, sessions still start and the UI still works — only inference
 fails. Alternatively skip the variable and log in inside a session, which
-keeps the credential in that session's home volume and out of every file:
+keeps the credential in that session's home and out of every file:
 
 ```sh
 docker exec -it session-<id> claude /login
@@ -281,9 +281,11 @@ see; flip it to `auto` under the header's sliders when that is what you want.
 **Read the list at a glance.** Every thread row ends with how long ago that
 conversation last did anything — `12s`, `5h`, `14d` — so the one you were in
 is findable in a box that holds six, and a session nobody has touched in a
-fortnight says so without being opened. Every card says how much disk its
-workspace is taking, `4.0 MB` or `2.4 GB`, which is where the box that has
-been fetching models all week shows up. Both are deliberately rough: the exact
+fortnight says so without being opened. Every card says how much disk the box
+is taking — its workspace and its home together, `4.0 MB` or `2.4 GB` — which
+is where the box that has been fetching models all week shows up. The home is
+usually the larger half: a workspace holds a checkout, a home holds every
+toolchain cache and globally installed tool the agent ever reached for. Both are deliberately rough: the exact
 timestamp is on the details view, and the exact byte count is nobody's
 question. The size is measured in the background: a running box is re-measured
 at most every quarter of an hour, a stopped one is measured once and then left
@@ -396,7 +398,10 @@ bearer token for attaching your own ACP client. Deleting removes the storage
 too, so the agent's work and the thread history go with it.
 
 Deleting is also the only way a session's disk goes away, and it goes
-completely: the workspace, the home volume, the container and the network.
+completely: the workspace, the home, the container and the network. Both of
+those are directories on the Boxes data volume — `workspaces/<id>` and
+`homes/<id>` — so everything a session is made of is in one place, backed up by
+whatever backs that volume up, and counted in the size on its card.
 Should any of that fail halfway — a crash, a daemon that would not remove
 something — the orchestrator sweeps what was left the next minute, and every
 minute after, rather than leaving it on the host with nothing left to name it.
@@ -581,7 +586,7 @@ of them without installing anything:
 `build-essential`, `cmake`, `pkg-config` and `libssl-dev` are there too, so a
 crate or an extension with a native dependency builds. `uv` is installed as
 well, which is worth knowing under a read-only `/usr`: `uv tool install` and
-`uv python install` both write to the home volume, so a session can fetch a
+`uv python install` both write to the session's home, so a session can fetch a
 Python it does not have without any privilege at all.
 
 ### Everything else in the image
@@ -651,7 +656,7 @@ tracing, video and `run-code` for arbitrary Playwright snippets are all there;
 `~/.claude/skills/playwright-cli/` — a SKILL.md plus nine reference files
 maintained by the Playwright team — rather than into the workspace, which is a
 git checkout and none of the image's business. Re-running each start means the
-copy in the home volume follows the image instead of being frozen at whatever
+copy in the session's home follows the image instead of being frozen at whatever
 that volume was initialised with.
 
 It runs *after* the box's own agent configuration is installed, and defers to
@@ -691,7 +696,7 @@ intercepts fail TLS in the browser and nowhere else.
 Two smaller things. `PLAYWRIGHT_BROWSERS_PATH` is `/opt/playwright`, on the
 image and so read-only at runtime. A project pinning its own Playwright has
 two ways out of that. Either download the build its version wants, once, into
-the home volume:
+the session's home:
 
 ```sh
 export PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright
@@ -777,7 +782,7 @@ that compile on install do compile. `~/.local/bin` is ahead of the system path
 for both a plain `docker exec` and a login shell.
 
 A `.deb` whose *contents* are all you need takes no root either —
-unpacking a `.deb` into the home volume is an ordinary file write:
+unpacking a `.deb` into the session's home is an ordinary file write:
 
 ```sh
 apt-get download ripgrep                    # apt honours the proxy variables

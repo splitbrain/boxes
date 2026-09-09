@@ -22,11 +22,11 @@ Two consequences shape the rest of the design:
 - The agent connection outlives any browser, so a long-lived process has to own
   it and be able to rebuild it without losing the thread.
 - Thread history is replayed by the adapter's own `session/load` from the
-  session's home volume, so the orchestrator stores no transcript of its own.
+  session's home, so the orchestrator stores no transcript of its own.
 
 A session owns several *threads* — ACP calls one conversation a session, and
 this document calls it a thread to keep it apart from a Boxes session. The
-container, the workspace, the home volume, the network and the egress policy
+container, the workspace, the home, the network and the egress policy
 are the session's and are shared, so a second thread costs nothing but its own
 transcript. Each
 connection is pinned to one thread, so two of them can be watched at once; see
@@ -129,7 +129,7 @@ orchestrator handlers and the dashboard's `api.ts` import.
 | `GET /api/sessions/:id` | One session with its Docker object names |
 | `POST /api/sessions/:id/start` | Starts a stopped container |
 | `POST /api/sessions/:id/stop` | Stops the container and drops the upstream |
-| `DELETE /api/sessions/:id` | Deletes the session, its workspace and home volume included |
+| `DELETE /api/sessions/:id` | Deletes the session, its workspace and home included |
 | `GET /api/sessions/:id/threads` | Every conversation the session owns |
 | `POST /api/sessions/:id/threads` | Adds one and makes it the session's default; `{"from":"<threadId>"}` forks that one instead of starting empty |
 | `POST /api/sessions/:id/threads/:threadId/select` | Makes one the session's default |
@@ -310,8 +310,8 @@ Two rough indicators sit on the card, because a list of boxes is scanned
 rather than read. Each row ends in how long ago that conversation last did
 anything — `12s`, `5h`, `14d`, always the largest whole unit and always
 rounded down — which is what picks the thread you were in out of a box with
-six of them. Each card carries how much disk its workspace is taking up, in
-the badge row but not as a badge: it is a measurement rather than a state, and
+six of them. Each card carries how much disk the box is taking up — its
+workspace and its home together — in the badge row but not as a badge: it is a measurement rather than a state, and
 a pill would put it among the things that say what the session is *doing*.
 Neither is a figure to act on, which is the point of the shape — `340 MB` and
 `1.4 GB` are different news, `341 MB` and `340 MB` are not. Both are
@@ -1212,8 +1212,9 @@ Creating a session, in `SessionManager.create`:
    `creating`.
 5. Create the network `sn-<id>`, attach the egress proxy, create the workspace
    directory `${DATA_DIR}/workspaces/<id>`, write the merged agent
-   configuration to `${DATA_DIR}/agents/<id>`, create the volume `home-<id>`,
-   create the container `session-<id>`, and start it.
+   configuration to `${DATA_DIR}/agents/<id>`, create the home directory
+   `${DATA_DIR}/homes/<id>` and fill it from the image, create the container
+   `session-<id>`, and start it.
 
 Any failed step tears the whole session down and marks it `error`.
 
@@ -1250,9 +1251,10 @@ workspace directory and starts empty.
 | `deleted` | Removed. Nothing moves a row out of this state |
 
 Deleting stops and removes the container, detaches the proxy, removes the
-network, the workspace directory, the materialized agent configuration and the
-home volume, and clears the session's pending requests and log rows. Nothing refers to either once the session is
-gone, so they go with it rather than being left orphaned.
+network, the workspace directory, the home directory and the materialized agent
+configuration, and clears the session's pending requests and log rows. Nothing
+refers to any of it once the session is gone, so it goes with the session rather
+than being left orphaned.
 
 At boot, `reconcile` lists containers by the `boxes.session` label and aligns
 the stored rows with them: live containers are adopted, missing ones are marked
@@ -1275,9 +1277,33 @@ already have — it holds the Docker socket — but it does expose that process 
 hostile *content*, which is why the review layer keeps symlink containment and
 git hardening as maintained invariants, each in one file with a test.
 
-The home volume stays a named volume. It holds thread transcripts and whatever
-credentials a login inside the session created; nothing outside the container
-reads it, and review has no business there.
+**The home followed it**, for a plainer reason: everything a session is should
+be in one place, and the biggest thing a session owns was the one thing Boxes
+could not see. `${DATA_DIR}/homes/<id>` is bind-mounted at `/home/agent`, 0700
+rather than the workspace's 0755 — it holds thread transcripts, the tool caches
+and installs an agent accumulates at runtime, and whatever credential a login
+inside the box wrote. A named volume was never a boundary against this process
+anyway, only a path it did not have: the volume sits on the same host under the
+same root. Review still has no business there, and does not go there.
+
+**A bind is not seeded, which a volume was.** Docker fills a new named volume
+from the image's own `/home/agent`; a bind mount covers it instead. The image
+keeps that directory near-empty on purpose, so it is easy to assume nothing is
+lost — but `useradd -m` leaves a skeleton `.profile` there, and Debian's
+`/etc/profile` *reassigns* `PATH` for a login shell, so that skeleton file is
+what puts `~/.local/bin` back. Exec runs `bash -lc`. Without it, a tool the
+agent installed with `npm install -g` would stop being found by the next
+command, silently, in login shells only. So `seedHomeFromImage` copies the
+image's home in through a one-shot root container — `cp -a`, preserving the
+ownership the image gave it, and chowning the directory itself in the same
+breath, which is what makes a home come out right even where the orchestrator
+is not root and cannot chown.
+
+**Sessions from before this** keep their `home_volume` and a null `home_dir`,
+and go on mounting the volume for as long as they live. Unlike the workspace
+there is no migration: `homeSource` is a directory for one and a volume name
+for the other, Docker takes either, and the two arrangements simply coexist
+until the last old session is deleted.
 
 **Naming the bind source.** Bind sources are resolved by the Docker daemon,
 not by the process asking for the mount, so the orchestrator cannot hand the
@@ -1333,9 +1359,11 @@ and nobody is waiting for them, and lazy rather than on a loop: a deployment
 nobody is looking at should not be walking disk on a timer. Sizes are apparent
 rather than allocated — `du --apparent-size` — and symlinks count as nothing
 and are never followed, the same containment the review surface and workspace
-removal keep. The home volume is not in it: the orchestrator has no path to a
-named volume, and the adapter's transcripts are not what anybody means by how
-big a session has got.
+removal keep. Both directories are walked and summed, and the home is usually
+the larger: a workspace holds a checkout, a home holds every toolchain cache
+and globally installed tool the agent ever reached for. A session still backed
+by a named home volume contributes only its workspace, there being no path to
+the other half.
 
 **Sessions from before the change** keep their `ws_volume` and a null
 `workspace_dir`, and migrate at their next start, which is the only moment a
@@ -1376,7 +1404,7 @@ of it off for a deployment that keeps old images to roll back to.
 row, what Docker has — so anything left by a crash between `docker create` and
 the row's own update, or by a teardown that failed halfway and only logged it,
 was invisible: no card lists it, and no teardown will ever be run for it
-again. A stranded home volume is the expensive one, since with a read-only
+again. A stranded home is the expensive one, since with a read-only
 rootfs it is where everything the agent installed at runtime went.
 
 `sweepOrphans` reads it the other way, on the reaper's minute. What makes the
@@ -1419,12 +1447,12 @@ layout is already the one it takes under `~/.claude` — `CLAUDE.md`,
 `skills/<name>/SKILL.md`, `commands/<name>.md` — so the entrypoint copies and
 interprets nothing.
 
-**Why the copy exists at all.** `~/.claude` is on the home volume, which the
-orchestrator has no path to and has no business in: it holds the transcripts
-and whatever a login inside the box created. Mounting over it read-only would
-break the box; mounting it writable would let the agent edit what the dashboard
-says is configured. So the configuration arrives beside `~/.claude` and the
-entrypoint installs it.
+**Why the copy exists at all.** `~/.claude` is in the session's home, which the
+orchestrator now has a path to but still has no business writing into while the
+box is running — that would race with the agent living in it. Mounting over the
+directory read-only would break the box; mounting it writable would let the
+agent edit what the dashboard says is configured. So the configuration arrives
+beside `~/.claude` and the entrypoint installs it.
 
 **The manifest is what makes the install reversible.** The materialized
 directory carries a `manifest` naming every path in it. The entrypoint removes
@@ -1764,7 +1792,7 @@ applies migrations tracked by `user_version`.
 
 | Table | Holds |
 |---|---|
-| `sessions` | One row per session: names, Docker object names, status, which thread is the default, timestamps |
+| `sessions` | One row per session: names, Docker object names, where its workspace and home are, status, which thread is the default, timestamps |
 | `threads` | One row per conversation: which session owns it, the adapter's id for it, the agent's title, its ordinal, whether a turn is running on it |
 | `pending_requests` | Permission requests waiting for a browser, each recording the thread that asked |
 | `acp_log` | A debug tap of forwarded messages, ring-pruned to 5000 rows per session. An image or audio block's base64 payload is replaced by its size on the way in — a screenshot is a megabyte of it, the row is truncated at 64,000 characters anyway, and the bytes were never what the log is read for |
@@ -1777,7 +1805,7 @@ applies migrations tracked by `user_version`.
 Two kinds of state deliberately stay out of the database. Secrets live only in
 the environment, in the session containers, and in the generated token file;
 `log.ts` redacts anything credential-shaped before it reaches stderr. Thread
-transcripts live in the session's home volume, read back by the adapter.
+transcripts live in the session's home directory, read back by the adapter.
 
 Pending requests are the one place where the database and memory both matter.
 The row lets the dashboard show that something is waiting and survives a
@@ -1877,7 +1905,7 @@ orchestrator/src/
   egress.ts             CA and placeholders, the policy, and the push to the proxy
   db.ts                 SQLite, schema migrations, the debug log
   sessions.ts           Session lifecycle, the owner of every UpstreamSession
-  workspaces.ts         Workspace directories on the data volume: paths, ownership
+  workspaces.ts         Workspace and home directories on the data volume: paths, ownership
   diskusage.ts          How big each workspace has got, measured off the request path
   agents.ts             Agent sets: AGENTS.md, skills, commands; the merge and the materialized bundle
   docker.ts             Containers, networks, volumes, the adapter exec

@@ -23,7 +23,7 @@ import {
   type SessionRow,
   type ThreadRow,
 } from './db.ts';
-import { WorkspaceUsage, WORKSPACE_SIZE_TTL_MS } from './diskusage.ts';
+import { SessionUsage, SESSION_SIZE_TTL_MS } from './diskusage.ts';
 import * as dk from './docker.ts';
 import { HttpError } from './http-error.ts';
 import { log } from './log.ts';
@@ -54,11 +54,18 @@ export class SessionManager {
    * not something to do per request, and a box that is down is not something
    * to walk twice. See diskusage.ts.
    */
-  private readonly usage = new WorkspaceUsage({
-    pathOf: (id) => this.workspacePathOf(id),
-    ttlMs: WORKSPACE_SIZE_TTL_MS,
+  private readonly usage = new SessionUsage({
+    // Everything a session is on disk: the agent's files, and the home its
+    // thread history, caches and installed tools are in — which on a box that
+    // has been working is usually the larger of the two. A session still
+    // backed by a named home volume contributes only its workspace, there
+    // being no path to the other half.
+    pathsOf: (id) => [this.workspacePathOf(id), this.homePathOf(id)],
+    ttlMs: SESSION_SIZE_TTL_MS,
     onTrouble: (id, error) =>
-      log.session(id).warn('could not measure the workspace', { error: error.message }),
+      log.session(id).warn('could not measure what a session is using', {
+        error: error.message,
+      }),
   });
 
   /**
@@ -135,6 +142,16 @@ export class SessionManager {
     const row = this.getRow(id);
     if (!row || row.status === 'deleted' || !row.workspace_dir) return null;
     return ws.workspacePath(this.cfg.DATA_DIR, row.id);
+  }
+
+  /**
+   * Where a session's home is on this process's own filesystem, on the same
+   * terms as its workspace, and null for one still backed by a named volume.
+   */
+  homePathOf(id: string): string | null {
+    const row = this.getRow(id);
+    if (!row || row.status === 'deleted' || !row.home_dir) return null;
+    return ws.homePath(this.cfg.DATA_DIR, row.id);
   }
 
   // --- the session image ----------------------------------------------------
@@ -327,11 +344,15 @@ export class SessionManager {
       await this.sweeping(volume.sessionId, 'volume', () => dk.removeVolume(volume.name));
     }
     // And the files, which are the size of all of the above put together. The
-    // workspace of a session with no row is unreachable by every surface Boxes
-    // has: no card lists it, no review opens it, and no container mounts it.
+    // workspace and home of a session with no row are unreachable by every
+    // surface Boxes has: no card lists them, no review opens one, and no
+    // container mounts either.
     for (const sessionId of sessions) {
       await this.sweeping(sessionId, 'workspace', () =>
         Promise.resolve(ws.removeWorkspace(this.cfg.DATA_DIR, sessionId)),
+      );
+      await this.sweeping(sessionId, 'home', () =>
+        Promise.resolve(ws.removeHome(this.cfg.DATA_DIR, sessionId)),
       );
     }
   }
@@ -507,7 +528,14 @@ export class SessionManager {
       subnet: row.subnet,
       workspaceSource: ws.hostWorkspacePath(this.hostDataDir, row.id),
       agentConfigSource: hostAgentConfigPath(this.hostDataDir, row.id),
-      homeVolume: row.home_volume,
+      // A directory for every session created since homes became
+      // directories, and the old named volume for one created before — which
+      // goes on mounting it for as long as it lives. There is no migration:
+      // the two arrangements simply coexist until the last old session is
+      // deleted.
+      homeSource: row.home_dir
+        ? ws.hostHomePath(this.hostDataDir, row.id)
+        : row.home_volume,
       profile,
       egress: {
         claudeOauthToken: this.egress.sessionValue('claude', profile.claudeOauthToken),
@@ -603,11 +631,12 @@ export class SessionManager {
       container_id: null,
       network_name: dk.names.network(id),
       subnet,
-      // Directory-backed from the start, so no workspace volume is created
-      // and the column that named one stays empty.
+      // Directory-backed from the start, both of them, so neither volume is
+      // created and the columns that named them stay empty.
       ws_volume: '',
-      home_volume: dk.names.homeVolume(id),
+      home_volume: '',
       workspace_dir: ws.workspacePath(this.cfg.DATA_DIR, id),
+      home_dir: ws.homePath(this.cfg.DATA_DIR, id),
       // No base revision until the reviewer picks one: a review compares
       // against each repository's own working tree by default.
       review_base_rev: null,
@@ -621,11 +650,11 @@ export class SessionManager {
     this.db
       .prepare(
         `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
-           network_name, subnet, ws_volume, home_volume, workspace_dir, status,
-           agent_set_id, current_thread_id, created_at, last_active_at)
+           network_name, subnet, ws_volume, home_volume, workspace_dir, home_dir,
+           status, agent_set_id, current_thread_id, created_at, last_active_at)
          VALUES (@id, @name, @profile, @image, @agent_cmd, @container_id,
-           @network_name, @subnet, @ws_volume, @home_volume, @workspace_dir, @status,
-           @agent_set_id, @current_thread_id, @created_at, @last_active_at)`,
+           @network_name, @subnet, @ws_volume, @home_volume, @workspace_dir, @home_dir,
+           @status, @agent_set_id, @current_thread_id, @created_at, @last_active_at)`,
       )
       .run(row);
 
@@ -636,7 +665,16 @@ export class SessionManager {
       ws.createWorkspace(this.cfg.DATA_DIR, id);
       // Before the container, because it is one of its mounts.
       this.agents.materialize(id, agentSetId);
-      await dk.createVolume(row.home_volume, id);
+      // A bind mount covers what the image put in /home/agent rather than
+      // being seeded from it the way a named volume was, so the seeding is
+      // ours to do. See dk.seedHomeFromImage — an empty home costs the
+      // agent's own `~/.local/bin` on the PATH of a login shell.
+      ws.createHome(this.cfg.DATA_DIR, id);
+      await dk.seedHomeFromImage(
+        ws.hostHomePath(this.hostDataDir, id),
+        row.image,
+        id,
+      );
       const containerId = await dk.createContainer(
         this.containerSpec(row, profile),
         this.cfg,
@@ -799,10 +837,10 @@ export class SessionManager {
     } catch (err) {
       slog.warn('network teardown failed', { error: (err as Error).message });
     }
-    // The workspace and the home volume hold the agent's work and the
-    // adapter's thread history. Nothing else refers to either once the session
-    // is gone, so a session that is deleted takes them with it rather than
-    // leaving them orphaned.
+    // The workspace and the home hold the agent's work and the adapter's
+    // thread history. Nothing else refers to either once the session is gone,
+    // so a session that is deleted takes them with it rather than leaving them
+    // orphaned.
     if (row.workspace_dir) {
       try {
         ws.removeWorkspace(this.cfg.DATA_DIR, row.id);
@@ -810,14 +848,22 @@ export class SessionManager {
         slog.warn('workspace removal failed', { error: (err as Error).message });
       }
     }
+    if (row.home_dir) {
+      try {
+        ws.removeHome(this.cfg.DATA_DIR, row.id);
+      } catch (err) {
+        slog.warn('home removal failed', { error: (err as Error).message });
+      }
+    }
     try {
       this.agents.removeMaterialized(row.id);
     } catch (err) {
       slog.warn('agent configuration removal failed', { error: (err as Error).message });
     }
-    // Only a session that never migrated still has one.
+    // Only a session from before each of these became a directory still has
+    // the volume it used to be.
     if (row.ws_volume) await dk.removeVolume(row.ws_volume);
-    await dk.removeVolume(row.home_volume);
+    if (row.home_volume) await dk.removeVolume(row.home_volume);
   }
 
   // --- views ----------------------------------------------------------------
@@ -924,7 +970,7 @@ export class SessionManager {
       // not 'exited': a Docker read that failed says nothing about whether
       // the agent is working, and a size frozen on that would be frozen on a
       // guess. See diskusage.ts.
-      workspaceBytes: this.usage.bytes(
+      diskBytes: this.usage.bytes(
         row.id,
         dockerState !== 'exited' && dockerState !== 'missing',
       ),
@@ -950,6 +996,7 @@ export class SessionManager {
       wsVolume: row.ws_volume,
       workspaceDir: row.workspace_dir,
       homeVolume: row.home_volume,
+      homeDir: row.home_dir,
       acpSessionId: currentThread(this.db, id)?.acp_session_id ?? null,
       proxyAttached: await dk.isProxyAttached(row.network_name, this.cfg),
     };

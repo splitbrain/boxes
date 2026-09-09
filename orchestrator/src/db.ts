@@ -26,6 +26,11 @@ export interface SessionRow {
    * that is directory-backed, which every new one is.
    */
   ws_volume: string;
+  /**
+   * The named volume that used to hold the home directory, and still does for
+   * a session created before homes became directories. Empty on a session
+   * that is directory-backed, which every new one is.
+   */
   home_volume: string;
   /**
    * Where the session's files are, as this process saw them when the session
@@ -35,6 +40,12 @@ export interface SessionRow {
    * this column decides is only whether the session has a directory at all.
    */
   workspace_dir: string | null;
+  /**
+   * Where the session's home is, on the same terms as `workspace_dir`, and
+   * null for a session from before homes became directories — which keeps its
+   * `home_volume` and goes on running from it.
+   */
+  home_dir: string | null;
   /**
    * The revision the review is compared against, as the user gave it — a
    * branch, a tag, a short id — or null for each repository's own working
@@ -375,6 +386,18 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE sessions DROP COLUMN review_root;
   ALTER TABLE sessions DROP COLUMN review_base_commit;
+  `,
+  // The home follows the workspace out of a named volume and into a directory
+  // on the data volume, so that everything a session is made of is in one
+  // place and can be measured, backed up and read as ordinary files.
+  //
+  // Nothing is moved, and unlike the workspace nothing ever will be: an
+  // existing session keeps its home_volume and a null home_dir, and goes on
+  // mounting the volume for as long as it lives. There is no migration to
+  // half-finish, and a session that wants a directory home is a session
+  // created after this.
+  `
+  ALTER TABLE sessions ADD COLUMN home_dir TEXT;
   `,
 ];
 

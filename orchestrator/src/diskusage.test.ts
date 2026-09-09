@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'vitest';
-import { directorySize, WorkspaceUsage } from './diskusage.ts';
+import { directorySize, SessionUsage } from './diskusage.ts';
 
 /**
  * How big a workspace is: the walk itself, and the cache in front of it that
@@ -60,13 +60,13 @@ const up = true;
 const down = false;
 
 function usage(over: {
-  pathOf?: (id: string) => string | null;
+  pathsOf?: (id: string) => Array<string | null>;
   measure?: (path: string) => Promise<number>;
   now?: () => number;
 } = {}) {
   const walks: string[] = [];
-  const cache = new WorkspaceUsage({
-    pathOf: over.pathOf ?? ((id) => `/data/workspaces/${id}`),
+  const cache = new SessionUsage({
+    pathsOf: over.pathsOf ?? ((id) => [`/data/workspaces/${id}`]),
     ttlMs: 1000,
     now: over.now ?? (() => 0),
     measure:
@@ -112,12 +112,58 @@ test('a measurement stands until it goes stale', async () => {
   assert.equal(walks.length, 2);
 });
 
-test('a session with no workspace directory has no size and is never walked', async () => {
-  const { cache, walks } = usage({ pathOf: () => null });
+test('a session with no directory of its own has no size and is never walked', async () => {
+  const { cache, walks } = usage({ pathsOf: () => [null, null] });
 
   assert.equal(cache.bytes('legacy', up), null);
   await cache.settled();
   assert.deepEqual(walks, []);
+});
+
+test('what a session is using is its workspace and its home, together', async () => {
+  const sizes: Record<string, number> = {
+    '/data/workspaces/s1': 300,
+    '/data/homes/s1': 700,
+  };
+  const { cache, walks } = usage({
+    pathsOf: (id) => [`/data/workspaces/${id}`, `/data/homes/${id}`],
+    measure: (path) => Promise.resolve(sizes[path] ?? 0),
+  });
+
+  cache.bytes('s1', up);
+  await cache.settled();
+  // One number, because the question a card answers is how big this box has
+  // got — and the home, with the caches and the installed tools in it, is
+  // usually the larger half of the answer.
+  assert.equal(cache.bytes('s1', up), 1000);
+  assert.deepEqual(walks, []);
+});
+
+test('a session whose home is still a volume is measured by its workspace alone', async () => {
+  const { cache } = usage({
+    pathsOf: (id) => [`/data/workspaces/${id}`, null],
+    measure: () => Promise.resolve(300),
+  });
+
+  cache.bytes('legacy', up);
+  await cache.settled();
+  assert.equal(cache.bytes('legacy', up), 300);
+});
+
+test('half a session is not reported as the whole of it', async () => {
+  const { cache } = usage({
+    pathsOf: (id) => [`/data/workspaces/${id}`, `/data/homes/${id}`],
+    measure: (path) =>
+      path.includes('homes')
+        ? Promise.reject(new Error('EACCES'))
+        : Promise.resolve(300),
+  });
+
+  cache.bytes('s1', up);
+  await cache.settled();
+  // The workspace walk succeeded and the home walk did not. 300 would be a
+  // wrong answer stated confidently; no answer is the honest one.
+  assert.equal(cache.bytes('s1', up), null);
 });
 
 test('a walk that fails leaves no number behind, and is not retried per request', async () => {

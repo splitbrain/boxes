@@ -13,6 +13,7 @@ import {
   createContainer,
   killInContainer,
   resetPsFormatForTests,
+  seedHomeFromImage,
   sessionEnv,
   setDockerForTests,
   type CreateContainerSpec,
@@ -54,7 +55,7 @@ async function envFor(over: Record<string, string>): Promise<Record<string, stri
     subnet: '10.200.0.0/29',
     workspaceSource: '/var/lib/docker/volumes/boxes-data/_data/workspaces/abcd1234',
     agentConfigSource: '/var/lib/docker/volumes/boxes-data/_data/agents/abcd1234',
-    homeVolume: 'home-abcd1234',
+    homeSource: '/var/lib/docker/volumes/boxes-data/_data/homes/abcd1234',
     profile,
     egress: {
       claudeOauthToken: egress.sessionValue('claude', profile.claudeOauthToken),
@@ -139,7 +140,7 @@ describe('the container template', () => {
           subnet: '10.200.0.0/29',
           workspaceSource: '/var/lib/docker/volumes/boxes-data/_data/workspaces/abcd1234',
           agentConfigSource: '/var/lib/docker/volumes/boxes-data/_data/agents/abcd1234',
-          homeVolume: 'home-abcd1234',
+          homeSource: '/var/lib/docker/volumes/boxes-data/_data/homes/abcd1234',
           profile,
           egress: {
             claudeOauthToken: '',
@@ -155,18 +156,57 @@ describe('the container template', () => {
     return opts;
   }
 
-  it('binds the workspace from a host path and the home from a volume', async () => {
+  it('binds the workspace and the home from host paths', async () => {
     const opts = await capture();
     const host = opts['HostConfig'] as { Binds: string[] };
-    // A path, not a volume name: the orchestrator has to read these files
-    // itself, which is what the whole review surface rests on.
+    // Paths, not volume names: the orchestrator has to read these files
+    // itself, which is what the whole review surface rests on — and what
+    // lets a session's size be read by walking two directories.
     assert.deepEqual(host.Binds, [
       '/var/lib/docker/volumes/boxes-data/_data/workspaces/abcd1234:/workspace',
-      'home-abcd1234:/home/agent',
+      '/var/lib/docker/volumes/boxes-data/_data/homes/abcd1234:/home/agent',
       // The agent configuration is read-only: what the dashboard says a box is
       // configured with is not the agent's to rewrite.
       '/var/lib/docker/volumes/boxes-data/_data/agents/abcd1234:/boxes/agent:ro',
     ]);
+  }, 30_000);
+
+  it('seeds a new home from the image, as root, and hands it to the agent', async () => {
+    let opts: Record<string, unknown> = {};
+    setDockerForTests({
+      createContainer: async (o: Record<string, unknown>) => {
+        opts = o;
+        return {
+          start: async () => {},
+          wait: async () => ({ StatusCode: 0 }),
+          remove: async () => {},
+        };
+      },
+    } as unknown as Docker);
+    try {
+      await seedHomeFromImage(
+        '/var/lib/docker/volumes/boxes-data/_data/homes/abcd1234',
+        'boxes-session:latest',
+        'abcd1234',
+      );
+    } finally {
+      setDockerForTests(null);
+    }
+
+    const host = opts['HostConfig'] as { Binds: string[]; NetworkMode: string };
+    assert.deepEqual(host.Binds, [
+      '/var/lib/docker/volumes/boxes-data/_data/homes/abcd1234:/to',
+    ]);
+    // A bind mount covers what the image put in /home/agent instead of being
+    // seeded from it, and the skeleton .profile in there is what puts
+    // ~/.local/bin on the PATH of a login shell — which is where the agent's
+    // own `npm install -g` puts things.
+    assert.deepEqual(opts['Cmd'], ['cp -a /home/agent/. /to/ && chown 1020:1020 /to']);
+    // As root, because `cp -a` preserving the image's ownership is the point,
+    // and because the directory itself has to be given away — which the
+    // orchestrator cannot do where it is not root itself.
+    assert.equal(opts['User'], 'root');
+    assert.equal(host.NetworkMode, 'none');
   }, 30_000);
 
   it('runs as the configured uid and gid, not the image\'s user name', async () => {

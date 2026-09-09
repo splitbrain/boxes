@@ -147,13 +147,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # uv, the one tool here the archive does not carry. Installed with the pipx
 # that is already present, both of its directories pointed at /usr/local for
 # this one command: the runtime values below put the agent's own `pipx install`
-# in the home volume, and uv belongs on the image beside the npm globals for
-# the same reason -- Docker initialises a named volume once and never again, so
-# anything durable landing there is frozen at the version the volume was born
-# with.
+# in the session's home, and uv belongs on the image beside the npm globals for
+# the same reason -- a home is filled from this image when the session is
+# created and never refreshed, so anything durable landing there is frozen at
+# the version that session was born with.
 #
 # It earns its place twice over under a read-only /usr: `uv tool install` and
-# `uv python install` both write to the home volume, so the agent can fetch a
+# `uv python install` both write to the session's home, so the agent can fetch a
 # Python it does not have without any privilege at all.
 RUN PIPX_HOME=/usr/local/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv \
  && rm -rf /root/.cache
@@ -204,8 +204,8 @@ RUN npm install -g --prefix /usr/local \
 # non-Latin script comes back as boxes.
 #
 # PLAYWRIGHT_BROWSERS_PATH keeps the browser on the image rather than in the
-# home volume, for the reason the npm globals are on the image: a named volume
-# is initialised once and never refreshed. The cost is that it is read-only at
+# session's home, for the reason the npm globals are on the image: a home is
+# filled once, when its session is created, and never refreshed. The cost is that it is read-only at
 # runtime, so a project pinning its own Playwright has to point the variable at
 # its own home and download there -- which the shipped skill spells out.
 #
@@ -242,7 +242,7 @@ RUN npm install -g --prefix /usr/local @playwright/cli@${PLAYWRIGHT_CLI_VERSION}
 #
 # The binaries are the half a session can supply for itself and the libraries
 # are the half it cannot: `npx playwright install firefox` downloads happily
-# into the home volume as the agent, and then the browser will not start,
+# into the session's home as the agent, and then the browser will not start,
 # because `apt-get` needs a root and a writable /usr that no session has. What
 # that looks like is a download that reports success followed by a launch that
 # dies on `libgtk-3.so.0`, or on WebKit's forty-odd gstreamer and flite
@@ -299,9 +299,10 @@ COPY playwright-cli.config.json /usr/local/share/boxes/playwright-cli.config.jso
 #
 # These have to match the orchestrator's SESSION_UID and SESSION_GID -- their
 # defaults are the same numbers, in orchestrator/src/workspaces.ts. A session's
-# home is a named volume Docker ownership-initialises from /home/agent below,
-# so a mismatch leaves the agent unable to write its own home; the orchestrator
-# reads this image's user back at boot and says so if they have drifted.
+# home is a directory the orchestrator fills by copying /home/agent out of this
+# image, ownership and all, so a mismatch leaves the agent unable to write its
+# own home; the orchestrator reads this image's user back at boot and says so
+# if they have drifted.
 ARG AGENT_UID=1020
 ARG AGENT_GID=1020
 
@@ -332,10 +333,10 @@ ENV HOME=/home/agent \
 # does not already have, which is the point.
 #
 # Set *after* the global install above, deliberately. That one belongs in
-# /usr/local, on the image. Landing it in the home volume instead would pin
-# the adapter to whatever version the volume was born with: Docker
-# initialises a named volume from the image exactly once and never refreshes
-# it, so every later image update would be invisible to an existing session.
+# /usr/local, on the image. Landing it in the session's home instead would pin
+# the adapter to whatever version that session was born with: a home is filled
+# from this image exactly once, when the session is created, and never
+# refreshed, so every later image update would be invisible to it.
 ENV NPM_CONFIG_PREFIX=/home/agent/.local \
     PIPX_HOME=/home/agent/.local/pipx \
     PIPX_BIN_DIR=/home/agent/.local/bin
@@ -385,7 +386,7 @@ WORKDIR /workspace
 # build succeeds anyway having quietly undone both the uid and the non-root
 # part of the security model. The rest is the tool directories: an unwritable
 # one, an npm prefix that did not take, a login shell that lost them all to
-# /etc/profile, or an adapter that ended up in the home volume instead of on
+# /etc/profile, or an adapter that ended up in a session's home instead of on
 # the image -- none of which shows up until a session is running. Runs as the
 # user it is checking, so it needs no privileges of its own.
 RUN test "$(id -u)" = "${AGENT_UID}" \
@@ -462,7 +463,7 @@ RUN set -eu; \
     rm -rf /tmp/index.html /tmp/.playwright /tmp/.playwright-cli
 
 # Firefox and WebKit do the same, the way a session would have to get them:
-# downloaded as the agent into the home volume, run from there, deleted again.
+# downloaded as the agent into the session's home, run from there, deleted again.
 #
 # This is the check the layer above exists for, and nothing cheaper stands in
 # for it. `install-deps` reports success for packages it installed, not for a
@@ -482,10 +483,10 @@ RUN set -eu; \
 # project to use, rather than the image's /opt/playwright, for two reasons:
 # that directory is what a session can actually write, so pointing at it is
 # what proves the documented route rather than a build-time-only one, and the
-# binaries are meant to leave with this RUN. Docker initialises a session's
-# home volume from this image once and never again, so anything still in
-# /home/agent/.cache at the end of the build is frozen into every session that
-# is ever created -- the same reason the toolchain caches below are removed.
+# binaries are meant to leave with this RUN. A session's home is filled by
+# copying /home/agent out of this image, so anything still in
+# /home/agent/.cache at the end of the build is copied into every session
+# created from it -- the same reason the toolchain caches below are removed.
 #
 # setContent rather than a served page: this is asking whether the browser
 # process starts and renders, which the check above already asks over http for
@@ -522,8 +523,8 @@ RUN set -eu; \
 # in the first real session that tries to build anything.
 #
 # The caches are removed afterwards, deliberately: left in place they would be
-# copied into every new session's home volume, which Docker initialises from
-# this image once and never refreshes.
+# copied into every new session's home, which is filled from this image when
+# the session is created and never refreshed.
 RUN set -eu; \
     cd /tmp; \
     printf 'package main\nimport "fmt"\nfunc main() { fmt.Println("ok") }\n' > hello.go; \

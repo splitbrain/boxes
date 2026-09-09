@@ -166,15 +166,15 @@ export function SessionInfo() {
                 truthful reading of no set rather than "none". */}
             <Meta label="Agent set" value={session.agentSetName ?? 'global only'} />
             <Meta label="Last active" value={new Date(session.lastActiveAt).toLocaleString()} />
-            {/* What the card shows in one word, with the reason it can be
-                absent said out loud: a session still on a named volume has no
-                directory for the orchestrator to measure. */}
+            {/* What the card shows, with the reason it can be absent said out
+                loud: a session still on a named volume has no directory for
+                the orchestrator to measure. */}
             <Meta
-              label="Workspace"
+              label="On disk"
               value={
-                session.workspaceBytes === null
+                session.diskBytes === null
                   ? 'not measured'
-                  : `${shortSize(session.workspaceBytes)} on disk`
+                  : `${shortSize(session.diskBytes)} of workspace and home`
               }
             />
           </dl>

@@ -92,24 +92,42 @@ function insertSession(id: string, status = 'stopped'): void {
   const now = Date.now();
   db.prepare(
     `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
-       network_name, subnet, ws_volume, home_volume, workspace_dir, status,
-       current_thread_id, created_at, last_active_at)
+       network_name, subnet, ws_volume, home_volume, workspace_dir, home_dir,
+       status, current_thread_id, created_at, last_active_at)
      VALUES (?, 'test', 'DEFAULT', 'img', '["claude-agent-acp"]', ?,
-       ?, '10.200.0.0/24', '', ?, ?, ?, NULL, ?, ?)`,
-  ).run(id, `c-${id}`, `sn-${id}`, `home-${id}`, `${dir}/workspaces/${id}`, status, now, now);
+       ?, '10.200.0.0/24', '', ?, ?, ?, ?, NULL, ?, ?)`,
+  ).run(
+    id,
+    `c-${id}`,
+    `sn-${id}`,
+    `home-${id}`,
+    `${dir}/workspaces/${id}`,
+    `${dir}/homes/${id}`,
+    status,
+    now,
+    now,
+  );
 }
 
-/** The Docker objects and the workspace one session owns. */
+/** The Docker objects and the directories one session owns. */
 function insertObjects(id: string): void {
   fake.containers.set(`c-${id}`, { sessionId: id, running: false });
   fake.networks.set(`sn-${id}`, id);
+  // A session from before homes became directories still has this one, and
+  // it is labelled the same way.
   fake.volumes.set(`home-${id}`, id);
   const workspace = ws.createWorkspace(orchestrator.cfg.DATA_DIR, id);
   writeFileSync(join(workspace, 'work.txt'), 'the agent was here');
+  const home = ws.createHome(orchestrator.cfg.DATA_DIR, id);
+  writeFileSync(join(home, '.profile'), 'and lived here');
 }
 
 function workspaceOf(id: string): string {
   return ws.workspacePath(orchestrator.cfg.DATA_DIR, id);
+}
+
+function homeOf(id: string): string {
+  return ws.homePath(orchestrator.cfg.DATA_DIR, id);
 }
 
 beforeEach(() => {
@@ -128,6 +146,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   rmSync(ws.workspacesRoot(orchestrator.cfg.DATA_DIR), { recursive: true, force: true });
+  rmSync(ws.homesRoot(orchestrator.cfg.DATA_DIR), { recursive: true, force: true });
   await orchestrator.app.close();
   db.close();
   dk.setDockerForTests(null);
@@ -135,7 +154,7 @@ afterEach(async () => {
 });
 
 describe('sweeping objects no session owns', () => {
-  it('takes the container, the network, the volume and the workspace', async () => {
+  it('takes the container, the network, the volume and both directories', async () => {
     insertSession('live');
     insertObjects('live');
     // A session that was deleted, and whose teardown did not finish.
@@ -146,8 +165,12 @@ describe('sweeping objects no session owns', () => {
 
     assert.deepEqual(fake.removed, ['c-gone', 'sn-gone', 'home-gone']);
     assert.ok(!existsSync(workspaceOf('gone')));
+    // The home is the bigger half: the caches and whatever the agent
+    // installed at runtime are in it.
+    assert.ok(!existsSync(homeOf('gone')));
     // And nothing of the session that is still there.
     assert.ok(existsSync(workspaceOf('live')));
+    assert.ok(existsSync(homeOf('live')));
     assert.ok(fake.containers.has('c-live'));
     assert.ok(fake.volumes.has('home-live'));
   });
@@ -174,6 +197,7 @@ describe('sweeping objects no session owns', () => {
 
     assert.deepEqual(fake.removed, []);
     assert.ok(existsSync(workspaceOf('newborn')));
+    assert.ok(existsSync(homeOf('newborn')));
   });
 
   it('keeps going when one object cannot be removed', async () => {
@@ -211,6 +235,7 @@ describe('sweeping objects no session owns', () => {
 
     assert.deepEqual(fake.removed, []);
     assert.ok(existsSync(workspaceOf('orphan-by-accident')));
+    assert.ok(existsSync(homeOf('orphan-by-accident')));
   });
 
   it('sweeps for a deployment whose sessions have all been deleted', async () => {
