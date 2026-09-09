@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { SessionSummary } from '../../../shared/types.ts';
+import type { DeploymentImages, SessionSummary } from '../../../shared/types.ts';
 import { api } from '../api.ts';
 import { pollWhileVisible } from '../lib/poll.ts';
 
@@ -20,6 +20,11 @@ export interface SessionsState {
    * token. True to begin with, so a slow first answer shows no warning.
    */
   claudeTokenConfigured: boolean;
+  /**
+   * Which build of each of the deployment's images is running, all three null
+   * until a probe has said otherwise.
+   */
+  images: DeploymentImages;
   /** The message from the last failed poll, or null. */
   error: string | null;
   /** True until the first poll has finished, however it went. */
@@ -29,6 +34,7 @@ export interface SessionsState {
 let state: SessionsState = {
   sessions: [],
   claudeTokenConfigured: true,
+  images: { orchestrator: null, proxy: null, session: null },
   error: null,
   loading: true,
 };
@@ -81,7 +87,10 @@ export async function refresh(): Promise<void> {
       ? { sessions: list.value, error: null }
       : { error: reachable(list.reason as Error) }),
     ...(health.status === 'fulfilled'
-      ? { claudeTokenConfigured: health.value.claudeTokenConfigured }
+      ? {
+          claudeTokenConfigured: health.value.claudeTokenConfigured,
+          images: health.value.images,
+        }
       : {}),
     loading: false,
   });

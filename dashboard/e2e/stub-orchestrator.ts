@@ -6,6 +6,7 @@ import type {
   AgentItem,
   AgentSetDetail,
   CreateThreadBody,
+  DeploymentImages,
   ExecRecord,
   HealthResponse,
   ReviewAnnotation,
@@ -201,6 +202,33 @@ export function stubAgentSet(over: Partial<AgentSetDetail> = {}): AgentSetDetail
   };
 }
 
+/**
+ * The three images the stub says are running: two pulled from a registry and
+ * one built on the host, which is the mix a deployment following `latest`
+ * with a session image of its own actually has.
+ */
+export function stubImages(): DeploymentImages {
+  return {
+    orchestrator: {
+      digest: 'sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
+      builtAt: Date.parse('2026-08-30T09:15:00Z'),
+      sizeBytes: 440_401_920,
+    },
+    proxy: {
+      digest: 'sha256:9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0',
+      builtAt: Date.parse('2026-08-30T09:15:00Z'),
+      sizeBytes: 188_743_680,
+    },
+    session: {
+      digest: 'sha256:0011223344556677889900aabbccddeeff00112233445566778899aabbccddee',
+      builtAt: Date.parse('2026-08-12T22:40:00Z'),
+      // Gigabytes, because the session image is: a language toolchain apiece
+      // and a browser. Which is the reason the footer says so at all.
+      sizeBytes: 4_509_715_661,
+    },
+  };
+}
+
 /** What the stub answers with, mutable between navigations. */
 export interface StubState {
   sessions: SessionDetail[];
@@ -212,6 +240,8 @@ export interface StubState {
   agentSets: AgentSetDetail[];
   /** What the health probe reports about the deployment's Claude token. */
   claudeTokenConfigured: boolean;
+  /** Which build of each image the health probe says is running. */
+  images: DeploymentImages;
   /**
    * The cookie an authenticating reverse proxy in front of this deployment
    * would be checking, or null for the loopback default that has none.
@@ -264,6 +294,7 @@ export async function startStubOrchestrator(
   const state: StubState = {
     sessions: initial,
     claudeTokenConfigured: true,
+    images: stubImages(),
     reviews: Object.fromEntries(initial.map((s) => [s.id, stubReview()])),
     agentSets: [stubAgentSet()],
     requireCookie: null,
@@ -306,6 +337,7 @@ export async function startStubOrchestrator(
         egress: null,
         claudeTokenConfigured: state.claudeTokenConfigured,
         pushSubscriptions: 0,
+        images: state.images,
       };
       return json(res, 200, health);
     }

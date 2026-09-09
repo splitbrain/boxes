@@ -33,6 +33,7 @@ import {
 import { EgressManager } from './egress.ts';
 import * as execs from './exec.ts';
 import { HttpError } from './http-error.ts';
+import { deploymentImages } from './images.ts';
 import { log } from './log.ts';
 import { Notifier } from './notify.ts';
 import { resolveInRoot } from './review/fs.ts';
@@ -142,6 +143,10 @@ export function buildApp(
       egress: egress.status(),
       claudeTokenConfigured: cfg.PROFILE_DEFAULT_CLAUDE_CODE_OAUTH_TOKEN !== '',
       pushSubscriptions: countPushSubscriptions(db),
+      // The one thing here that asks the daemon anything. Cached for a minute
+      // and null on every failure, so the probe answers at the same speed and
+      // stays green on a host whose Docker socket is not there.
+      images: await deploymentImages(cfg),
     };
   });
 

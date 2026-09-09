@@ -171,6 +171,33 @@ test('a link to a session that is gone says so instead of offering a composer', 
   }
 });
 
+test('the session list says which build of each image is running', async () => {
+  const { page, errors, close } = await openPage(stub.url, '/');
+  try {
+    // The digest abbreviated the way Docker abbreviates an id, then the build
+    // time and the size. The clock is asserted by shape rather than by value:
+    // it is rendered in the browser's own timezone, which is the machine's.
+    const orchestrator = page.getByText(
+      /^orchestrator 1a2b3c4d5e6f · \d{4}-\d{2}-\d{2} \d{2}:\d{2} · 420 MB$/,
+    );
+    await expect.poll(() => orchestrator.isVisible()).toBe(true);
+    await expect.poll(() => page.getByText(/^proxy 9f8e7d6c5b4a · .* · 180 MB$/).isVisible())
+      .toBe(true);
+    // In gigabytes, which is the size a session image is and the reason the
+    // line carries one at all.
+    await expect.poll(() => page.getByText(/^session 001122334455 · .* · 4.2 GB$/).isVisible())
+      .toBe(true);
+    // The whole digest is on hover: too long for the line, and the only form
+    // worth pasting into a comparison.
+    expect(await orchestrator.getAttribute('title')).toBe(
+      'sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
+    );
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 test('the session list offers to notify this browser', async () => {
   const { page, errors, close } = await openPage(stub.url, '/', 'dark');
   try {

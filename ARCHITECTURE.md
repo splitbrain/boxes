@@ -89,6 +89,17 @@ orchestrator may recreate one — the container id in the database and the
 runtime proxy attachment would both be lost — so the template carries
 `com.centurylinklabs.watchtower.enable=false`.
 
+Which build of the three is running — its digest, when it was built and what
+it takes on disk — is read back off the daemon and reported in `/healthz`,
+because a deployment that follows `latest` moves when a watchtower says so
+rather than when a person does. The orchestrator's image
+and the proxy's are whatever their containers were created from; the session
+image is named by `SESSION_IMAGE` outright, which is just as well, because
+between sessions there is no container to read it off. The session list shows
+all three in a footer. `orchestrator/src/images.ts` caches the reading for a
+minute: the probe is polled by every open tab, and nothing here moves without
+a registry pull behind it.
+
 `compose.yaml` publishes one port, on loopback, and names no reverse proxy:
 what sits in front is a deployment decision, not part of the system. The one
 constraint it places on that decision is that `/ws` must not be behind HTTP
@@ -103,7 +114,7 @@ The orchestrator serves everything a browser needs:
 | `/` | Dashboard bundle, with a single-page fallback |
 | `/api/...` | REST |
 | `/ws/sessions/:id/acp` | ACP gateway |
-| `/healthz` | Version, session count, proxy warnings and whether a Claude token is configured |
+| `/healthz` | Version, session count, proxy warnings, whether a Claude token is configured, and which build of each image is running |
 
 A GET that matches no route falls back to the dashboard's `index.html`, so
 client-side routes survive a reload. Anything under `/api` or `/ws` gets a
@@ -1930,6 +1941,7 @@ orchestrator/src/
   diskusage.ts          How big each workspace has got, measured off the request path
   agents.ts             Agent sets: AGENTS.md, skills, commands; the merge and the materialized bundle
   docker.ts             Containers, networks, volumes, the adapter exec
+  images.ts             Which build of the three images is running, cached off the health probe
   review/
     service.ts          Per-session façade: the repo map, the REVIEW.md read-modify-write, the routing
     repos.ts            Which repositories the workspace holds, and which owns a path

@@ -2,7 +2,7 @@ import Docker from 'dockerode';
 import { existsSync, readFileSync } from 'node:fs';
 import { PassThrough, Readable } from 'node:stream';
 import type { Duplex } from 'node:stream';
-import type { DockerState } from '../../shared/types.ts';
+import type { DockerState, ImageInfo } from '../../shared/types.ts';
 import type { Config, SessionProfile } from './config.ts';
 import { log } from './log.ts';
 import { sessionOwner } from './workspaces.ts';
@@ -366,6 +366,32 @@ export async function imageUserUid(image: string): Promise<number | null> {
  */
 export async function imageId(image: string): Promise<string | null> {
   return inspecting(async () => (await docker().getImage(image).inspect()).Id ?? null);
+}
+
+/**
+ * The digest, build date and size of an image on this host, or null when it
+ * is not here.
+ *
+ * `RepoDigests` carries what a registry knows the image by, and that is the
+ * answer wherever there is one — a deployment following a published tag wants
+ * to compare against what was published. An image built here has never been
+ * in a registry and has no entry there, so the local config id stands in.
+ *
+ * `Created` is the only build date an image carries, and a value that will
+ * not parse is reported as no date rather than as a NaN nothing downstream
+ * could render. `Size` is read on the same terms.
+ */
+export async function imageInfo(image: string): Promise<ImageInfo | null> {
+  return inspecting(async () => {
+    const info = await docker().getImage(image).inspect();
+    const published = (info.RepoDigests ?? [])[0]?.split('@')[1];
+    const builtAt = Date.parse(info.Created ?? '');
+    return {
+      digest: published ?? info.Id,
+      builtAt: Number.isNaN(builtAt) ? null : builtAt,
+      sizeBytes: typeof info.Size === 'number' ? info.Size : null,
+    };
+  });
 }
 
 /** The id of the image a container was created from, or null when it is gone. */
