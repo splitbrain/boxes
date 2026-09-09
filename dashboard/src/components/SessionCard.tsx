@@ -1,4 +1,4 @@
-import { FileSearch, GitBranch, Info, Plus } from 'lucide-react';
+import { FileSearch, GitBranch, HardDrive, Info, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { SessionSummary, ThreadSummary } from '../../../shared/types.ts';
@@ -6,6 +6,7 @@ import { DOT, StatusBadge, type BadgeKind } from './StatusBadge';
 import { Card } from '@/components/ui/card';
 import { api } from '../api.ts';
 import { STILL_RUNNING } from '@/lib/activity';
+import { shortAge, shortSize } from '@/lib/rough';
 import { threadName } from '@/lib/threads';
 import { refresh } from '../stores/sessions.ts';
 import { cn } from '@/lib/utils';
@@ -83,6 +84,12 @@ export function SessionCard({ session }: { session: SessionSummary }) {
   }
 
   const current = session.threads.find((t) => t.id === session.currentThreadId);
+  // What the thread ages are measured from. Read at render rather than kept on
+  // a timer: the list is polled every five seconds and every answer re-renders
+  // this card, which is a finer clock than an indicator in whole minutes and
+  // hours needs. A tab in the background stops polling, and the age it shows
+  // is as stale as everything else on the card until it comes back.
+  const now = Date.now();
 
   return (
     <Card className="relative gap-0 overflow-hidden py-0 transition-colors hover:border-ring">
@@ -94,10 +101,24 @@ export function SessionCard({ session }: { session: SessionSummary }) {
           <span className="truncate font-medium">{session.name}</span>
           <span className="font-mono text-xs text-muted-foreground">{session.id}</span>
         </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {sessionBadges(session).map((b) => (
             <StatusBadge key={b.label} kind={b.kind} label={b.label} />
           ))}
+          {/* How much disk the box's workspace has taken. Not a badge: it is a
+              measurement rather than a state, and giving it a pill of its own
+              would put it in the row that says what the session is doing.
+              Absent until the orchestrator has measured one — a zero would be
+              a claim about a workspace nobody has looked at yet. */}
+          {session.workspaceBytes === null ? null : (
+            <span
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+              title="Workspace on disk"
+            >
+              <HardDrive className="size-3" aria-hidden />
+              {shortSize(session.workspaceBytes)}
+            </span>
+          )}
         </div>
       </Link>
       <Link
@@ -133,7 +154,18 @@ export function SessionCard({ session }: { session: SessionSummary }) {
                 title={dot.label}
                 className={cn('size-1.5 shrink-0 rounded-full', DOT[dot.kind])}
               />
-              <span className="truncate">{threadName(thread)}</span>
+              <span className="min-w-0 flex-1 truncate">{threadName(thread)}</span>
+              {/* How long since this conversation last did anything, which is
+                  what picks the one you were in out of a box with six. Rough,
+                  and rounded down: the question is this morning or last week,
+                  and the exact moment is on the details view. */}
+              <time
+                dateTime={new Date(thread.lastActiveAt).toISOString()}
+                title={`Last active ${new Date(thread.lastActiveAt).toLocaleString()}`}
+                className="shrink-0 tabular-nums opacity-70"
+              >
+                {shortAge(now - thread.lastActiveAt)}
+              </time>
             </Link>
           );
         })}

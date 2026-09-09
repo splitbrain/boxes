@@ -304,6 +304,20 @@ thread can be in. Being up is a precondition of all four. The dim blue is the
 one that could not be shown before: it is the conversation holding the box
 awake, which a list of them had no way to point at.
 
+Two rough indicators sit on the card, because a list of boxes is scanned
+rather than read. Each row ends in how long ago that conversation last did
+anything — `12s`, `5h`, `14d`, always the largest whole unit and always
+rounded down — which is what picks the thread you were in out of a box with
+six of them. Each card carries how much disk its workspace is taking up, in
+the badge row but not as a badge: it is a measurement rather than a state, and
+a pill would put it among the things that say what the session is *doing*.
+Neither is a figure to act on, which is the point of the shape — `340 MB` and
+`1.4 GB` are different news, `341 MB` and `340 MB` are not. Both are
+`lib/rough.ts`; the exact timestamp is on the details view, and the exact
+byte count is nobody's question. The ages are re-read on every poll rather
+than on a timer of their own, so they move at the same five seconds as
+everything else on the card.
+
 Rows carried labelled badges of their own beside the name, for two of those
 four states. They are gone: they said in words what the dot says in colour,
 and a row is for picking a conversation out of a list rather than for reading
@@ -1285,6 +1299,42 @@ workspace, and lets it edit or delete the `REVIEW.md` the review surface
 writes there. `workspaces/` itself is 0700: one session's files are not
 another's, and the only thing that reads across all of them is this process.
 
+**How big it has got** is measured by walking the directory, which is the one
+thing on the list's path that could genuinely cost something: a checkout with
+a `node_modules` in it is a hundred thousand files, and the dashboard polls
+every five seconds. So no request ever waits for one. `diskusage.ts` answers
+with what it last measured — null before the first walk, which the card shows
+as nothing rather than as a zero — and walks again only when there is reason
+to think the answer has moved.
+
+Two rules make that rare. A measurement of a running box stands for a quarter
+of an hour, because the number is shown rounded to two significant figures and
+an agent has to write a hundred megabytes to shift one. And **a box that is
+down is measured once and then left alone**: nothing is running in it, so
+nothing in it is changing, and re-walking it for the weeks it sits there would
+be the whole cost of the feature spent on an answer known in advance. The one
+walk after it stops is worth taking — what was measured while it ran was a
+workspace being written to — and `bytes()` takes it because the measurement it
+holds was recorded as having been taken live. A container in state `unknown`
+counts as live: a Docker read that failed says nothing about whether the agent
+is working, and a size frozen on that would be frozen on a guess.
+
+Which leaves the orchestrator's own writes as the way a stopped workspace
+grows, and the attachment route says so (`workspaceChanged`) rather than
+leaving an upload invisible until the box next runs. The review surface writes
+there too and deliberately says nothing: a `REVIEW.md` is kilobytes, invisible
+in a figure rounded to two significant figures, and re-walking a checkout
+whenever somebody types a comment is the cost this avoids.
+
+Walks are queued one behind another, since they are all going to the same disk
+and nobody is waiting for them, and lazy rather than on a loop: a deployment
+nobody is looking at should not be walking disk on a timer. Sizes are apparent
+rather than allocated — `du --apparent-size` — and symlinks count as nothing
+and are never followed, the same containment the review surface and workspace
+removal keep. The home volume is not in it: the orchestrator has no path to a
+named volume, and the adapter's transcripts are not what anybody means by how
+big a session has got.
+
 **Sessions from before the change** keep their `ws_volume` and a null
 `workspace_dir`, and migrate at their next start, which is the only moment a
 container can be recreated with a different mount. The order loses nothing at
@@ -1772,6 +1822,7 @@ orchestrator/src/
   db.ts                 SQLite, schema migrations, the debug log
   sessions.ts           Session lifecycle, the owner of every UpstreamSession
   workspaces.ts         Workspace directories on the data volume: paths, ownership
+  diskusage.ts          How big each workspace has got, measured off the request path
   agents.ts             Agent sets: AGENTS.md, skills, commands; the merge and the materialized bundle
   docker.ts             Containers, networks, volumes, the adapter exec
   review/

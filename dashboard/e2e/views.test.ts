@@ -28,6 +28,11 @@ beforeAll(async () => {
       pendingCount: 2,
       turnActive: false,
       attachedCount: 0,
+      // A box left alone for a fortnight, and one small enough to be a
+      // checkout and nothing else: the two rough indicators at the other end
+      // of their ranges from the box above.
+      threads: [stubThread({ lastActiveAt: Date.now() - 14 * 86_400_000 })],
+      workspaceBytes: 4_200_000,
     }),
     stubSession({
       id: '99887766',
@@ -44,9 +49,13 @@ beforeAll(async () => {
       // Which of its conversations that build belongs to is the row's own
       // bullet, and the only place a list says which thread is holding the
       // box awake.
-      threads: [stubThread({ backgroundBusy: true })],
+      threads: [
+        stubThread({ backgroundBusy: true, lastActiveAt: Date.now() - 12_000 }),
+        stubThread({ id: 'th2', ordinal: 2, title: 'flaky retry logic', lastActiveAt: Date.now() - 5 * 3_600_000 }),
+      ],
       attachedCount: 1,
       proxyAttached: false,
+      workspaceBytes: 2.4 * 1024 ** 3,
     }),
   ]);
 });
@@ -68,6 +77,17 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect
         .poll(() => page.getByRole('img', { name: 'something still running' }).isVisible())
         .toBe(true);
+      // How long since each conversation did anything, and how much disk each
+      // box has taken: the two rough indicators, in the units the numbers
+      // above land in.
+      // Seconds, by shape rather than by value: the clock keeps moving while
+      // the page loads, and which second it lands on is not the point.
+      await expect.poll(() => page.getByText(/^\d+s$/).isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('5h', { exact: true }).isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('14d', { exact: true }).isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('348 MB').isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('4.0 MB').isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('2.4 GB').isVisible()).toBe(true);
       await shoot(page, `list-${scheme}`);
       expect(errors).toEqual([]);
     } finally {
@@ -91,6 +111,7 @@ for (const scheme of ['light', 'dark'] as const) {
     try {
       await expect.poll(() => page.getByText('Details').isVisible()).toBe(true);
       await expect.poll(() => page.getByText('Connect an external ACP client').isVisible()).toBe(true);
+      await expect.poll(() => page.getByText('348 MB on disk').isVisible()).toBe(true);
       await shoot(page, `info-${scheme}`);
       expect(errors).toEqual([]);
     } finally {

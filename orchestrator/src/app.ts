@@ -312,6 +312,9 @@ export function buildApp(
       // The same touch every other thing a user does to a session makes: an
       // upload is somebody working here, and the reaper counts idleness.
       manager.touch(id);
+      // And the one way a workspace grows with nothing running in it, which
+      // is the case the size cache stops measuring; see diskusage.ts.
+      manager.workspaceChanged(id);
       log.session(id).info('attachment stored', { path: stored.path, size: stored.size });
       return stored;
     },
