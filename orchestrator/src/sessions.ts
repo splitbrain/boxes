@@ -382,6 +382,58 @@ export class SessionManager {
   }
 
   /**
+   * Rebuilds a session's container when Docker no longer has the one the row
+   * names, and returns the row as it now stands.
+   *
+   * Everything a session container is comes from the row and the two
+   * directories the row points at — the image, the network, the mounts, the
+   * environment — so a container is reproducible and losing one costs nothing
+   * durable. Until now it cost the session: `start` handed the missing id to
+   * the daemon, got a 404 back, and there was no other way in. The workspace
+   * and the home would be sitting intact on the data volume, unreachable
+   * through Boxes, and the only way out was to delete the session and copy
+   * the files by hand.
+   *
+   * A container goes missing more easily than it sounds. `docker container
+   * prune` takes every stopped container, and an idle Boxes session *is* a
+   * stopped container — the reaper stops them all day. `docker system prune`
+   * does that and the network too, which is why this makes the network again
+   * as well.
+   *
+   * Only for a container the daemon says is not there. `unknown` is a daemon
+   * that would not answer, and rebuilding on that would mean replacing a
+   * container that is running perfectly well behind a failed inspect.
+   *
+   * A session still on a workspace *volume* is left to `migrateWorkspace`,
+   * which runs before this and rebuilds the container itself. Its row has no
+   * workspace directory to bind, so `containerSpec` cannot describe it.
+   */
+  private async restoreMissingContainer(row: SessionRow): Promise<SessionRow> {
+    if (!row.container_id || !row.workspace_dir) return row;
+    if ((await dk.containerState(row.container_id)) !== 'missing') return row;
+
+    const slog = log.session(row.id);
+    slog.warn('the container is gone; rebuilding it from the session row', {
+      container: row.container_id,
+    });
+    // The network goes at the same moment the container does, under any prune
+    // that takes both, and a container cannot be created into one that is not
+    // there.
+    if (await dk.ensureNetwork(row.network_name, row.subnet, row.id)) {
+      slog.info('the session network was gone too; made it again', {
+        network: row.network_name,
+        subnet: row.subnet,
+      });
+    }
+    const containerId = await this.recreateContainer(row);
+    this.db
+      .prepare('UPDATE sessions SET container_id = ? WHERE id = ?')
+      .run(containerId, row.id);
+    slog.info('rebuilt the container', { container: containerId });
+    return this.mustGet(row.id);
+  }
+
+  /**
    * Moves a session onto the current session image, when what its container
    * was created from is no longer what SESSION_IMAGE resolves to.
    *
@@ -571,9 +623,15 @@ export class SessionManager {
         this.pending,
         this.notifier,
         (status) => this.setStatus(id, status),
-        () => {
+        async () => {
           const row = this.getRow(id);
-          if (row && row.status !== 'deleted') this.agents.materialize(id, row.agent_set_id);
+          if (!row || row.status === 'deleted') return;
+          this.agents.materialize(id, row.agent_set_id);
+          // Opening a thread starts a stopped box without going through
+          // start(), so the one repair that decides whether there is a box at
+          // all has to happen here too. It leaves the row's container id
+          // current, which is what the caller reads next.
+          await this.restoreMissingContainer(row);
         },
       );
       this.upstreams.set(id, up);
@@ -707,6 +765,9 @@ export class SessionManager {
     // and owned by root.
     this.agents.materialize(row.id, row.agent_set_id);
     row = await this.migrateWorkspace(row);
+    // Before the two below, which both ask the daemon about a container that
+    // may not be there: after this one, there is a container to ask about.
+    row = await this.restoreMissingContainer(row);
     // Before the mount check below, not after: a roll recreates the container
     // from containerSpec, which already binds the agent configuration, so a
     // session that moves image comes back with the mount and the check that
@@ -881,13 +942,17 @@ export class SessionManager {
    * adapter runs too.
    */
   async execTarget(id: string): Promise<{ containerId: string; workingDir: string }> {
-    const row = this.mustGet(id);
+    let row = this.mustGet(id);
     if (!row.container_id) throw new HttpError(409, 'Session has no container');
     // A stopped container starts here too, and the entrypoint installs
     // whatever is on disk when it does.
     this.agents.materialize(row.id, row.agent_set_id);
-    await dk.startContainer(row.container_id);
-    return { containerId: row.container_id, workingDir: dk.WORKSPACE_DIR };
+    // And one that is gone is made again, the same way start does it: a
+    // `!bang` command is as good a moment as any to find out that something
+    // pruned the box, and as good a moment to put it back.
+    row = await this.restoreMissingContainer(row);
+    await dk.startContainer(row.container_id!);
+    return { containerId: row.container_id!, workingDir: dk.WORKSPACE_DIR };
   }
 
   /** Marks a session active, so running a command holds off the reaper. */

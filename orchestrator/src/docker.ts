@@ -206,6 +206,27 @@ export async function createNetwork(networkName: string, subnet: string, session
 }
 
 /**
+ * Creates a session's network if the daemon no longer has it, and says
+ * whether it had to.
+ *
+ * For rebuilding a session Docker has forgotten. A network with no containers
+ * on it is "unused" to `docker network prune` and to `docker system prune`,
+ * so the network usually goes at the same moment the container does — and a
+ * container cannot be created into a network that is not there. Everything
+ * needed to make it again is on the session's row.
+ */
+export async function ensureNetwork(
+  networkName: string,
+  subnet: string,
+  sessionId: string,
+): Promise<boolean> {
+  const existing = await inspecting(() => docker().getNetwork(networkName).inspect());
+  if (existing) return false;
+  await createNetwork(networkName, subnet, sessionId);
+  return true;
+}
+
+/**
  * Whether a network's own inspect says the egress proxy is on it.
  *
  * One predicate for both questions below, so "is it attached" cannot come to

@@ -1262,6 +1262,27 @@ stopped, and every running session's proxy attachment is re-checked. Turn flags
 are cleared, because a turn cannot survive the restart that killed the
 connection owning it.
 
+**A container that is gone is made again.** Everything a session container is
+comes from the row and the two directories it points at — image, network,
+mounts, environment — so a container is reproducible and losing one costs
+nothing durable. It used to cost the session anyway: `start` handed the
+missing id to the daemon, took the 404, and there was no other way in, with
+the workspace and the home sitting intact on the data volume and unreachable
+through Boxes. `restoreMissingContainer` rebuilds it instead, and makes the
+network too, since a prune that takes a stopped container takes the network
+that then has nothing on it. This is not an exotic case: `docker container
+prune` takes every stopped container, and an idle Boxes session *is* a stopped
+container.
+
+Only for a container the daemon says is **not there**. `unknown` — an inspect
+that failed for any other reason — is left alone, because rebuilding on that
+would replace a container that is running perfectly well behind a sick daemon.
+And all three ways a box starts do it: `start`, a local command through
+`execTarget`, and opening a thread, which starts a stopped box through the
+gateway's own path rather than through `start`. That last one is why the
+gateway's `beforeStart` seam is awaited and the row re-read after it — the
+repair may have changed the container id the caller is about to use.
+
 ## Where a session's files live
 
 A session's workspace is a directory under the orchestrator's own data

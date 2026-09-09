@@ -397,6 +397,13 @@ start, stop, delete, the container and network names, and the WebSocket URL and
 bearer token for attaching your own ACP client. Deleting removes the storage
 too, so the agent's work and the thread history go with it.
 
+A session survives its container. Everything a box is made of comes from its
+row and its two directories, so if something removes the container — a stray
+`docker container prune`, which takes every *stopped* container and so every
+idle session, or a `docker system prune` that takes the network with it —
+starting the session again rebuilds both and picks up where it left off. The
+files were never in the container.
+
 Deleting is also the only way a session's disk goes away, and it goes
 completely: the workspace, the home, the container and the network. Both of
 those are directories on the Boxes data volume — `workspaces/<id>` and
