@@ -30,7 +30,13 @@ function loop(what: string, everyMs: number, tick: () => Promise<void>): { stop:
  * Starts the idle reaper and returns a handle that stops it. Every minute it
  * stops each session that has no running turn, no waiting permission request,
  * no attached browser, no background task still believed to be running, and no
- * activity for IDLE_STOP_MINUTES. It never deletes.
+ * activity for IDLE_STOP_MINUTES. It never deletes a session.
+ *
+ * It does delete what a session left: the same tick sweeps the containers,
+ * networks, volumes and workspace directories labelled with sessions that no
+ * longer exist. That is the one thing reconcile() at boot cannot do, because
+ * it reads rows and asks Docker about each, and an orphan is by definition
+ * something no row names.
  */
 export function startReaper(
   db: Db,
@@ -76,6 +82,10 @@ export function startReaper(
     }
 
     manager.maintenance();
+    // Docker read the other way round from reconcile(): what is labelled with
+    // a session that no longer exists, and is therefore nobody's. See
+    // SessionManager.sweepOrphans.
+    await manager.sweepOrphans();
   };
 
   return loop('reaper tick', TICK_MS, tick);

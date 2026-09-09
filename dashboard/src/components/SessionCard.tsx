@@ -105,18 +105,19 @@ export function SessionCard({ session }: { session: SessionSummary }) {
           {sessionBadges(session).map((b) => (
             <StatusBadge key={b.label} kind={b.kind} label={b.label} />
           ))}
-          {/* How much disk the box's workspace has taken. Not a badge: it is a
-              measurement rather than a state, and giving it a pill of its own
-              would put it in the row that says what the session is doing.
-              Absent until the orchestrator has measured one — a zero would be
-              a claim about a workspace nobody has looked at yet. */}
-          {session.workspaceBytes === null ? null : (
+          {/* How much disk the box has taken — its workspace and its home
+              together. Not a badge: it is a measurement rather than a state,
+              and giving it a pill of its own would put it in the row that
+              says what the session is doing. Absent until the orchestrator
+              has measured one — a zero would be a claim about a box nobody
+              has looked at yet. */}
+          {session.diskBytes === null ? null : (
             <span
               className="inline-flex items-center gap-1 text-xs text-muted-foreground"
-              title="Workspace on disk"
+              title="Workspace and home on disk"
             >
               <HardDrive className="size-3" aria-hidden />
-              {shortSize(session.workspaceBytes)}
+              {shortSize(session.diskBytes)}
             </span>
           )}
         </div>

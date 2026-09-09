@@ -152,20 +152,24 @@ export interface SessionSummary {
   /** That set's current name, for the UI. Null whenever `agentSetId` is. */
   agentSetName: string | null;
   /**
-   * How much disk this session's workspace is taking up, in bytes, or null
-   * when there is no answer yet.
+   * How much disk this session is taking up, in bytes, or null when there is
+   * no answer yet.
+   *
+   * Its workspace and its home together — the agent's files, and the thread
+   * history, tool caches and runtime installs that on a box which has been
+   * working are usually the larger half. One number, because the question a
+   * card is answering is how big this box has got.
    *
    * Rough on purpose, and a reading rather than a tally: the orchestrator
-   * walks the directory in the background and answers list requests from what
-   * it last measured. A running box is re-measured at most every quarter of
-   * an hour, and a stopped one is measured once and then not again — nothing
-   * is running in it, so nothing in it is changing. Null covers both "not
-   * measured yet" — the first poll after the orchestrator started — and a
-   * session with no workspace directory at all, which is one still backed by
-   * a named volume. Zero would be a claim; null is the absence of one. See
-   * `orchestrator/src/diskusage.ts`.
+   * walks the directories in the background and answers list requests from
+   * what it last measured. A running box is re-measured at most every quarter
+   * of an hour, and a stopped one is measured once and then not again —
+   * nothing is running in it, so nothing in it is changing. Null covers both
+   * "not measured yet" — the first poll after the orchestrator started — and
+   * a session with no directory to walk at all. Zero would be a claim; null
+   * is the absence of one. See `orchestrator/src/diskusage.ts`.
    */
-  workspaceBytes: number | null;
+  diskBytes: number | null;
   createdAt: number;
   lastActiveAt: number;
 }
@@ -188,7 +192,18 @@ export interface SessionDetail extends SessionSummary {
    * the review surface cannot read it yet.
    */
   workspaceDir: string | null;
+  /**
+   * The named volume that used to hold the home, and still does for a session
+   * created before homes became directories. Empty once the session is
+   * directory-backed, which every session created since is.
+   */
   homeVolume: string;
+  /**
+   * Where the session's home is on the orchestrator's own filesystem — its
+   * thread history, its tool caches, whatever a login inside the box wrote —
+   * or null for one still backed by a named volume.
+   */
+  homeDir: string | null;
   /** The adapter's id for the session's default thread, or null before one exists. */
   acpSessionId: string | null;
   /** True when the egress proxy is attached to this session's network. */

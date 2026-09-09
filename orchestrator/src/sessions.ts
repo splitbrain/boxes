@@ -23,7 +23,7 @@ import {
   type SessionRow,
   type ThreadRow,
 } from './db.ts';
-import { WorkspaceUsage, WORKSPACE_SIZE_TTL_MS } from './diskusage.ts';
+import { SessionUsage, SESSION_SIZE_TTL_MS } from './diskusage.ts';
 import * as dk from './docker.ts';
 import { HttpError } from './http-error.ts';
 import { log } from './log.ts';
@@ -54,11 +54,18 @@ export class SessionManager {
    * not something to do per request, and a box that is down is not something
    * to walk twice. See diskusage.ts.
    */
-  private readonly usage = new WorkspaceUsage({
-    pathOf: (id) => this.workspacePathOf(id),
-    ttlMs: WORKSPACE_SIZE_TTL_MS,
+  private readonly usage = new SessionUsage({
+    // Everything a session is on disk: the agent's files, and the home its
+    // thread history, caches and installed tools are in — which on a box that
+    // has been working is usually the larger of the two. A session still
+    // backed by a named home volume contributes only its workspace, there
+    // being no path to the other half.
+    pathsOf: (id) => [this.workspacePathOf(id), this.homePathOf(id)],
+    ttlMs: SESSION_SIZE_TTL_MS,
     onTrouble: (id, error) =>
-      log.session(id).warn('could not measure the workspace', { error: error.message }),
+      log.session(id).warn('could not measure what a session is using', {
+        error: error.message,
+      }),
   });
 
   /**
@@ -137,6 +144,16 @@ export class SessionManager {
     return ws.workspacePath(this.cfg.DATA_DIR, row.id);
   }
 
+  /**
+   * Where a session's home is on this process's own filesystem, on the same
+   * terms as its workspace, and null for one still backed by a named volume.
+   */
+  homePathOf(id: string): string | null {
+    const row = this.getRow(id);
+    if (!row || row.status === 'deleted' || !row.home_dir) return null;
+    return ws.homePath(this.cfg.DATA_DIR, row.id);
+  }
+
   // --- the session image ----------------------------------------------------
 
   /**
@@ -209,6 +226,157 @@ export class SessionManager {
     if (after && after !== before) {
       log.info('the session image moved; sessions adopt it as they are started', {
         image: this.cfg.SESSION_IMAGE,
+      });
+      // The copy it moved off is now untagged, on this host, and a gigabyte or
+      // two. Nothing else is ever going to reclaim it.
+      await this.pruneSupersededImages(before);
+    }
+  }
+
+  /**
+   * Removes copies of the session image that a pull has superseded.
+   *
+   * Called after a refresh that moved the tag, which is the only thing that
+   * makes one. `supersededId` is the image the pull replaced, known exactly
+   * because this process watched it happen; the sweep alongside it catches
+   * the ones an earlier process replaced and did not live to clean up, which
+   * it can do because the image carries a label of its own (docker.ts).
+   *
+   * Nothing here is forced. An image a container was created from is refused
+   * by the daemon, and that refusal is what makes this safe to run while
+   * sessions exist: a box that has not been started since the tag moved is
+   * still on the old image, and start recreates it onto the new one. The
+   * image goes on a later sweep.
+   */
+  private async pruneSupersededImages(supersededId: string | null): Promise<void> {
+    if (!this.cfg.SESSION_IMAGE_PRUNE) return;
+    const current = await dk.imageId(this.cfg.SESSION_IMAGE);
+    const candidates = new Set(await dk.listSupersededSessionImages());
+    // A deployment building its own session image without the label has no
+    // superseded copy this can find later — but the one this process just
+    // replaced is known outright, so that case is covered while the process
+    // that saw it lives.
+    if (supersededId) candidates.add(supersededId);
+    candidates.delete(current ?? '');
+
+    for (const id of candidates) {
+      try {
+        if (await dk.removeImage(id)) {
+          log.info('removed a superseded session image', { image: id });
+        }
+      } catch (err) {
+        log.warn('could not remove a superseded session image', {
+          image: id,
+          error: (err as Error).message,
+        });
+      }
+    }
+  }
+
+  /**
+   * Removes Docker objects and workspace directories belonging to sessions
+   * that no longer exist.
+   *
+   * Everything Boxes creates is labelled with its session (docker.ts, LABEL),
+   * and reconcile() reads that one way only: for each row, what Docker has.
+   * Nothing read it the other way, so anything left behind by a crash between
+   * `docker create` and the row's own update, or by a teardown that failed
+   * halfway and only logged it, stayed on the host forever — invisible to
+   * Boxes, and a home volume of it is where an agent's runtime installs went.
+   *
+   * The rule is exact rather than heuristic, and it is exact because of the
+   * order create() works in: the row is inserted *before* any Docker object
+   * exists, so an object labelled with a session that has no live row cannot
+   * be one that is on its way up. A deleted session's tombstone counts as no
+   * row, which is what makes a failed teardown recoverable.
+   *
+   * Ordering matters: a network with a container still on it, or a volume
+   * still mounted into one, is refused. Containers go first.
+   */
+  async sweepOrphans(): Promise<void> {
+    const live = new Set(this.allRows().map((row) => row.id));
+    const containers = await dk.listSessionContainers();
+    const networks = await dk.listSessionNetworks();
+    const volumes = await dk.listSessionVolumes();
+    const orphaned = <T extends { sessionId: string }>(all: T[]): T[] =>
+      all.filter((o) => !live.has(o.sessionId));
+
+    const strays = [...orphaned(containers), ...orphaned(networks), ...orphaned(volumes)];
+    const sessions = new Set(strays.map((o) => o.sessionId));
+    if (sessions.size === 0) return;
+
+    // The one shape that is likelier to be a database these objects do not
+    // belong to than a genuine pile of orphans: a sessions table with nothing
+    // in it at all, and a host full of sessions. A data volume mounted from
+    // the wrong place, or replaced, leaves exactly that — and going ahead
+    // would take the home volume of every session on the host, which is the
+    // one loss here that nothing can recover.
+    //
+    // Deleted sessions are counted, tombstones and all, which is what keeps
+    // this from firing on the ordinary case it would otherwise break: a
+    // deployment whose sessions have all been deleted still has rows, and its
+    // failed teardowns still get swept.
+    const known = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }
+    ).n;
+    if (known === 0) {
+      log.warn('not sweeping: this database knows of no session, and the host is full of them', {
+        sessions: [...sessions],
+        containers: orphaned(containers).length,
+        networks: orphaned(networks).length,
+        volumes: orphaned(volumes).length,
+      });
+      return;
+    }
+
+    log.info('sweeping what is left of sessions that are gone', { sessions: [...sessions] });
+    for (const container of orphaned(containers)) {
+      await this.sweeping(container.sessionId, 'container', () =>
+        dk.removeContainer(container.id),
+      );
+    }
+    for (const network of orphaned(networks)) {
+      await this.sweeping(network.sessionId, 'network', () =>
+        dk.removeNetwork(network.name, this.cfg),
+      );
+    }
+    for (const volume of orphaned(volumes)) {
+      await this.sweeping(volume.sessionId, 'volume', () => dk.removeVolume(volume.name));
+    }
+    // And the files, which are the size of all of the above put together. The
+    // workspace and home of a session with no row are unreachable by every
+    // surface Boxes has: no card lists them, no review opens one, and no
+    // container mounts either.
+    for (const sessionId of sessions) {
+      await this.sweeping(sessionId, 'workspace', () =>
+        Promise.resolve(ws.removeWorkspace(this.cfg.DATA_DIR, sessionId)),
+      );
+      await this.sweeping(sessionId, 'home', () =>
+        Promise.resolve(ws.removeHome(this.cfg.DATA_DIR, sessionId)),
+      );
+    }
+  }
+
+  /**
+   * Runs one removal of the sweep, keeping the rest going when it fails.
+   *
+   * A stray object that cannot be removed is worth a line and nothing more:
+   * whatever is holding it will let go eventually, and the next sweep tries
+   * again. Stopping the sweep on it would leave the objects behind it for as
+   * long as this one is stuck.
+   */
+  private async sweeping(
+    sessionId: string,
+    what: string,
+    remove: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await remove();
+      log.session(sessionId).info('swept an orphaned object', { what });
+    } catch (err) {
+      log.session(sessionId).warn('could not sweep an orphaned object', {
+        what,
+        error: (err as Error).message,
       });
     }
   }
@@ -360,7 +528,14 @@ export class SessionManager {
       subnet: row.subnet,
       workspaceSource: ws.hostWorkspacePath(this.hostDataDir, row.id),
       agentConfigSource: hostAgentConfigPath(this.hostDataDir, row.id),
-      homeVolume: row.home_volume,
+      // A directory for every session created since homes became
+      // directories, and the old named volume for one created before — which
+      // goes on mounting it for as long as it lives. There is no migration:
+      // the two arrangements simply coexist until the last old session is
+      // deleted.
+      homeSource: row.home_dir
+        ? ws.hostHomePath(this.hostDataDir, row.id)
+        : row.home_volume,
       profile,
       egress: {
         claudeOauthToken: this.egress.sessionValue('claude', profile.claudeOauthToken),
@@ -456,11 +631,12 @@ export class SessionManager {
       container_id: null,
       network_name: dk.names.network(id),
       subnet,
-      // Directory-backed from the start, so no workspace volume is created
-      // and the column that named one stays empty.
+      // Directory-backed from the start, both of them, so neither volume is
+      // created and the columns that named them stay empty.
       ws_volume: '',
-      home_volume: dk.names.homeVolume(id),
+      home_volume: '',
       workspace_dir: ws.workspacePath(this.cfg.DATA_DIR, id),
+      home_dir: ws.homePath(this.cfg.DATA_DIR, id),
       // No base revision until the reviewer picks one: a review compares
       // against each repository's own working tree by default.
       review_base_rev: null,
@@ -474,11 +650,11 @@ export class SessionManager {
     this.db
       .prepare(
         `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
-           network_name, subnet, ws_volume, home_volume, workspace_dir, status,
-           agent_set_id, current_thread_id, created_at, last_active_at)
+           network_name, subnet, ws_volume, home_volume, workspace_dir, home_dir,
+           status, agent_set_id, current_thread_id, created_at, last_active_at)
          VALUES (@id, @name, @profile, @image, @agent_cmd, @container_id,
-           @network_name, @subnet, @ws_volume, @home_volume, @workspace_dir, @status,
-           @agent_set_id, @current_thread_id, @created_at, @last_active_at)`,
+           @network_name, @subnet, @ws_volume, @home_volume, @workspace_dir, @home_dir,
+           @status, @agent_set_id, @current_thread_id, @created_at, @last_active_at)`,
       )
       .run(row);
 
@@ -489,7 +665,16 @@ export class SessionManager {
       ws.createWorkspace(this.cfg.DATA_DIR, id);
       // Before the container, because it is one of its mounts.
       this.agents.materialize(id, agentSetId);
-      await dk.createVolume(row.home_volume, id);
+      // A bind mount covers what the image put in /home/agent rather than
+      // being seeded from it the way a named volume was, so the seeding is
+      // ours to do. See dk.seedHomeFromImage — an empty home costs the
+      // agent's own `~/.local/bin` on the PATH of a login shell.
+      ws.createHome(this.cfg.DATA_DIR, id);
+      await dk.seedHomeFromImage(
+        ws.hostHomePath(this.hostDataDir, id),
+        row.image,
+        id,
+      );
       const containerId = await dk.createContainer(
         this.containerSpec(row, profile),
         this.cfg,
@@ -652,10 +837,10 @@ export class SessionManager {
     } catch (err) {
       slog.warn('network teardown failed', { error: (err as Error).message });
     }
-    // The workspace and the home volume hold the agent's work and the
-    // adapter's thread history. Nothing else refers to either once the session
-    // is gone, so a session that is deleted takes them with it rather than
-    // leaving them orphaned.
+    // The workspace and the home hold the agent's work and the adapter's
+    // thread history. Nothing else refers to either once the session is gone,
+    // so a session that is deleted takes them with it rather than leaving them
+    // orphaned.
     if (row.workspace_dir) {
       try {
         ws.removeWorkspace(this.cfg.DATA_DIR, row.id);
@@ -663,14 +848,22 @@ export class SessionManager {
         slog.warn('workspace removal failed', { error: (err as Error).message });
       }
     }
+    if (row.home_dir) {
+      try {
+        ws.removeHome(this.cfg.DATA_DIR, row.id);
+      } catch (err) {
+        slog.warn('home removal failed', { error: (err as Error).message });
+      }
+    }
     try {
       this.agents.removeMaterialized(row.id);
     } catch (err) {
       slog.warn('agent configuration removal failed', { error: (err as Error).message });
     }
-    // Only a session that never migrated still has one.
+    // Only a session from before each of these became a directory still has
+    // the volume it used to be.
     if (row.ws_volume) await dk.removeVolume(row.ws_volume);
-    await dk.removeVolume(row.home_volume);
+    if (row.home_volume) await dk.removeVolume(row.home_volume);
   }
 
   // --- views ----------------------------------------------------------------
@@ -777,7 +970,7 @@ export class SessionManager {
       // not 'exited': a Docker read that failed says nothing about whether
       // the agent is working, and a size frozen on that would be frozen on a
       // guess. See diskusage.ts.
-      workspaceBytes: this.usage.bytes(
+      diskBytes: this.usage.bytes(
         row.id,
         dockerState !== 'exited' && dockerState !== 'missing',
       ),
@@ -803,6 +996,7 @@ export class SessionManager {
       wsVolume: row.ws_volume,
       workspaceDir: row.workspace_dir,
       homeVolume: row.home_volume,
+      homeDir: row.home_dir,
       acpSessionId: currentThread(this.db, id)?.acp_session_id ?? null,
       proxyAttached: await dk.isProxyAttached(row.network_name, this.cfg),
     };

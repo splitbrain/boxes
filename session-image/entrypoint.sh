@@ -24,8 +24,8 @@ fi
 
 # --- the agent's own tool directory -----------------------------------------
 # npm's prefix has to exist before `npm install -g` will use it, and a home
-# volume created before this directory was part of the image does not have it:
-# Docker initialises a named volume from the image once and never again.
+# filled from an image that predates this directory does not have it: a home is
+# copied out of the image when its session is created and never refreshed.
 if ! mkdir -p /home/agent/.local/bin; then
   log "WARNING: could not create /home/agent/.local/bin; installing tools will fail"
 fi
@@ -33,8 +33,10 @@ fi
 # --- agent configuration ----------------------------------------------------
 # The orchestrator materializes this box's merged AGENTS.md, skills and slash
 # commands into a read-only bind at /boxes/agent, laid out exactly as they have
-# to appear under ~/.claude. Only the copy happens here, because ~/.claude is
-# on the home volume and the orchestrator has no path to it.
+# to appear under ~/.claude. Only the copy happens here. The orchestrator does
+# have a path to ~/.claude now that a home is a directory of its own, but a
+# box's home is the box's to write: doing it out here would race with the agent
+# that is living in it.
 #
 # The manifest is what makes the install reversible: it names every path put
 # there, a copy of it is left behind in ~/.claude/.boxes-managed, and the next
@@ -123,7 +125,7 @@ fi
 # use and the launch options a session container needs; the image ships that
 # much, and the only piece missing at build time is the egress proxy, which is
 # added here. Written on every start rather than once, so a corrected base
-# config reaches a session whose home volume already exists. A project's own
+# config reaches a session whose home already exists. A project's own
 # .playwright/cli.config.json still overrides all of it.
 cli_base=/usr/local/share/boxes/playwright-cli.config.json
 cli_config=/home/agent/.playwright/cli.config.json
@@ -144,9 +146,9 @@ fi
 
 # And its skill, which the CLI installs itself. --global puts it in
 # ~/.claude/skills rather than in the workspace, which is a git checkout that
-# is none of our business. Re-run every start so the copy in the home volume
-# follows the image rather than being frozen at whatever that volume was
-# initialised with.
+# is none of our business. Re-run every start so the copy in the session's home
+# follows the image rather than being frozen at whatever the home was filled
+# with when the session was created.
 #
 # Runs after install_agent_config, and defers to it: a skill of this name in
 # the box's merged set is the one the box gets. The dashboard showed that

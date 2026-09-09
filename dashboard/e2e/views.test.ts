@@ -32,7 +32,7 @@ beforeAll(async () => {
       // checkout and nothing else: the two rough indicators at the other end
       // of their ranges from the box above.
       threads: [stubThread({ lastActiveAt: Date.now() - 14 * 86_400_000 })],
-      workspaceBytes: 4_200_000,
+      diskBytes: 4_200_000,
     }),
     stubSession({
       id: '99887766',
@@ -55,7 +55,7 @@ beforeAll(async () => {
       ],
       attachedCount: 1,
       proxyAttached: false,
-      workspaceBytes: 2.4 * 1024 ** 3,
+      diskBytes: 2.4 * 1024 ** 3,
     }),
   ]);
 });
@@ -111,7 +111,9 @@ for (const scheme of ['light', 'dark'] as const) {
     try {
       await expect.poll(() => page.getByText('Details').isVisible()).toBe(true);
       await expect.poll(() => page.getByText('Connect an external ACP client').isVisible()).toBe(true);
-      await expect.poll(() => page.getByText('348 MB on disk').isVisible()).toBe(true);
+      await expect
+        .poll(() => page.getByText('348 MB of workspace and home').isVisible())
+        .toBe(true);
       await shoot(page, `info-${scheme}`);
       expect(errors).toEqual([]);
     } finally {

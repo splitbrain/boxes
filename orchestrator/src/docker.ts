@@ -19,6 +19,22 @@ import { sessionOwner } from './workspaces.ts';
 export const LABEL = 'boxes.session';
 
 /**
+ * Label the session image carries, so a superseded copy of it can be
+ * recognised after it has lost its tag.
+ *
+ * A pull that moves `:latest` leaves the image it replaced untagged and on
+ * disk — a gigabyte or two of it — and nothing about an untagged image says
+ * whose it was. The label survives the tag, because it is baked into the
+ * image's own config, and it is what lets the orchestrator prune what it
+ * fetched without going near an image somebody else on this host owns. See
+ * `session-image/Dockerfile`.
+ */
+export const IMAGE_LABEL = 'boxes.image';
+
+/** The value of that label on the session image. */
+export const SESSION_IMAGE_KIND = 'session';
+
+/**
  * The `uid:gid` every session process runs as, as Docker wants it written.
  *
  * Numbers rather than the image's `agent`, so SESSION_UID alone decides who a
@@ -61,14 +77,15 @@ export function setDockerForTests(d: Docker | null): void {
 /**
  * Docker object names derived from a session id.
  *
- * There is no workspace volume here any more: a workspace is a directory on
- * the orchestrator's data volume, and the `ws-<id>` volume of a session from
- * before that change is read off its row rather than derived.
+ * There are no volumes here any more: a workspace and a home are both
+ * directories on the orchestrator's data volume, and the `ws-<id>` or
+ * `home-<id>` volume of a session from before each of those changes is read
+ * off its row rather than derived. Boxes creates no volume at all now, and so
+ * needs no name for one.
  */
 export const names = {
   container: (id: string) => `session-${id}`,
   network: (id: string) => `sn-${id}`,
-  homeVolume: (id: string) => `home-${id}`,
 };
 
 /**
@@ -108,7 +125,13 @@ export interface CreateContainerSpec {
    * remove what a previous start installed.
    */
   agentConfigSource: string;
-  homeVolume: string;
+  /**
+   * What is mounted at `/home/agent`: the host-side path of the session's
+   * home directory, or — for a session created before homes became
+   * directories — the name of its volume. A bind source and a volume name are
+   * the same field to Docker, and which one this is is the caller's business.
+   */
+  homeSource: string;
   profile: SessionProfile;
   egress: SessionEgress;
 }
@@ -231,11 +254,6 @@ export async function isProxyAttached(networkName: string, cfg: Config): Promise
   } catch {
     return false;
   }
-}
-
-/** Creates a volume labelled with its session. */
-export async function createVolume(name: string, sessionId: string): Promise<void> {
-  await docker().createVolume({ Name: name, Labels: { [LABEL]: sessionId } });
 }
 
 // --- resolving this process's own host-side paths ---------------------------
@@ -377,16 +395,78 @@ export async function copyVolumeToDirectory(
   image: string,
   sessionId: string,
 ): Promise<void> {
+  await oneShot({
+    what: `copy of ${volumeName}`,
+    image,
+    sessionId,
+    binds: [`${volumeName}:/from:ro`, `${hostDirectory}:/to`],
+    script: 'cp -a /from/. /to/',
+  });
+}
+
+/**
+ * Fills a session's empty home directory from the image's own `/home/agent`.
+ *
+ * A named volume is seeded by Docker from the image, once, when it is
+ * created. A bind mount is the opposite: it covers whatever the image put
+ * there, so a fresh home directory would start out empty — and the image's
+ * `/home/agent` is deliberately near-empty already, which makes it easy to
+ * assume nothing is lost.
+ *
+ * `.profile` is what is lost. Debian's `/etc/profile` *reassigns* PATH for a
+ * login shell, and the skeleton `.profile` that `useradd -m` leaves is what
+ * puts `~/.local/bin` back — which is where `npm install -g` puts the agent's
+ * own tools. Exec runs `bash -lc`, so without it a tool the agent installed
+ * would stop being found by the command that installed it, silently, in login
+ * shells only.
+ *
+ * So the image's home is copied in, as root and with `cp -a`, which preserves
+ * the ownership the image gave it. The directory itself is chowned in the
+ * same breath: that is the one thing `cp -a` of the *contents* does not
+ * cover, and doing it here rather than from the orchestrator is what makes a
+ * home come out right even where this process is not root and cannot chown.
+ */
+export async function seedHomeFromImage(
+  hostDirectory: string,
+  image: string,
+  sessionId: string,
+): Promise<void> {
+  const { uid, gid } = sessionOwner();
+  await oneShot({
+    what: 'home seed',
+    image,
+    sessionId,
+    binds: [`${hostDirectory}:/to`],
+    script: `cp -a /home/agent/. /to/ && chown ${uid}:${gid} /to`,
+  });
+}
+
+/**
+ * Runs one short-lived container over a session's files and waits for it.
+ *
+ * `cp -a` preserves ownership, which keeps the agent's files the agent's;
+ * that needs root in the helper, so these are the containers Boxes creates
+ * that do not drop to the session user. They have no network and a read-only
+ * rootfs, and the script is fixed at each call site — no part of it comes
+ * from anything a user typed.
+ */
+async function oneShot(spec: {
+  what: string;
+  image: string;
+  sessionId: string;
+  binds: string[];
+  script: string;
+}): Promise<void> {
   const container = await docker().createContainer({
-    Image: image,
+    Image: spec.image,
     User: 'root',
     // The image's own entrypoint holds a container open; this one has a job
     // and exits, so the entrypoint is replaced rather than run.
     Entrypoint: ['sh', '-c'],
-    Cmd: ['cp -a /from/. /to/'],
-    Labels: { [LABEL]: sessionId },
+    Cmd: [spec.script],
+    Labels: { [LABEL]: spec.sessionId },
     HostConfig: {
-      Binds: [`${volumeName}:/from:ro`, `${hostDirectory}:/to`],
+      Binds: spec.binds,
       NetworkMode: 'none',
       ReadonlyRootfs: true,
       SecurityOpt: ['no-new-privileges:true'],
@@ -400,9 +480,7 @@ export async function copyVolumeToDirectory(
     const { StatusCode } = (await container.wait()) as { StatusCode: number };
     if (StatusCode !== 0) {
       const logs = await container.logs({ stdout: true, stderr: true, tail: 20 });
-      throw new Error(
-        `copy of ${volumeName} exited ${StatusCode}: ${logs.toString('utf8').trim()}`,
-      );
+      throw new Error(`${spec.what} exited ${StatusCode}: ${logs.toString('utf8').trim()}`);
     }
   } finally {
     try {
@@ -441,13 +519,13 @@ export async function createContainer(spec: CreateContainerSpec, cfg: Config): P
     HostConfig: {
       NetworkMode: spec.networkName,
       Binds: [
-        // The workspace is a directory on the orchestrator's data volume, so
-        // that reviewing a session's files needs no exec and no running
-        // container. The home volume stays a named volume: it holds
-        // transcripts and session-local credentials, and nothing outside the
-        // container reads it.
+        // Both are directories on the orchestrator's data volume, so that
+        // reviewing a session's files needs no exec and no running container,
+        // and so that what a session is costing can be read by walking two
+        // paths. A session from before homes became directories names its
+        // volume here instead, and Docker takes either.
         `${spec.workspaceSource}:${WORKSPACE_DIR}`,
-        `${spec.homeVolume}:/home/agent`,
+        `${spec.homeSource}:/home/agent`,
         // Read-only: what the dashboard says a box is configured with is not
         // something the agent inside it gets to rewrite.
         `${spec.agentConfigSource}:${AGENT_CONFIG_DIR}:ro`,
@@ -775,6 +853,74 @@ export async function listSessionContainers(): Promise<
     if (!sessionId) return [];
     return [{ id: c.Id, sessionId, running: c.State === 'running' }];
   });
+}
+
+/** Session networks Boxes created, by the session each is labelled with. */
+export async function listSessionNetworks(): Promise<Array<{ name: string; sessionId: string }>> {
+  const networks = await docker().listNetworks({ filters: { label: [LABEL] } });
+  return networks.flatMap((n) => {
+    const sessionId = (n.Labels as Record<string, string> | undefined)?.[LABEL];
+    return sessionId && n.Name ? [{ name: n.Name, sessionId }] : [];
+  });
+}
+
+/** Session volumes Boxes created, by the session each is labelled with. */
+export async function listSessionVolumes(): Promise<Array<{ name: string; sessionId: string }>> {
+  const { Volumes } = await docker().listVolumes({ filters: { label: [LABEL] } });
+  return (Volumes ?? []).flatMap((v) => {
+    const sessionId = v.Labels?.[LABEL];
+    return sessionId && v.Name ? [{ name: v.Name, sessionId }] : [];
+  });
+}
+
+/**
+ * Ids of session images on this host that have lost their tag.
+ *
+ * Untagged and labelled as ours: an old copy of the session image, left
+ * behind by a pull that moved the tag off it. The label is the whole of what
+ * keeps this from being `docker image prune` — an image Boxes never fetched
+ * does not carry it, and is never listed here however unused it is.
+ *
+ * `RepoTags` is checked as well as the filter asked for, because deleting an
+ * image is not an operation to perform on the strength of a filter string
+ * being interpreted the way this expects.
+ *
+ * The caller excludes what SESSION_IMAGE resolves to now. That leaves one
+ * exotic case unhandled: a *second* Boxes deployment on the same host, whose
+ * own SESSION_IMAGE pins a digest rather than a tag, has a current image that
+ * carries no tag either and so looks superseded from here. It costs that
+ * deployment a re-pull and nothing else — any container of its own on the
+ * image makes the daemon refuse the removal.
+ */
+export async function listSupersededSessionImages(): Promise<string[]> {
+  const images = await docker().listImages({
+    filters: { dangling: ['true'], label: [`${IMAGE_LABEL}=${SESSION_IMAGE_KIND}`] },
+  });
+  return images
+    .filter((i) => (i.RepoTags ?? []).filter((t) => t !== '<none>:<none>').length === 0)
+    .map((i) => i.Id)
+    .filter((id): id is string => Boolean(id));
+}
+
+/**
+ * Removes an image, and says whether it went.
+ *
+ * Never forced. A container still created from this image — a session that
+ * has not been started since the tag moved — makes the daemon refuse with a
+ * 409, and that refusal is the safety property rather than an error to work
+ * around: the session is moved onto the current image at its next start, and
+ * the image goes on the sweep after that. 404 is somebody else having removed
+ * it, which is the outcome this wanted anyway.
+ */
+export async function removeImage(id: string): Promise<boolean> {
+  try {
+    await docker().getImage(id).remove();
+    return true;
+  } catch (err) {
+    const status = (err as { statusCode?: number }).statusCode;
+    if (status === 404 || status === 409) return false;
+    throw err;
+  }
 }
 
 /**

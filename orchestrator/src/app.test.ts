@@ -93,6 +93,7 @@ afterEach(async () => {
   // See insertWorkspaceSession: workspaces are written under the config's
   // DATA_DIR, which outlives this test's own directory.
   rmSync(ws.workspacesRoot(orchestrator.cfg.DATA_DIR), { recursive: true, force: true });
+  rmSync(ws.homesRoot(orchestrator.cfg.DATA_DIR), { recursive: true, force: true });
   await orchestrator.app.close();
   db.close();
   dk.setDockerForTests(null);
@@ -109,7 +110,12 @@ function insertWorkspaceSession(id: string): string {
   // the first test in this file set — not necessarily this test's `dir`.
   // Everything that reaches the disk has to go through the app's own copy.
   const workspace = ws.createWorkspace(orchestrator.cfg.DATA_DIR, id);
-  db.prepare('UPDATE sessions SET workspace_dir = ? WHERE id = ?').run(workspace, id);
+  const home = ws.createHome(orchestrator.cfg.DATA_DIR, id);
+  db.prepare('UPDATE sessions SET workspace_dir = ?, home_dir = ? WHERE id = ?').run(
+    workspace,
+    home,
+    id,
+  );
   return workspace;
 }
 
@@ -139,27 +145,33 @@ test('an attachment is stored in the workspace and its path reported back', asyn
 async function measuredSize(id: string): Promise<number | null> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const res = await orchestrator.app.inject({ url: '/api/sessions' });
-    const listed = res.json() as Array<{ id: string; workspaceBytes: number | null }>;
-    const size = listed.find((s) => s.id === id)?.workspaceBytes ?? null;
+    const listed = res.json() as Array<{ id: string; diskBytes: number | null }>;
+    const size = listed.find((s) => s.id === id)?.diskBytes ?? null;
     if (size !== null) return size;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return null;
 }
 
-test('a workspace is measured off the request path and reported on the list', async () => {
+test('a session is measured off the request path and reported on the list', async () => {
   const workspace = insertWorkspaceSession('abc123');
   writeFileSync(join(workspace, 'checkout.bin'), Buffer.alloc(4096));
+  // The home counts too, and on a box that has been working it is the larger
+  // half: the thread history, the tool caches, whatever the agent installed.
+  writeFileSync(
+    join(ws.homePath(orchestrator.cfg.DATA_DIR, 'abc123'), 'cache.bin'),
+    Buffer.alloc(2048),
+  );
 
   // The first list answers with no size rather than waiting for the walk it
   // starts. A card shows nothing; a zero would be a claim.
   const first = await orchestrator.app.inject({ url: '/api/sessions' });
   assert.equal(
-    (first.json() as Array<{ workspaceBytes: number | null }>)[0]!.workspaceBytes,
+    (first.json() as Array<{ diskBytes: number | null }>)[0]!.diskBytes,
     null,
   );
 
-  assert.equal(await measuredSize('abc123'), 4096);
+  assert.equal(await measuredSize('abc123'), 4096 + 2048);
 });
 
 test('an upload is what says a workspace grew, since nothing else can say it', async () => {
