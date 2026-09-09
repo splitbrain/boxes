@@ -1087,6 +1087,22 @@ export class SessionManager {
   }
 
   /**
+   * The thread a request is about: the one it names, or the session's current
+   * one when it names none — and null before the session has any thread at
+   * all.
+   *
+   * Same rule as the WebSocket paths, so a route that can name a thread is
+   * still usable by a caller that knows nothing about threads.
+   */
+  resolveThread(id: string, threadId?: string): string | null {
+    this.mustGet(id);
+    if (threadId === undefined) return currentThread(this.db, id)?.id ?? null;
+    const row = getThread(this.db, threadId);
+    if (!row || row.session_id !== id) throw new HttpError(404, 'Thread not found');
+    return row.id;
+  }
+
+  /**
    * Adds a conversation to a session and makes it current: empty by default,
    * or carrying another thread's context when `from` names one.
    *

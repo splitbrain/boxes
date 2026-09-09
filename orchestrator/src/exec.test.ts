@@ -179,6 +179,7 @@ test('records are stored and read back in the API shape', () => {
     record(
       db,
       's1',
+      't1',
       'git status',
       { output: 'clean\n', exitCode: 0, truncated: false, timedOut: false },
       1000,
@@ -186,14 +187,30 @@ test('records are stored and read back in the API shape', () => {
     record(
       db,
       's1',
+      't1',
       'yes',
       { output: 'y'.repeat(10), exitCode: null, truncated: true, timedOut: true },
       2000,
     );
-    record(db, 's2', 'ls', { output: '', exitCode: 0, truncated: false, timedOut: false }, 3000);
+    record(
+      db,
+      's1',
+      't2',
+      'pwd',
+      { output: '/workspace\n', exitCode: 0, truncated: false, timedOut: false },
+      2500,
+    );
+    record(
+      db,
+      's2',
+      't1',
+      'ls',
+      { output: '', exitCode: 0, truncated: false, timedOut: false },
+      3000,
+    );
 
-    const rows = history(db, 's1');
-    assert.equal(rows.length, 2, 'only this session');
+    const rows = history(db, 's1', 't1');
+    assert.equal(rows.length, 2, 'only this thread of this session');
     assert.equal(rows[0]!.command, 'git status');
     assert.equal(rows[0]!.exitCode, 0);
     assert.equal(rows[0]!.truncated, false);

@@ -29,6 +29,7 @@ export function useThread(
     if (!token) return undefined;
     const created = new ThreadStore({
       sessionId,
+      threadId,
       createClient: (handlers) => new AcpClient(url, token, handlers),
     });
     setStore(created);
@@ -37,7 +38,7 @@ export function useThread(
       created.dispose();
       setStore(null);
     };
-  }, [sessionId, url, token]);
+  }, [sessionId, threadId, url, token]);
 
   const state = useSyncExternalStore(
     store ? store.subscribe : NOOP_SUBSCRIBE,

@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, RouteHandlerMethod } from 'fastify';
 import { createReadStream, readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -249,13 +249,17 @@ export function buildApp(
    *
    * The command runs inside the session's own isolation, as the non-root agent
    * user, and never reaches a command line on the host.
+   *
+   * It is logged against the thread it was typed in, which the path names —
+   * or, on the short path, whichever thread the session has current.
    */
-  app.post('/api/sessions/:id/exec', async (req, reply) => {
-    const { id } = req.params as { id: string };
+  const runExec: RouteHandlerMethod = async (req, reply) => {
+    const { id, threadId } = req.params as { id: string; threadId?: string };
     const command = (req.body as ExecRequest | undefined)?.command?.trim();
     if (!command) throw new HttpError(400, 'command is required');
     if (command.length > 8000) throw new HttpError(400, 'command is too long');
 
+    const thread = manager.resolveThread(id, threadId);
     const target = await manager.execTarget(id);
     manager.touch(id);
     const startedAt = Date.now();
@@ -273,10 +277,12 @@ export function buildApp(
     });
     reply.raw.end(execs.trailer(outcome));
 
-    execs.record(db, id, command, outcome, startedAt);
+    execs.record(db, id, thread, command, outcome, startedAt);
     manager.touch(id);
     return reply;
-  });
+  };
+  app.post('/api/sessions/:id/exec', runExec);
+  app.post('/api/sessions/:id/threads/:threadId/exec', runExec);
 
   /**
    * Stores one file the user attached to a prompt, in the session's own
@@ -372,17 +378,18 @@ export function buildApp(
   });
 
   /**
-   * Every command already run in this session.
+   * Every command already run in one thread.
    *
    * The browser appends these after the adapter's replay: ACP replay carries no
    * timestamps, so where they belong in the transcript is not recoverable.
    */
-  app.get('/api/sessions/:id/exec', async (req): Promise<ExecLogPage> => {
-    const { id } = req.params as { id: string };
-    const row = manager.getRow(id);
-    if (!row || row.status === 'deleted') throw new HttpError(404, 'Session not found');
-    return { records: execs.history(db, id) };
-  });
+  const listExec: RouteHandlerMethod = async (req): Promise<ExecLogPage> => {
+    const { id, threadId } = req.params as { id: string; threadId?: string };
+    const thread = manager.resolveThread(id, threadId);
+    return { records: thread ? execs.history(db, id, thread) : [] };
+  };
+  app.get('/api/sessions/:id/exec', listExec);
+  app.get('/api/sessions/:id/threads/:threadId/exec', listExec);
 
   // --- Code review over a session's workspace ---------------------------------
 

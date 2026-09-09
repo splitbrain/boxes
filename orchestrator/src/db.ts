@@ -120,6 +120,11 @@ export interface ThreadRow {
 export interface ExecRow {
   id: number;
   session_id: string;
+  /**
+   * The thread the command was typed in, and null when the session had no
+   * thread to log it against. Such a row is listed by nobody.
+   */
+  thread_id: string | null;
   command: string;
   output: string;
   exit_code: number | null;
@@ -399,6 +404,14 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE sessions ADD COLUMN home_dir TEXT;
   `,
+  // A local command belongs to the thread it was typed in. The log was
+  // per-session, so every thread replayed all of it and a command run in one
+  // conversation showed up in every other one. The stored rows name no thread
+  // and nothing can say which conversation each was typed in, so they go.
+  `
+  DELETE FROM exec_log;
+  ALTER TABLE exec_log ADD COLUMN thread_id TEXT;
+  `,
 ];
 
 /** An open database handle. */
@@ -496,11 +509,13 @@ export function appendExecLog(
   const info = db
     .prepare(
       `INSERT INTO exec_log
-         (session_id, command, output, exit_code, truncated, timed_out, started_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (session_id, thread_id, command, output, exit_code, truncated, timed_out,
+          started_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       sessionId,
+      record.thread_id,
       record.command,
       record.output,
       record.exit_code,
@@ -513,11 +528,16 @@ export function appendExecLog(
   return Number(info.lastInsertRowid);
 }
 
-/** Every stored command run for one session, oldest first. */
-export function listExecLog(db: Db, sessionId: string): ExecRow[] {
+/**
+ * Every stored command run in one thread, oldest first.
+ *
+ * The session is part of the lookup as well as the thread, so a thread id
+ * from another session matches nothing rather than reaching into it.
+ */
+export function listExecLog(db: Db, sessionId: string, threadId: string): ExecRow[] {
   return db
-    .prepare('SELECT * FROM exec_log WHERE session_id = ? ORDER BY id ASC')
-    .all(sessionId) as ExecRow[];
+    .prepare('SELECT * FROM exec_log WHERE session_id = ? AND thread_id = ? ORDER BY id ASC')
+    .all(sessionId, threadId) as ExecRow[];
 }
 
 /**

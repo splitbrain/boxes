@@ -235,8 +235,13 @@ export interface StubOrchestrator {
   gateway: StubGateway;
   /** Files uploaded to the attachments endpoint, in order. */
   attachmentUploads: Array<{ sessionId: string; name: string; bytes: Buffer }>;
-  /** Bodies posted to the exec endpoint, in order. */
-  execCalls: Array<{ sessionId: string; command: string }>;
+  /**
+   * Bodies posted to the exec endpoint, in order.
+   *
+   * `threadId` is null where the browser used the path that names no thread,
+   * which means whichever one the session has current.
+   */
+  execCalls: Array<{ sessionId: string; threadId: string | null; command: string }>;
   /**
    * Every stop of background work the browser asked for, in order.
    *
@@ -435,13 +440,13 @@ export async function startStubOrchestrator(
       return undefined;
     }
 
-    const exec = /^\/api\/sessions\/([^/]+)\/exec$/.exec(url);
+    const exec = /^\/api\/sessions\/([^/]+)(?:\/threads\/([^/]+))?\/exec$/.exec(url);
     if (exec && req.method === 'POST') {
       let body = '';
       req.on('data', (c: Buffer) => (body += c.toString('utf8')));
       req.on('end', () => {
         const command = (JSON.parse(body || '{}') as { command?: string }).command ?? '';
-        execCalls.push({ sessionId: exec[1]!, command });
+        execCalls.push({ sessionId: exec[1]!, threadId: exec[2] ?? null, command });
         const { output, exitCode } = execOutput(command);
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.write(output);

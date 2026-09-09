@@ -136,8 +136,10 @@ orchestrator handlers and the dashboard's `api.ts` import.
 | `GET /api/sessions/:id/log?after=&limit=` | A page of tapped ACP messages |
 | `POST /api/sessions/:id/attachments?name=` | Stores one file, raw bytes, in the session's workspace |
 | `GET /api/sessions/:id/attachments/:name` | Serves one back; images and PDFs as themselves, everything else as a download |
-| `POST /api/sessions/:id/exec` | Runs one command in the container, streaming its output |
-| `GET /api/sessions/:id/exec` | Commands already run in this session |
+| `POST /api/sessions/:id/exec` | Runs one command in the container on the session's current thread, streaming its output |
+| `GET /api/sessions/:id/exec` | Commands already run on the session's current thread |
+| `POST /api/sessions/:id/threads/:threadId/exec` | The same, on the thread the path names |
+| `GET /api/sessions/:id/threads/:threadId/exec` | Commands already run on that thread |
 | `GET /api/sessions/:id/review/tree` | Tree, git status per path, comment counts, the workspace's repositories and the base — the whole left panel |
 | `GET /api/sessions/:id/review/file?path=` | Content, diff markers, the owning repository and comments — the whole file view |
 | `PUT /api/sessions/:id/review/annotations` | Creates or replaces one line's comment |
@@ -180,7 +182,12 @@ render the output as it arrives, and ends with a trailer line carrying the
 exit code and whether either limit was hit. Both limits are enforced by the
 orchestrator rather than trusted to the container: 120 seconds of wall clock
 and 256 KiB of output, after which the exec is killed. Finished runs go into
-`exec_log`, ring-pruned per session.
+`exec_log` against the thread they were typed in, ring-pruned per session.
+
+The thread is part of the endpoint, the way it is part of a WebSocket path: a
+route that names one is that conversation, and one that names none means
+whichever thread the session has current. A thread is therefore shown its own
+commands and nobody else's.
 
 The browser writes the output straight into the thread as a code block, which
 grows as the chunks arrive. Output is what the command was run for, so it is
@@ -898,9 +905,10 @@ the thread that asked, goes to a browser watching *that* thread, and queues
 when only another thread's browser is attached, exactly as it does with none.
 
 Deleting a thread is not implemented, though the adapter supports
-`session/delete`. `!bang` command history, the exec log and the debug log stay
-session-scoped: those things happened in the container rather than in a
-conversation, so they appear under every thread.
+`session/delete`. The debug log stays session-scoped: it taps one adapter
+connection, which belongs to the box rather than to a conversation. `!bang`
+command history does not — a command is typed into a thread, and it is
+replayed there and nowhere else.
 
 ### Permission requests
 
@@ -1817,7 +1825,7 @@ applies migrations tracked by `user_version`.
 | `threads` | One row per conversation: which session owns it, the adapter's id for it, the agent's title, its ordinal, whether a turn is running on it |
 | `pending_requests` | Permission requests waiting for a browser, each recording the thread that asked |
 | `acp_log` | A debug tap of forwarded messages, ring-pruned to 5000 rows per session. An image or audio block's base64 payload is replaced by its size on the way in — a screenshot is a megabyte of it, the row is truncated at 64,000 characters anyway, and the bytes were never what the log is read for |
-| `exec_log` | Local commands and their output, ring-pruned to 200 rows per session |
+| `exec_log` | Local commands and their output, each recording the thread it was typed in, ring-pruned to 200 rows per session across all of its threads |
 | `push_subscriptions` | One row per browser registered for Web Push, keyed by the push service's endpoint |
 | `agent_sets` | One row per named set of agent configuration, plus its `AGENTS.md`. The row `global` is seeded and applied to every session |
 | `agent_items` | The skills and slash commands of a set, keyed by set, kind and name |

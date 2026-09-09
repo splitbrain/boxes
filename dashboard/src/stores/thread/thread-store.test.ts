@@ -70,6 +70,7 @@ function makeStore(
   let client!: FakeClient;
   const store = new ThreadStore({
     sessionId: 'box-1',
+    threadId: 'thread-1',
     createClient: (handlers) => {
       client = new FakeClient(handlers);
       configure?.(client);
@@ -659,8 +660,10 @@ test('a turn blocked on a permission request is not reported as running', async 
 test('a bang command runs locally, streams, and never reaches the adapter', async () => {
   const chunks: string[] = [];
   const { store, client } = makeStore(undefined, {
-    runExec: async (sessionId, command, onChunk) => {
+    runExec: async (sessionId, threadId, command, onChunk) => {
       assert.equal(sessionId, 'box-1');
+      // The command is run against the thread it was typed in, not the box.
+      assert.equal(threadId, 'thread-1');
       assert.equal(command, 'echo hi');
       onChunk('hi');
       chunks.push('hi');
@@ -685,7 +688,7 @@ test('a bang command runs locally, streams, and never reaches the adapter', asyn
 
 test('a non-zero exit shows the code under the output', async () => {
   const { store } = makeStore(undefined, {
-    runExec: async (_id, _cmd, onChunk) => {
+    runExec: async (_id, _thread, _cmd, onChunk) => {
       onChunk('bash: nope: command not found');
       return { exitCode: 127, truncated: false, timedOut: false };
     },
@@ -699,7 +702,7 @@ test('a non-zero exit shows the code under the output', async () => {
 
 test('a killed or truncated run says so beside its exit code', async () => {
   const { store } = makeStore(undefined, {
-    runExec: async (_id, _cmd, onChunk) => {
+    runExec: async (_id, _thread, _cmd, onChunk) => {
       onChunk('a lot of output');
       return { exitCode: null, truncated: true, timedOut: true };
     },
@@ -714,7 +717,7 @@ test('a killed or truncated run says so beside its exit code', async () => {
 
 test('output carrying a fence of its own cannot break out of the block', async () => {
   const { store } = makeStore(undefined, {
-    runExec: async (_id, _cmd, onChunk) => {
+    runExec: async (_id, _thread, _cmd, onChunk) => {
       onChunk('```\nnot a fence\n```');
       return { exitCode: 0, truncated: false, timedOut: false };
     },

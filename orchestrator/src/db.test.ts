@@ -307,3 +307,29 @@ test('the agent tables arrive with a global set, and existing sessions select no
     upgraded.close();
   }
 });
+
+test('the exec log gains a thread, and its session-wide rows are dropped', () => {
+  const db = new Database(join(dir, 'boxes.db'));
+  for (const sql of MIGRATIONS.slice(0, 14)) db.exec(sql);
+  db.pragma('user_version = 14');
+  db.prepare(
+    `INSERT INTO exec_log (session_id, command, output, exit_code, truncated,
+       timed_out, started_at, finished_at)
+     VALUES ('s1', 'git status', 'clean', 0, 0, 0, 1000, 2000)`,
+  ).run();
+  db.close();
+
+  const upgraded = openDb(dir);
+  try {
+    assert.ok(columns(upgraded, 'exec_log').includes('thread_id'));
+
+    // The stored rows name no thread, and nothing can tell which of a
+    // session's conversations each of them was typed in. Keeping them would
+    // mean showing every one of them in every thread, which is the behaviour
+    // the column is here to end.
+    const count = upgraded.prepare('SELECT COUNT(*) AS n FROM exec_log').get() as { n: number };
+    assert.equal(count.n, 0);
+  } finally {
+    upgraded.close();
+  }
+});
