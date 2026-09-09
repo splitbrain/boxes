@@ -79,10 +79,28 @@ jobs:
       # it in a real Chromium, so the browser has to exist before `npm test`.
       # The `unit` project needs none of this, and neither does anything else
       # in the matrix.
+      #
+      # `--with-deps` runs `apt-get update` first, and the runner image carries
+      # Google's Chrome repository -- which this needs nothing from: every
+      # library Playwright's Chromium wants comes out of the Ubuntu archive.
+      # That repository has served a `Packages.gz` whose hash did not match the
+      # Release file describing it, and apt fails the whole update on one bad
+      # index, so a repository Boxes does not use turned main red for as long
+      # as Google's mirrors disagreed with each other. Re-running did not help;
+      # the mismatch outlived it.
+      #
+      # So it is taken out of the picture before the install. The glob covers
+      # both the `.list` and the deb822 `.sources` spelling, and `rm -f`
+      # matching nothing is a success -- an image that stops shipping the
+      # repository quietly needs no change here. Only this one repository goes:
+      # wiping the directory would be a way to delete the Ubuntu archive itself
+      # on an image that keeps it there.
       - name: Install Chromium
         if: matrix.package == 'dashboard'
         working-directory: dashboard
-        run: npx playwright install --with-deps chromium
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
+          npx playwright install --with-deps chromium
 
       - name: Type-check
         working-directory: ${{ matrix.package }}
