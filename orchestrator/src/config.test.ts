@@ -31,6 +31,7 @@ test('an empty environment yields the documented defaults', () => {
     assert.equal(cfg.SESSION_CPUS, 2);
     assert.equal(cfg.SESSION_PIDS_LIMIT, 512);
     assert.equal(cfg.IDLE_STOP_MINUTES, 30);
+    assert.equal(cfg.SESSION_IMAGE_PRUNE, true);
     assert.equal(cfg.BACKGROUND_POLL_SECONDS, 20);
     assert.equal(cfg.PERMISSION_FALLBACK, 'hold');
     assert.equal(cfg.PERMISSION_HOLD_MINUTES, 120);
@@ -54,6 +55,7 @@ test('an empty value means unset, not an invalid value', () => {
       SESSION_CPUS: '',
       SESSION_PIDS_LIMIT: '',
       IDLE_STOP_MINUTES: '',
+      SESSION_IMAGE_PRUNE: '',
       PERMISSION_FALLBACK: '',
       PERMISSION_HOLD_MINUTES: '',
       PROFILE_DEFAULT_GIT_NAME: '',
@@ -62,7 +64,26 @@ test('an empty value means unset, not an invalid value', () => {
     assert.equal(cfg.SESSION_CPUS, 2);
     assert.equal(cfg.PERMISSION_FALLBACK, 'hold');
     assert.equal(cfg.IDLE_STOP_MINUTES, 30);
+    assert.equal(cfg.SESSION_IMAGE_PRUNE, true);
     assert.equal(cfg.profiles['DEFAULT']?.gitName, 'boxes-bot');
+  });
+});
+
+test('an off switch is off however it is spelled, and never on by accident', () => {
+  withDataDir((dir) => {
+    // The mistake a boolean environment variable exists to make: a coercion
+    // that reads any non-empty string as true turns this into on.
+    for (const off of ['false', '0', 'no', 'off']) {
+      assert.equal(loadConfig({ DATA_DIR: dir, SESSION_IMAGE_PRUNE: off }).SESSION_IMAGE_PRUNE, false);
+    }
+    for (const on of ['true', '1', 'yes', 'on']) {
+      assert.equal(loadConfig({ DATA_DIR: dir, SESSION_IMAGE_PRUNE: on }).SESSION_IMAGE_PRUNE, true);
+    }
+    // And a typo is a failed boot rather than whichever of the two is worse.
+    assert.throws(
+      () => loadConfig({ DATA_DIR: dir, SESSION_IMAGE_PRUNE: 'nope' }),
+      /Invalid configuration/,
+    );
   });
 });
 

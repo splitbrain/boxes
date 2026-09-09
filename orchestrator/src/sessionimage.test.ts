@@ -35,6 +35,16 @@ interface Fake {
   created: Array<Record<string, unknown>>;
   removed: string[];
   pulled: string[];
+  /**
+   * Image ids on the host that carry no tag, and the label each was built
+   * with. A pull that moves the tag puts the id it moved off in here, the way
+   * the daemon does.
+   */
+  untagged: Map<string, Record<string, string>>;
+  /** Image ids a container still uses, which the daemon refuses to remove. */
+  imagesInUse: Set<string>;
+  /** Image ids removed, in the order they went. */
+  imagesRemoved: string[];
   /** What a pull does to `images`, which is how a tag moves in a test. */
   onPull?: (image: string) => void;
   next: number;
@@ -52,7 +62,25 @@ function install(fake: Fake): void {
         if (!id) throw notFound('image');
         return { Id: id };
       },
+      remove: async () => {
+        if (fake.imagesInUse.has(name)) {
+          throw Object.assign(new Error('image is in use'), { statusCode: 409 });
+        }
+        if (!fake.untagged.delete(name)) throw notFound('image');
+        fake.imagesRemoved.push(name);
+      },
     }),
+    listImages: async (opts: { filters?: { label?: string[] } }) => {
+      const wanted = opts.filters?.label ?? [];
+      return [...fake.untagged]
+        .filter(([, labels]) =>
+          wanted.every((l) => {
+            const [key, value] = l.split('=');
+            return labels[key ?? ''] === value;
+          }),
+        )
+        .map(([Id]) => ({ Id, RepoTags: [] }));
+    },
     getContainer: (id: string) => ({
       inspect: async () => {
         const c = fake.containers.get(id);
@@ -143,6 +171,9 @@ beforeEach(async () => {
     created: [],
     removed: [],
     pulled: [],
+    untagged: new Map(),
+    imagesInUse: new Set(),
+    imagesRemoved: [],
     next: 0,
   };
   install(fake);
@@ -250,6 +281,94 @@ describe('having the session image at all', () => {
 
     assert.deepEqual(fake.pulled, [IMAGE]);
     assert.equal(fake.images.get(IMAGE), 'sha256:two');
+  });
+});
+
+/** What a pull that moves the tag does: the old id stays, untagged. */
+function moveTagTo(id: string): void {
+  const before = fake.images.get(IMAGE);
+  if (before) fake.untagged.set(before, { [dk.IMAGE_LABEL]: dk.SESSION_IMAGE_KIND });
+  fake.images.set(IMAGE, id);
+}
+
+describe('reclaiming what a pull superseded', () => {
+  it('removes the copy the tag moved off', async () => {
+    fake.onPull = () => moveTagTo('sha256:two');
+
+    await orchestrator.manager.refreshSessionImage();
+
+    // A gigabyte or two per release, which nothing else was ever going to
+    // reclaim: an untagged image is not something a deployment goes looking
+    // for.
+    assert.deepEqual(fake.imagesRemoved, ['sha256:one']);
+  });
+
+  it('leaves the one a session is still on, and takes it the next time round', async () => {
+    // A box that has not been started since the tag moved is still on the old
+    // image, and the daemon refuses to remove it. That refusal is the safety
+    // property, not an error to work around.
+    fake.imagesInUse.add('sha256:one');
+    fake.onPull = () => moveTagTo('sha256:two');
+
+    await orchestrator.manager.refreshSessionImage();
+    assert.deepEqual(fake.imagesRemoved, []);
+    assert.ok(fake.untagged.has('sha256:one'));
+
+    // The session started, was recreated on the current image, and let go.
+    fake.imagesInUse.delete('sha256:one');
+    fake.onPull = () => moveTagTo('sha256:three');
+    await orchestrator.manager.refreshSessionImage();
+
+    assert.deepEqual(fake.imagesRemoved, ['sha256:one', 'sha256:two']);
+  });
+
+  it('takes what an earlier process left behind, by the image label', async () => {
+    // The id this process replaced is known outright; one an orchestrator
+    // that has since restarted replaced is only findable because the image
+    // carries a label of its own.
+    fake.untagged.set('sha256:from-last-week', { [dk.IMAGE_LABEL]: dk.SESSION_IMAGE_KIND });
+    fake.onPull = () => moveTagTo('sha256:two');
+
+    await orchestrator.manager.refreshSessionImage();
+
+    assert.deepEqual(fake.imagesRemoved.sort(), ['sha256:from-last-week', 'sha256:one']);
+  });
+
+  it('never touches an untagged image that is not ours', async () => {
+    // The orchestrator holds this host's Docker socket. An image somebody
+    // else built is not its to reclaim, however unused it looks.
+    fake.untagged.set('sha256:somebody-elses', { 'com.example.thing': 'yes' });
+    fake.onPull = () => moveTagTo('sha256:two');
+
+    await orchestrator.manager.refreshSessionImage();
+
+    assert.deepEqual(fake.imagesRemoved, ['sha256:one']);
+    assert.ok(fake.untagged.has('sha256:somebody-elses'));
+  });
+
+  it('removes nothing when the tag did not move', async () => {
+    fake.untagged.set('sha256:from-last-week', { [dk.IMAGE_LABEL]: dk.SESSION_IMAGE_KIND });
+
+    await orchestrator.manager.refreshSessionImage();
+
+    // A pull that changed nothing superseded nothing, and the sweep rides
+    // along with the change rather than running on its own.
+    assert.deepEqual(fake.imagesRemoved, []);
+  });
+
+  it('keeps every copy when the deployment turns pruning off', async () => {
+    await orchestrator.app.close();
+    db.close();
+    db = openDb(dir);
+    orchestrator = buildApp(
+      loadConfig({ DATA_DIR: dir, SESSION_IMAGE: IMAGE, SESSION_IMAGE_PRUNE: 'false' }),
+      db,
+    );
+    fake.onPull = () => moveTagTo('sha256:two');
+
+    await orchestrator.manager.refreshSessionImage();
+
+    assert.deepEqual(fake.imagesRemoved, []);
   });
 });
 

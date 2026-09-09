@@ -19,6 +19,22 @@ import { sessionOwner } from './workspaces.ts';
 export const LABEL = 'boxes.session';
 
 /**
+ * Label the session image carries, so a superseded copy of it can be
+ * recognised after it has lost its tag.
+ *
+ * A pull that moves `:latest` leaves the image it replaced untagged and on
+ * disk — a gigabyte or two of it — and nothing about an untagged image says
+ * whose it was. The label survives the tag, because it is baked into the
+ * image's own config, and it is what lets the orchestrator prune what it
+ * fetched without going near an image somebody else on this host owns. See
+ * `session-image/Dockerfile`.
+ */
+export const IMAGE_LABEL = 'boxes.image';
+
+/** The value of that label on the session image. */
+export const SESSION_IMAGE_KIND = 'session';
+
+/**
  * The `uid:gid` every session process runs as, as Docker wants it written.
  *
  * Numbers rather than the image's `agent`, so SESSION_UID alone decides who a
@@ -775,6 +791,74 @@ export async function listSessionContainers(): Promise<
     if (!sessionId) return [];
     return [{ id: c.Id, sessionId, running: c.State === 'running' }];
   });
+}
+
+/** Session networks Boxes created, by the session each is labelled with. */
+export async function listSessionNetworks(): Promise<Array<{ name: string; sessionId: string }>> {
+  const networks = await docker().listNetworks({ filters: { label: [LABEL] } });
+  return networks.flatMap((n) => {
+    const sessionId = (n.Labels as Record<string, string> | undefined)?.[LABEL];
+    return sessionId && n.Name ? [{ name: n.Name, sessionId }] : [];
+  });
+}
+
+/** Session volumes Boxes created, by the session each is labelled with. */
+export async function listSessionVolumes(): Promise<Array<{ name: string; sessionId: string }>> {
+  const { Volumes } = await docker().listVolumes({ filters: { label: [LABEL] } });
+  return (Volumes ?? []).flatMap((v) => {
+    const sessionId = v.Labels?.[LABEL];
+    return sessionId && v.Name ? [{ name: v.Name, sessionId }] : [];
+  });
+}
+
+/**
+ * Ids of session images on this host that have lost their tag.
+ *
+ * Untagged and labelled as ours: an old copy of the session image, left
+ * behind by a pull that moved the tag off it. The label is the whole of what
+ * keeps this from being `docker image prune` — an image Boxes never fetched
+ * does not carry it, and is never listed here however unused it is.
+ *
+ * `RepoTags` is checked as well as the filter asked for, because deleting an
+ * image is not an operation to perform on the strength of a filter string
+ * being interpreted the way this expects.
+ *
+ * The caller excludes what SESSION_IMAGE resolves to now. That leaves one
+ * exotic case unhandled: a *second* Boxes deployment on the same host, whose
+ * own SESSION_IMAGE pins a digest rather than a tag, has a current image that
+ * carries no tag either and so looks superseded from here. It costs that
+ * deployment a re-pull and nothing else — any container of its own on the
+ * image makes the daemon refuse the removal.
+ */
+export async function listSupersededSessionImages(): Promise<string[]> {
+  const images = await docker().listImages({
+    filters: { dangling: ['true'], label: [`${IMAGE_LABEL}=${SESSION_IMAGE_KIND}`] },
+  });
+  return images
+    .filter((i) => (i.RepoTags ?? []).filter((t) => t !== '<none>:<none>').length === 0)
+    .map((i) => i.Id)
+    .filter((id): id is string => Boolean(id));
+}
+
+/**
+ * Removes an image, and says whether it went.
+ *
+ * Never forced. A container still created from this image — a session that
+ * has not been started since the tag moved — makes the daemon refuse with a
+ * 409, and that refusal is the safety property rather than an error to work
+ * around: the session is moved onto the current image at its next start, and
+ * the image goes on the sweep after that. 404 is somebody else having removed
+ * it, which is the outcome this wanted anyway.
+ */
+export async function removeImage(id: string): Promise<boolean> {
+  try {
+    await docker().getImage(id).remove();
+    return true;
+  } catch (err) {
+    const status = (err as { statusCode?: number }).statusCode;
+    if (status === 404 || status === 409) return false;
+    throw err;
+  }
 }
 
 /**

@@ -79,7 +79,9 @@ That makes the session image the orchestrator's to keep, not compose's: it
 pulls `SESSION_IMAGE` when it is missing and again every
 `SESSION_IMAGE_PULL_MINUTES`, and a session moves onto what arrived the next
 time it is *started* — never while it runs, where recreating the container
-would kill the adapter exec mid-turn. Recreating is otherwise cheap and is how
+would kill the adapter exec mid-turn. The copy the tag moved off is removed
+once nothing is left on it, which is the only way that space is ever
+reclaimed; see [Reclaiming what a session leaves](#reclaiming-what-a-session-leaves). Recreating is otherwise cheap and is how
 a session container changes anything about itself: the rootfs is read-only and
 everything durable is in the two mounts, so the workspace and the thread
 history come across untouched. For the same reason nothing outside the
@@ -1345,6 +1347,59 @@ then delete the volume. A crash before the row is updated leaves a
 volume-backed session that migrates again on the next attempt. A *running*
 legacy session is left alone and comes through at its next stop/start cycle.
 
+## Reclaiming what a session leaves
+
+Two kinds of garbage accumulate on a Boxes host, and neither used to be
+collected.
+
+**Superseded session images.** A pull that moves `:latest` leaves the image it
+replaced on disk, untagged — a gigabyte or two of Node, browsers and language
+toolchains, once per release, that nothing is ever going to look for again.
+`refreshSessionImage` knows exactly which id it replaced, because it read the
+id before the pull and after it, and removes that one. Alongside it, a sweep
+catches the copies an *earlier* orchestrator process replaced and did not live
+to clean up: the session image carries `boxes.image=session`
+(`session-image/Dockerfile`), which survives the tag it lost, so an untagged
+image can still be recognised as one Boxes fetched.
+
+That label is the whole reason this is not `docker image prune`. The
+orchestrator holds the host's Docker socket, and an unused image somebody else
+put there is not its to delete. Nothing is forced either: an image a container
+was created from is refused by the daemon with a 409, and that refusal is a
+safety property rather than an error — a box that has not started since the
+tag moved is still on the old image, start recreates it onto the new one, and
+the image goes on a later sweep. `SESSION_IMAGE_PRUNE=false` turns the whole
+of it off for a deployment that keeps old images to roll back to.
+
+**Objects whose session is gone.** Everything Boxes creates carries
+`boxes.session=<id>`. `reconcile()` reads that in one direction — for each
+row, what Docker has — so anything left by a crash between `docker create` and
+the row's own update, or by a teardown that failed halfway and only logged it,
+was invisible: no card lists it, and no teardown will ever be run for it
+again. A stranded home volume is the expensive one, since with a read-only
+rootfs it is where everything the agent installed at runtime went.
+
+`sweepOrphans` reads it the other way, on the reaper's minute. What makes the
+rule exact rather than a heuristic is the order `create()` works in: the row
+is inserted **before** any Docker object exists, so an object labelled with a
+session that has no live row cannot be one on its way up. A deleted session's
+tombstone counts as no row, which is what makes a failed teardown recoverable.
+Containers go first, because a network with a container on it and a volume
+mounted into one are both refused; a removal that fails is a log line and the
+next sweep tries again. The workspace directory goes with them, being the size
+of all of it put together.
+
+One guard: if the sessions table is *entirely* empty — not one row, tombstones
+included — and the host is full of labelled objects, the sweep refuses and
+says so. That shape is likelier to be a data volume mounted from the wrong
+place than a genuine pile of orphans, and it is the one mistake here that
+nothing could recover. A deployment whose sessions have all been deleted still
+has its tombstones, so its failed teardowns are still swept.
+
+The materialized agent configuration under `${DATA_DIR}/agents/<id>` is not in
+the sweep. It is kilobytes of markdown, rewritten from the database at every
+start, and worth neither the code nor the risk.
+
 ## What the agent is configured with
 
 An `AGENTS.md`, skills and slash commands are managed from the dashboard and
@@ -1736,6 +1791,7 @@ restart; the resolver that answers the request is in memory only, so
 | Reaper (`reaper.ts`) | 60s | Stops sessions that are idle on all five counts: no running turn on any thread, no waiting permission request, no attached browser, no background task still believed to be running, and no activity for `IDLE_STOP_MINUTES`. It never deletes. The turn count is derived from the threads; the rest stay session-scoped, because they are about the box rather than the conversation |
 | Proxy reconciler (`reaper.ts`) | 60s | Re-asserts both halves of the proxy's state: its attachment to every running session's network, which `compose up` can drop by recreating the container, and the policy it holds, which a restart erases entirely. Both show up in `/healthz` |
 | Maintenance | 60s, with the reaper | Prunes each session's debug log to its ring size |
+| Orphan sweep (`sessions.ts`) | 60s, with the reaper | Removes the containers, networks, volumes and workspace directories labelled with sessions that no longer exist. See below |
 
 The dashboard polls `GET /api/sessions` every 5 seconds while its tab is
 visible, and pauses while it is hidden.

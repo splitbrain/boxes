@@ -210,6 +210,153 @@ export class SessionManager {
       log.info('the session image moved; sessions adopt it as they are started', {
         image: this.cfg.SESSION_IMAGE,
       });
+      // The copy it moved off is now untagged, on this host, and a gigabyte or
+      // two. Nothing else is ever going to reclaim it.
+      await this.pruneSupersededImages(before);
+    }
+  }
+
+  /**
+   * Removes copies of the session image that a pull has superseded.
+   *
+   * Called after a refresh that moved the tag, which is the only thing that
+   * makes one. `supersededId` is the image the pull replaced, known exactly
+   * because this process watched it happen; the sweep alongside it catches
+   * the ones an earlier process replaced and did not live to clean up, which
+   * it can do because the image carries a label of its own (docker.ts).
+   *
+   * Nothing here is forced. An image a container was created from is refused
+   * by the daemon, and that refusal is what makes this safe to run while
+   * sessions exist: a box that has not been started since the tag moved is
+   * still on the old image, and start recreates it onto the new one. The
+   * image goes on a later sweep.
+   */
+  private async pruneSupersededImages(supersededId: string | null): Promise<void> {
+    if (!this.cfg.SESSION_IMAGE_PRUNE) return;
+    const current = await dk.imageId(this.cfg.SESSION_IMAGE);
+    const candidates = new Set(await dk.listSupersededSessionImages());
+    // A deployment building its own session image without the label has no
+    // superseded copy this can find later — but the one this process just
+    // replaced is known outright, so that case is covered while the process
+    // that saw it lives.
+    if (supersededId) candidates.add(supersededId);
+    candidates.delete(current ?? '');
+
+    for (const id of candidates) {
+      try {
+        if (await dk.removeImage(id)) {
+          log.info('removed a superseded session image', { image: id });
+        }
+      } catch (err) {
+        log.warn('could not remove a superseded session image', {
+          image: id,
+          error: (err as Error).message,
+        });
+      }
+    }
+  }
+
+  /**
+   * Removes Docker objects and workspace directories belonging to sessions
+   * that no longer exist.
+   *
+   * Everything Boxes creates is labelled with its session (docker.ts, LABEL),
+   * and reconcile() reads that one way only: for each row, what Docker has.
+   * Nothing read it the other way, so anything left behind by a crash between
+   * `docker create` and the row's own update, or by a teardown that failed
+   * halfway and only logged it, stayed on the host forever — invisible to
+   * Boxes, and a home volume of it is where an agent's runtime installs went.
+   *
+   * The rule is exact rather than heuristic, and it is exact because of the
+   * order create() works in: the row is inserted *before* any Docker object
+   * exists, so an object labelled with a session that has no live row cannot
+   * be one that is on its way up. A deleted session's tombstone counts as no
+   * row, which is what makes a failed teardown recoverable.
+   *
+   * Ordering matters: a network with a container still on it, or a volume
+   * still mounted into one, is refused. Containers go first.
+   */
+  async sweepOrphans(): Promise<void> {
+    const live = new Set(this.allRows().map((row) => row.id));
+    const containers = await dk.listSessionContainers();
+    const networks = await dk.listSessionNetworks();
+    const volumes = await dk.listSessionVolumes();
+    const orphaned = <T extends { sessionId: string }>(all: T[]): T[] =>
+      all.filter((o) => !live.has(o.sessionId));
+
+    const strays = [...orphaned(containers), ...orphaned(networks), ...orphaned(volumes)];
+    const sessions = new Set(strays.map((o) => o.sessionId));
+    if (sessions.size === 0) return;
+
+    // The one shape that is likelier to be a database these objects do not
+    // belong to than a genuine pile of orphans: a sessions table with nothing
+    // in it at all, and a host full of sessions. A data volume mounted from
+    // the wrong place, or replaced, leaves exactly that — and going ahead
+    // would take the home volume of every session on the host, which is the
+    // one loss here that nothing can recover.
+    //
+    // Deleted sessions are counted, tombstones and all, which is what keeps
+    // this from firing on the ordinary case it would otherwise break: a
+    // deployment whose sessions have all been deleted still has rows, and its
+    // failed teardowns still get swept.
+    const known = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }
+    ).n;
+    if (known === 0) {
+      log.warn('not sweeping: this database knows of no session, and the host is full of them', {
+        sessions: [...sessions],
+        containers: orphaned(containers).length,
+        networks: orphaned(networks).length,
+        volumes: orphaned(volumes).length,
+      });
+      return;
+    }
+
+    log.info('sweeping what is left of sessions that are gone', { sessions: [...sessions] });
+    for (const container of orphaned(containers)) {
+      await this.sweeping(container.sessionId, 'container', () =>
+        dk.removeContainer(container.id),
+      );
+    }
+    for (const network of orphaned(networks)) {
+      await this.sweeping(network.sessionId, 'network', () =>
+        dk.removeNetwork(network.name, this.cfg),
+      );
+    }
+    for (const volume of orphaned(volumes)) {
+      await this.sweeping(volume.sessionId, 'volume', () => dk.removeVolume(volume.name));
+    }
+    // And the files, which are the size of all of the above put together. The
+    // workspace of a session with no row is unreachable by every surface Boxes
+    // has: no card lists it, no review opens it, and no container mounts it.
+    for (const sessionId of sessions) {
+      await this.sweeping(sessionId, 'workspace', () =>
+        Promise.resolve(ws.removeWorkspace(this.cfg.DATA_DIR, sessionId)),
+      );
+    }
+  }
+
+  /**
+   * Runs one removal of the sweep, keeping the rest going when it fails.
+   *
+   * A stray object that cannot be removed is worth a line and nothing more:
+   * whatever is holding it will let go eventually, and the next sweep tries
+   * again. Stopping the sweep on it would leave the objects behind it for as
+   * long as this one is stuck.
+   */
+  private async sweeping(
+    sessionId: string,
+    what: string,
+    remove: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await remove();
+      log.session(sessionId).info('swept an orphaned object', { what });
+    } catch (err) {
+      log.session(sessionId).warn('could not sweep an orphaned object', {
+        what,
+        error: (err as Error).message,
+      });
     }
   }
 

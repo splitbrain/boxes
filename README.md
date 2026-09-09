@@ -194,6 +194,7 @@ docker exec -it session-<id> claude /login
 | `SESSION_UID` | `1020` | uid session processes run as, and the owner of every workspace file. The session image must be built on it |
 | `SESSION_GID` | `1020` | gid to match |
 | `SESSION_IMAGE_PULL_MINUTES` | `60` | How often that image is pulled again; `0` never, for one built on the host |
+| `SESSION_IMAGE_PRUNE` | `true` | Remove a copy of the session image that a pull has superseded. Only images carrying its label, and only once nothing runs on one |
 | `SESSION_SUBNET_POOL` | `10.200.0.0/16` | Pool sessions get a `/24` from |
 | `SESSION_MEM_LIMIT` | `4g` | Per-session memory cap |
 | `SESSION_CPUS` | `2` | Per-session CPU cap |
@@ -393,6 +394,14 @@ the next browser to open it. Nothing is ever auto-approved.
 start, stop, delete, the container and network names, and the WebSocket URL and
 bearer token for attaching your own ACP client. Deleting removes the storage
 too, so the agent's work and the thread history go with it.
+
+Deleting is also the only way a session's disk goes away, and it goes
+completely: the workspace, the home volume, the container and the network.
+Should any of that fail halfway — a crash, a daemon that would not remove
+something — the orchestrator sweeps what was left the next minute, and every
+minute after, rather than leaving it on the host with nothing left to name it.
+The same sweep reclaims the copy of the session image a pull superseded; see
+`SESSION_IMAGE_PRUNE`.
 
 Idle sessions — no turn on any thread, no waiting request, no attached browser
 — are stopped after `IDLE_STOP_MINUTES`. They are never deleted. Work left

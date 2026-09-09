@@ -13,6 +13,19 @@ import { DEFAULT_SESSION_GID, DEFAULT_SESSION_UID } from './workspaces.ts';
 
 const durationMinutes = z.coerce.number().int().positive();
 
+/**
+ * An on/off setting, spelled the way a person would write one.
+ *
+ * Not `z.coerce.boolean()`, which reads any non-empty string as true and so
+ * turns `SETTING=false` into on — the one mistake a boolean environment
+ * variable exists to make. An unrecognised value fails at boot with the rest
+ * of the configuration, rather than quietly meaning whichever of the two is
+ * worse.
+ */
+const flag = z
+  .enum(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'])
+  .transform((value) => ['true', '1', 'yes', 'on'].includes(value));
+
 const schema = z.object({
   DATA_DIR: z.string().min(1).default('/data'),
   /**
@@ -55,6 +68,20 @@ const schema = z.object({
    * altogether, because a session cannot be created without it.
    */
   SESSION_IMAGE_PULL_MINUTES: z.coerce.number().int().nonnegative().default(60),
+  /**
+   * Whether a copy of the session image that a pull has superseded is removed
+   * from this host.
+   *
+   * On, because the alternative is a gigabyte or two of it per release, kept
+   * forever, that nothing else will ever reclaim: an untagged image is not
+   * something a deployment goes looking for. Only images carrying the session
+   * image's own label are touched, and only once no container is left running
+   * on one — see docker.ts.
+   *
+   * Off is for a host that keeps old images deliberately: to roll back to one
+   * without the registry, or because something outside Boxes runs them.
+   */
+  SESSION_IMAGE_PRUNE: flag.default('true'),
   SESSION_SUBNET_POOL: z.string().regex(/^\d+\.\d+\.\d+\.\d+\/\d+$/).default('10.200.0.0/16'),
   SESSION_MEM_LIMIT: z.string().regex(/^\d+[kmgKMG]?$/).default('4g'),
   SESSION_CPUS: z.coerce.number().positive().default(2),

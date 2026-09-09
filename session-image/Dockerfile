@@ -12,6 +12,14 @@
 # ever supplied was Node, npm, and a uid 1000 this file renamed anyway.
 FROM ubuntu:26.04
 
+# What lets the orchestrator recognise a copy of this image after `:latest`
+# has moved off it. A pull leaves the image it replaced untagged and on disk,
+# and nothing about an untagged image otherwise says whose it was — so without
+# this the only way to reclaim the space is `docker image prune`, which is not
+# an operation a tool holding the host's Docker socket has any business
+# performing on images it did not fetch. See `orchestrator/src/docker.ts`.
+LABEL boxes.image=session
+
 # What the repositories below need before they can be added. apt reaches the
 # Ubuntu archive over plain http, but curl needs a trust store.
 RUN apt-get update && apt-get install -y --no-install-recommends \
