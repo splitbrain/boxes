@@ -203,11 +203,13 @@ RUN npm install -g --prefix /usr/local \
 # It also brings the font packages, without which a screenshot of a page in a
 # non-Latin script comes back as boxes.
 #
-# PLAYWRIGHT_BROWSERS_PATH keeps the browser on the image rather than in the
-# session's home, for the reason the npm globals are on the image: a home is
-# filled once, when its session is created, and never refreshed. The cost is that it is read-only at
-# runtime, so a project pinning its own Playwright has to point the variable at
-# its own home and download there -- which the shipped skill spells out.
+# BOXES_IMAGE_BROWSERS is where the browser lives: on the image rather than in
+# the session's home, for the reason the npm globals are on the image, that a
+# home is filled once when its session is created and never refreshed. It is
+# also what the entrypoint links into a session's browsers path, and what the
+# build below installs into -- PLAYWRIGHT_BROWSERS_PATH is pointed here for as
+# long as this build needs to write browsers, and moved to the session's home
+# at the end of the file. Read that block for why the two differ at runtime.
 #
 # libnss3-tools is not Playwright's: it is certutil, which the entrypoint uses
 # to put the deployment CA where Chromium will actually look for it.
@@ -227,14 +229,36 @@ RUN npm install -g --prefix /usr/local \
 # assertion that the link points at something that runs, and the first thing
 # in this build to say so -- the browser check at the end says it again, and
 # far later.
+#
+# /usr/local/bin/playwright is the Playwright CLI under the name a session
+# reaches for. @playwright/cli depends on the full `playwright` package and a
+# global npm install nests it, so the binary is already here -- just below a
+# path nothing types. Linked, the documented Firefox and WebKit download runs
+# without npx first fetching a second copy of the tool to run it with.
+#
+# It is worth being clear about what this does not fix. `npx playwright`
+# consults its own cache and the registry and never PATH, so it downloads
+# whatever the registry calls latest no matter what is linked here -- but the
+# download is the smaller half of that problem. Either binary, npx's or this
+# one, hangs on `install chromium` while PLAYWRIGHT_BROWSERS_PATH points
+# somewhere unwritable: it opens a connection to the egress proxy and stalls
+# with no output rather than reporting that the browser is already present.
+# So this link is not an alternative way to run that command, and the skill
+# note the entrypoint appends tells an agent not to run it at all. What the
+# link buys is the one install a session does have a reason to run -- the
+# Firefox and WebKit one, which names a writable path and works.
 ARG PLAYWRIGHT_CLI_VERSION=0.1.19
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+ENV BOXES_IMAGE_BROWSERS=/opt/playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=${BOXES_IMAGE_BROWSERS}
 RUN npm install -g --prefix /usr/local @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
  && npm cache clean --force \
  && playwright-cli install-browser chromium --with-deps \
  && ln -s "$(find "${PLAYWRIGHT_BROWSERS_PATH}" -maxdepth 3 -type f -name chrome \
       -path '*/chromium-*' -print -quit)" /usr/local/bin/chromium \
  && chromium --version \
+ && ln -s /usr/local/lib/node_modules/@playwright/cli/node_modules/.bin/playwright \
+      /usr/local/bin/playwright \
+ && playwright --version \
  && apt-get update && apt-get install -y --no-install-recommends libnss3-tools \
  && rm -rf /var/lib/apt/lists/*
 
@@ -253,9 +277,9 @@ RUN npm install -g --prefix /usr/local @playwright/cli@${PLAYWRIGHT_CLI_VERSION}
 #
 # Deps rather than binaries is also the only half that keeps: a binary here
 # would be at the revision *this* image's Playwright pins, and a project
-# pinning its own resolves a different revision, looks for it under a
-# read-only PLAYWRIGHT_BROWSERS_PATH and downloads its own anyway -- the same
-# argument the /usr/local/bin/chromium link above exists to answer. Library
+# pinning its own resolves a different revision and downloads it anyway --
+# the same argument the /usr/local/bin/chromium link above exists to answer,
+# for whoever would rather take the revision that is here than fetch. Library
 # names are not versioned that way, so one install serves whatever Playwright
 # a project brings. It costs roughly what the two binaries would have, mostly
 # in WebKit's gstreamer stack; a deployment that only ever drives Chromium
@@ -420,7 +444,8 @@ RUN test "$(node -p 'process.versions.node.split(".")[0]')" = "${NODE_MAJOR}" \
 RUN set -eu; \
     for t in pdftotext pdftoppm pdfinfo qpdf mutool gs pandoc tesseract ocrmypdf \
              magick dot unzip zip xz zstd 7z file tree patch wget git-lfs \
-             sqlite3 fd fdfind shellcheck yq cmake uv uvx dig playwright-cli certutil; do \
+             sqlite3 fd fdfind shellcheck yq cmake uv uvx dig playwright-cli playwright \
+             certutil; do \
       command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; \
     done
 
@@ -479,14 +504,16 @@ RUN set -eu; \
 # base off a release Playwright still maps stops here rather than in a
 # session.
 #
-# PLAYWRIGHT_BROWSERS_PATH is overridden to the location the README tells a
-# project to use, rather than the image's /opt/playwright, for two reasons:
-# that directory is what a session can actually write, so pointing at it is
-# what proves the documented route rather than a build-time-only one, and the
-# binaries are meant to leave with this RUN. A session's home is filled by
-# copying /home/agent out of this image, so anything still in
-# /home/agent/.cache at the end of the build is copied into every session
-# created from it -- the same reason the toolchain caches below are removed.
+# PLAYWRIGHT_BROWSERS_PATH is exported to the path a session will really use,
+# rather than left at the image's own, for two reasons: that directory is what
+# a session can write, so pointing at it is what proves the route a session
+# walks rather than a build-time-only one, and the binaries are meant to leave
+# with this RUN. A session's home is filled by copying /home/agent out of this
+# image, so anything still in /home/agent/.cache at the end of the build is
+# copied into every session created from it -- the same reason the toolchain
+# caches below are removed. The export is still needed despite the ENV further
+# down setting the same path: ENV applies from where it appears, and this runs
+# above it.
 #
 # setContent rather than a served page: this is asking whether the browser
 # process starts and renders, which the check above already asks over http for
@@ -513,6 +540,71 @@ RUN set -eu; \
     ' "$deps/playwright-core"; \
     rm -rf /home/agent/.cache
 
+# Where a session looks for browsers, which is no longer where the image keeps
+# them.
+#
+# Everything above this line needed the variable pointed at the image, because
+# everything above this line was installing browsers into it. A session needs
+# the opposite: a directory it can write. The entrypoint links the image's
+# builds into this one at every start, so the browser the image carries
+# resolves here without being copied, and a browser a project downloads for
+# itself lands beside the links rather than failing to land at all.
+#
+# What this buys is not the download -- that route worked before, by exporting
+# the variable per project, and the README still describes it. It is that
+# `playwright install chromium` stops hanging. Pointed at a directory the
+# agent cannot write, that command does not report the browser it already
+# found and does not fail either: it opens a connection to the egress proxy
+# and stalls with no output, indefinitely -- seven minutes and zero bytes when
+# it was measured, killed rather than finished. An agent reaching for the
+# command it would use on any other machine got a hang and no reason for it.
+# Pointed here it returns at once, having found the links.
+#
+# Linked at every start rather than baked into the image's /home/agent, which
+# would be the cheaper-looking place: a home is copied out of this image when
+# its session is created and never refreshed, so a baked link would name
+# whichever revision that image carried and dangle the moment the image is
+# rebuilt onto a newer Playwright. The entrypoint relinks against the image it
+# is actually running under, and drops links that no longer resolve.
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/agent/.cache/ms-playwright
+
+# The browser resolves through links of the kind the entrypoint writes.
+#
+# Nothing above proves this: the checks above found the browser by pointing at
+# the directory holding it, and every session will instead find it through a
+# symlink one level up. That indirection is an assumption about Playwright's
+# registry -- which reads a revision directory and an INSTALLATION_COMPLETE
+# marker inside it -- rather than a documented guarantee, so a Playwright bump
+# that starts resolving the real path of its browsers directory would break
+# every session's browser and nothing else here would notice.
+#
+# A throwaway directory rather than /home/agent/.cache/ms-playwright, for the
+# reason the Firefox check removes what it downloads: what is left in the home
+# at the end of this build is copied into every session created from it, and
+# these links belong to the entrypoint rather than to the image.
+RUN set -eu; \
+    seed=/tmp/browsers-seed; \
+    mkdir -p "$seed"; \
+    for d in "$BOXES_IMAGE_BROWSERS"/*/; do \
+      ln -s "${d%/}" "$seed/$(basename "$d")"; \
+    done; \
+    PLAYWRIGHT_BROWSERS_PATH="$seed" node -e ' \
+      const pw = require(process.argv[1]); \
+      (async () => { \
+        const browser = await pw.chromium.launch({ chromiumSandbox: false }); \
+        const page = await browser.newPage(); \
+        await page.setContent("<title>t</title><button>Continue</button>"); \
+        const text = await page.textContent("button"); \
+        if (text !== "Continue") throw new Error("rendered " + text); \
+        await browser.close(); \
+        if (!pw.chromium.executablePath().startsWith(process.env.PLAYWRIGHT_BROWSERS_PATH)) { \
+          throw new Error("resolved outside the linked path: " + pw.chromium.executablePath()); \
+        } \
+        console.log("chromium resolves through a link"); \
+      })().catch((e) => { console.error(e); process.exit(1); }); \
+    ' /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright-core; \
+    rm -rf "$seed"
+
 # The toolchains build something, as the agent, with their caches where a
 # session will really put them.
 #
@@ -538,5 +630,33 @@ RUN set -eu; \
     composer --version >/dev/null; \
     cd /tmp && rm -rf hello.go /tmp/hello-rs \
       /home/agent/.cache /home/agent/go /home/agent/.cargo /home/agent/.config/composer
+
+# Scratch space on disk rather than in memory.
+#
+# /tmp in a session is a 512 MB tmpfs, which the read-only root filesystem
+# makes necessary and which is RAM: its pages are charged to the container's
+# memory limit, so filling /tmp spends an eighth of a default session's 4 GB
+# rather than any disk. Unset, TMPDIR sends every tool that stages anything --
+# an archive being unpacked, a package manager's download, a build's
+# intermediates -- into that budget, where running out arrives as an OOM or an
+# ENOSPC on a filesystem nobody thinks of as small.
+#
+# /home/agent is a bind onto real disk with room to spare, so pointing TMPDIR
+# there is what makes the size of a temporary file stop mattering. Everything
+# that reads TMPDIR follows: Python, Node, npm, pip, cargo, go, mktemp, tar.
+# Anything that hardcodes /tmp is unaffected and still has the tmpfs, which is
+# the right home for small and hot -- which is the whole of what it is now
+# asked to hold.
+#
+# Set last, after every RUN above has finished writing: with TMPDIR pointed
+# into the home during the build, each of those steps would leave its
+# intermediates in a directory that gets copied into every session created
+# from this image. The cleanup on the line above is what the build relies on
+# instead, and it only runs once.
+#
+# The entrypoint creates this and empties it on every start. A tmpfs is
+# discarded at restart for free and a directory on a persistent volume is not,
+# so without that it would accumulate for the life of the session.
+ENV TMPDIR=/home/agent/.cache/tmp
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

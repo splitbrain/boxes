@@ -18,15 +18,23 @@
     "but the proxy. Note this differs from the Playwright library, where",
     "chromiumSandbox already defaults to false.",
     "",
-    "--disable-dev-shm-usage: /dev/shm is Docker's default 64 MB, which",
-    "Chromium exhausts on any substantial page and reports as a closed target.",
-    "This moves that traffic to /tmp, already a 512 MB tmpfs here."
+    "ignoreDefaultArgs: Playwright passes --disable-dev-shm-usage on every",
+    "Chromium launch as one of its own defaults, so leaving it out of args",
+    "does not leave it out of the command line -- suppressing it takes this.",
+    "The flag exists for Docker's 64 MB /dev/shm, which Chromium exhausts on a",
+    "substantial page and reports as a closed target, and all it does about",
+    "that is move the traffic to TMPDIR. Here TMPDIR is the home volume, so",
+    "the flag would put a browser's shared memory on a disk. The orchestrator",
+    "gives the container a 512 MB /dev/shm instead and this hands the browser",
+    "back to it. See ShmSize in orchestrator/src/docker.ts -- a deployment",
+    "running this image without that setting wants the flag, which means",
+    "dropping this key rather than adding anything."
   ],
   "browser": {
     "browserName": "chromium",
     "launchOptions": {
       "chromiumSandbox": false,
-      "args": ["--disable-dev-shm-usage"]
+      "ignoreDefaultArgs": ["--disable-dev-shm-usage"]
     }
   }
 }

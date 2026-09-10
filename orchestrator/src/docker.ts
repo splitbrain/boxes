@@ -579,6 +579,25 @@ export async function createContainer(spec: CreateContainerSpec, cfg: Config): P
       ],
       ReadonlyRootfs: true,
       Tmpfs: { '/tmp': 'rw,size=512m,mode=1777' },
+      // Chromium puts its shared memory in /dev/shm, and Docker's default
+      // there is 64 MB -- which any substantial page exhausts, reported as a
+      // closed target rather than as anything about memory. Playwright's
+      // answer, on by default on every Chromium it launches, is
+      // --disable-dev-shm-usage, which only moves that traffic to TMPDIR; the
+      // session image points TMPDIR at the home volume so that large temporary
+      // files stop competing with the memory limit, and a browser's shared
+      // memory is the one thing that wants the opposite. So the container gets
+      // a /dev/shm worth using and the image turns the flag back off, which
+      // takes ignoreDefaultArgs rather than an args list -- see
+      // session-image/playwright-cli.config.json.
+      //
+      // The two halves travel together: without the flag suppressed this is
+      // unused, and without this the suppression leaves the browser on 64 MB.
+      //
+      // Like Tmpfs above this is RAM charged to the container's memory limit,
+      // but only as used: an empty /dev/shm costs nothing, so the ceiling
+      // matters and the number does not.
+      ShmSize: 512 * 1024 * 1024,
       CapDrop: ['ALL'],
       SecurityOpt: ['no-new-privileges:true'],
       Memory: memoryBytes(cfg.SESSION_MEM_LIMIT),
