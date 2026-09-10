@@ -14,16 +14,15 @@ interface ReplayTarget {
 /**
  * Who each adapter update goes to.
  *
- * Broadcasting everything to everyone is almost right, and wrong in three
- * places that only show up with more than one browser attached — which is the
- * normal case for a phone and a desktop watching the same session, and now
- * also for two tabs on two threads of one box.
+ * Broadcasting everything to everyone is wrong in three places, all of which
+ * need more than one browser attached to show up: a phone and a desktop on
+ * one session, or two tabs on two threads of one box.
  *
  * Every rule here is scoped to a thread, because every rule is about one
  * conversation. A connection is pinned to a thread and an update carries the
  * thread it is about, so routing is a lookup rather than a guess: a replay of
- * one thread no longer silences another thread's live updates, and a prompt
- * echoed on one thread is not suppressed on another.
+ * one thread leaves another thread's live updates alone, and a prompt echoed
+ * on one thread is not suppressed on another.
  */
 export class Broadcast {
   private readonly downstreams = new Set<DownstreamHandle>();
@@ -47,8 +46,7 @@ export class Broadcast {
    *   supplies it, because two thirds of it — whether the agent is speaking,
    *   and what it left running in the background — are known upstream of this
    *   class. The default is the part this class knows on its own, which is
-   *   what a test about routing wants and what Boxes reported before the
-   *   other two existed.
+   *   what a test about routing wants.
    */
   constructor(
     private readonly sessionId: string,

@@ -152,20 +152,18 @@ export function ThreadHeader({
       option !== model && option.category !== 'mode' && isSelectable(option),
   );
 
-  // Everything the adapter offers now lives behind the one button, the mode
-  // and the model included. Four controls and a name do not fit a phone's
-  // header — the name was down to a couple of words with the selects beside
-  // it — and a setting is a thing you glance at rarely and change rarer
-  // still. The button is beside the name, so any of them is two taps away.
+  // Everything the adapter offers lives behind the one button, the mode and
+  // the model included: four controls and a name do not fit a phone's header.
+  // The button is beside the name, so any of them is two taps away.
   const hasModes = Boolean(modes && modes.availableModes.length > 1);
   const hasModel = Boolean(model && isSelectable(model));
   const settings = hasModes || hasModel || rest.length > 0;
 
   return (
     <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-      {/* Leaving pops the thread's own entries; it does not push the list on
-          top of them. Anything else and this button and the device's back
-          button point the same way, which is what made back unpredictable. */}
+      {/* Leaving pops the thread's own entries rather than pushing the list on
+          top of them, so this button and the device's back button do not
+          point the same way. */}
       <Button asChild variant="ghost" size="sm" className="shrink-0 px-2">
         <a href={up.href} onClick={up.onClick} aria-label="Back to sessions">
           <ArrowLeft className="size-4" />
@@ -258,11 +256,10 @@ export function ThreadHeader({
         </Popover>
       ) : null}
 
-      {/* Being finished with a conversation is something you know while you
-          are in it, so the mark is set from here — and it is read on the
-          list, where the thread is drawn struck through. A note to the reader
-          and nothing else: the thread goes on running, and the same button
-          takes the mark off. */}
+      {/* The mark is set from inside the conversation and read on the list,
+          where a thread marked done is drawn struck through. A note to the
+          reader and nothing else: the thread goes on running, and the same
+          button takes the mark off. */}
       {onSetDone ? (
         <Button
           variant="ghost"
@@ -278,9 +275,9 @@ export function ThreadHeader({
       ) : null}
 
       {/* Branching belongs here rather than only on the list, because this is
-          where the motion starts: you are in a thread that is doing something
-          long, and you want a second one to ask about it. The fork keeps
-          running alongside this thread rather than replacing it. */}
+          where the motion starts: a thread is doing something long and a
+          second one is wanted to ask about it. The fork keeps running
+          alongside this thread rather than replacing it. */}
       {canFork ? (
         <Button
           variant="ghost"
@@ -295,9 +292,9 @@ export function ThreadHeader({
         </Button>
       ) : null}
 
-      {/* Reviewing sits next to forking because it is the other thing you do
-          from inside a thread when the agent has produced something: read what
-          it wrote, comment on it, and hand the comments back. */}
+      {/* Reviewing sits next to forking because it is the other thing done
+          from inside a thread once the agent has produced something: read
+          what it wrote, comment on it, and hand the comments back. */}
       <Button asChild variant="ghost" size="icon-sm" className="shrink-0">
         <Link
           to={`/sessions/${sessionId}/review`}

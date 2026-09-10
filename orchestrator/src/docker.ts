@@ -26,8 +26,7 @@ export const LABEL = 'boxes.session';
  * disk — a gigabyte or two of it — and nothing about an untagged image says
  * whose it was. The label survives the tag, because it is baked into the
  * image's own config, and it is what lets the orchestrator prune what it
- * fetched without going near an image somebody else on this host owns. See
- * `session-image/Dockerfile`.
+ * fetched without going near an image somebody else on this host owns.
  */
 export const IMAGE_LABEL = 'boxes.image';
 
@@ -39,8 +38,8 @@ export const SESSION_IMAGE_KIND = 'session';
  *
  * Numbers rather than the image's `agent`, so SESSION_UID alone decides who a
  * session is and the image needs no rebuild to be read differently. The two
- * still have to agree about the *home volume*, which Docker initialises from
- * the image — see ensureSessionImage().
+ * still have to agree about the home volume, which Docker initialises from
+ * the image; ensureSessionImage() reads the image's user back.
  */
 function sessionUser(): string {
   const { uid, gid } = sessionOwner();
@@ -77,11 +76,9 @@ export function setDockerForTests(d: Docker | null): void {
 /**
  * Docker object names derived from a session id.
  *
- * There are no volumes here any more: a workspace and a home are both
- * directories on the orchestrator's data volume, and the `ws-<id>` or
- * `home-<id>` volume of a session from before each of those changes is read
- * off its row rather than derived. Boxes creates no volume at all now, and so
- * needs no name for one.
+ * A workspace and a home are both directories on the orchestrator's data
+ * volume, so there is no volume name to derive. The `ws-<id>` or `home-<id>`
+ * volume of a session from before those changes is read off its row.
  */
 export const names = {
   container: (id: string) => `session-${id}`,
@@ -94,7 +91,7 @@ export const names = {
  * Where translation is on these are placeholders and the proxy swaps them for
  * the real thing on the wire, so nothing inside the container is worth
  * stealing. Where it is off — a credential this deployment did not configure —
- * they are whatever the profile holds, which is today's behavior.
+ * they are whatever the profile holds.
  */
 export interface SessionEgress {
   claudeOauthToken: string;
@@ -169,8 +166,7 @@ export function sessionEnv(spec: CreateContainerSpec, cfg: Config): string[] {
   if (spec.egress.caCertificate !== '') {
     // The entrypoint writes the PEM to CA_PATH; these are the four variables
     // that point node, gh, git and curl at it. A tool honouring none of them
-    // fails TLS against the intercepted hosts and nothing else — the shape the
-    // README's troubleshooting table describes.
+    // fails TLS against the intercepted hosts and nothing else.
     env['BOXES_PROXY_CA'] = spec.egress.caCertificate;
     env['NODE_EXTRA_CA_CERTS'] = CA_PATH;
     env['SSL_CERT_FILE'] = CA_PATH;
@@ -308,10 +304,8 @@ export function selfContainerId(): string | null {
 /**
  * Pulls an image, resolving once the daemon has finished with it.
  *
- * The orchestrator creates session containers but used to never fetch what
- * they run, which left the image something every deployment had to build out
- * of a checkout. Pulling it here is what lets SESSION_IMAGE name a published
- * tag and nothing else be done about it.
+ * Pulling here is what lets SESSION_IMAGE name a published tag rather than
+ * something every deployment builds out of a checkout.
  *
  * No auth is passed: a deployment that needs a private registry configures
  * the daemon's own credentials, which is where Docker looks anyway.
@@ -331,8 +325,7 @@ export async function pullImage(image: string): Promise<void> {
  *
  * "It is not here" is a legitimate answer to every question below, and the
  * daemon spells it as a 404. Any other failure is the daemon being unwell and
- * is rethrown, because reporting that as absence would have a caller quietly
- * act on a container or an image it never actually looked at.
+ * is rethrown, so no caller reads it as absence.
  */
 async function inspecting<T>(read: () => Promise<T>): Promise<T | null> {
   try {
@@ -347,8 +340,8 @@ async function inspecting<T>(read: () => Promise<T>): Promise<T | null> {
  * The uid an image's own `USER` names, or null when it names something this
  * cannot read as a number.
  *
- * An older image, or one built elsewhere, may carry a user *name* — there is
- * no uid to compare then, and saying nothing beats guessing.
+ * An older image, or one built elsewhere, may carry a user name, which
+ * leaves no uid to compare.
  */
 export async function imageUserUid(image: string): Promise<number | null> {
   return inspecting(async () => {
@@ -428,13 +421,9 @@ export async function resolveHostMountSource(destination: string): Promise<strin
  * Copies a named volume's content into a host directory, through a one-shot
  * container that can see both.
  *
- * This is how a session created before workspaces were directories moves onto
- * one. The orchestrator has no path to a named volume — the very problem the
- * bind mount removes — so the copy has to run somewhere both are mounted.
- * `cp -a` preserves ownership, which keeps the agent's files the agent's;
- * that needs root in the helper, so this is the one container Boxes creates
- * that does not drop its capabilities. It has no network and a read-only
- * rootfs, and its argv is fixed here.
+ * This is how a session created before workspaces were directories moves
+ * onto one. The orchestrator has no path to a named volume, so the copy has
+ * to run somewhere both are mounted.
  */
 export async function copyVolumeToDirectory(
   volumeName: string,
@@ -454,24 +443,20 @@ export async function copyVolumeToDirectory(
 /**
  * Fills a session's empty home directory from the image's own `/home/agent`.
  *
- * A named volume is seeded by Docker from the image, once, when it is
- * created. A bind mount is the opposite: it covers whatever the image put
- * there, so a fresh home directory would start out empty — and the image's
- * `/home/agent` is deliberately near-empty already, which makes it easy to
- * assume nothing is lost.
+ * Docker seeds a named volume from the image once, when it is created. A
+ * bind mount instead covers whatever the image put there, so a fresh home
+ * directory starts out empty.
  *
- * `.profile` is what is lost. Debian's `/etc/profile` *reassigns* PATH for a
+ * `.profile` is what that loses. Debian's `/etc/profile` reassigns PATH for a
  * login shell, and the skeleton `.profile` that `useradd -m` leaves is what
- * puts `~/.local/bin` back — which is where `npm install -g` puts the agent's
- * own tools. Exec runs `bash -lc`, so without it a tool the agent installed
- * would stop being found by the command that installed it, silently, in login
- * shells only.
+ * puts `~/.local/bin` back, which is where `npm install -g` puts the agent's
+ * own tools. Exec runs `bash -lc`, so without it a login shell stops finding
+ * a tool the agent installed.
  *
- * So the image's home is copied in, as root and with `cp -a`, which preserves
- * the ownership the image gave it. The directory itself is chowned in the
- * same breath: that is the one thing `cp -a` of the *contents* does not
- * cover, and doing it here rather than from the orchestrator is what makes a
- * home come out right even where this process is not root and cannot chown.
+ * The copy runs as root with `cp -a`, which preserves the ownership the image
+ * gave the contents. The directory itself is chowned in the same script,
+ * which is the one thing `cp -a` of the contents leaves out, and doing it in
+ * the container covers a deployment where this process cannot chown.
  */
 export async function seedHomeFromImage(
   hostDirectory: string,
@@ -688,10 +673,10 @@ export interface ContainerProcess {
   /**
    * The pid, in whichever namespace it was read.
    *
-   * `docker top` runs `ps` on the *host*, so what it reports is the host's
-   * pid for a process and not the one the container knows it by. Good enough
-   * to walk the tree, which is all the reading needs; not something to hand a
-   * `kill` inside the box. See `containerProcessesFromInside`.
+   * `docker top` runs `ps` on the host, so what it reports is the host's pid
+   * for a process rather than the one the container knows it by. Enough to
+   * walk the tree, and not something to hand a `kill` inside the box; see
+   * `containerProcessesFromInside`.
    */
   pid: number;
   ppid: number;
@@ -704,11 +689,10 @@ export interface ContainerProcess {
 /**
  * The `ps` format the reading wants, and the one every `ps` has.
  *
- * `etimes` is procps' own — an age in whole seconds, which is what turns a
- * list of what is running into a list of what has been running for an hour.
- * A host whose `ps` does not know it fails the whole call, and a failed
- * reading holds every box on that host awake; so the answer is remembered on
- * the first refusal and the plain format used from then on.
+ * `etimes` is procps' own: an age in whole seconds. A host whose `ps` does
+ * not know it fails the whole call, and a failed reading holds every box on
+ * that host awake, so the refusal is remembered and the plain format used
+ * from then on.
  */
 const PS_FORMATS = ['-eo pid,ppid,etimes,args', '-eo pid,ppid,args'] as const;
 let psFormat: (typeof PS_FORMATS)[number] | null = null;
@@ -737,8 +721,7 @@ async function top(containerId: string): Promise<ProcessListing> {
     return rich;
   } catch (err) {
     // Only the format is retried, and only once. A daemon that is down, or a
-    // container that has gone, fails the plain call too and throws from there
-    // — which is the "no answer" the caller has to keep treating as one.
+    // container that has gone, fails the plain call too and throws from there.
     log.debug('docker top rejected the elapsed-time format; asking without it', {
       error: (err as Error).message,
     });
@@ -760,7 +743,7 @@ async function top(containerId: string): Promise<ProcessListing> {
  * whatever titles the host's `ps` printed, and the daemon splits each row on
  * whitespace with the command left whole at the end. A container that cannot
  * be reached throws, which the caller reads as "no answer" rather than as
- * "nothing running" — see `background.ts` for why that direction matters.
+ * "nothing running".
  */
 export async function containerProcesses(containerId: string): Promise<ContainerProcess[]> {
   const listing = await top(containerId);
@@ -802,8 +785,8 @@ export async function containerProcesses(containerId: string): Promise<Container
  * Only the stop needs this, and only because of the namespace: a pid from
  * `docker top` is the host's, and the box has its own numbering for the same
  * process. A `kill` has to be told the box's, so the tree is read again from
- * in there at the moment it is used — which is also the freshest it can be,
- * and a process that ended in between is simply not in it.
+ * in there at the moment it is used, which is also the freshest it can be:
+ * a process that ended in between is not in it.
  *
  * `ps` is the session image's, which is why the image installs procps and
  * asserts it. A box without it throws, and a stop that cannot find its target
@@ -947,16 +930,14 @@ export async function listSessionVolumes(): Promise<Array<{ name: string; sessio
  * keeps this from being `docker image prune` — an image Boxes never fetched
  * does not carry it, and is never listed here however unused it is.
  *
- * `RepoTags` is checked as well as the filter asked for, because deleting an
- * image is not an operation to perform on the strength of a filter string
- * being interpreted the way this expects.
+ * `RepoTags` is checked as well as the filter, so a removal never rests on a
+ * filter string alone.
  *
- * The caller excludes what SESSION_IMAGE resolves to now. That leaves one
- * exotic case unhandled: a *second* Boxes deployment on the same host, whose
- * own SESSION_IMAGE pins a digest rather than a tag, has a current image that
- * carries no tag either and so looks superseded from here. It costs that
- * deployment a re-pull and nothing else — any container of its own on the
- * image makes the daemon refuse the removal.
+ * The caller excludes what SESSION_IMAGE resolves to now. One case is left:
+ * a second Boxes deployment on the same host whose SESSION_IMAGE pins a
+ * digest has a current image with no tag either, which looks superseded from
+ * here. It costs that deployment a re-pull, and any container of its own on
+ * the image makes the daemon refuse the removal.
  */
 export async function listSupersededSessionImages(): Promise<string[]> {
   const images = await docker().listImages({
@@ -1012,9 +993,8 @@ export interface AdapterExec {
  * Wires up the end of an exec: one promise for its exit code, and a kill.
  *
  * A hijacked stream reports its end as both `end` and `close`, so the settle
- * runs at most once — otherwise every exec would inspect itself twice for an
- * answer the promise has already taken. `onEnd` closes whatever the caller
- * demuxed into, before the exit code is read.
+ * runs at most once. `onEnd` closes whatever the caller demuxed into, before
+ * the exit code is read.
  */
 function execCompletion(
   stream: Duplex,
@@ -1107,7 +1087,7 @@ export interface CommandExec {
  * The command travels as an argument to `bash -lc`, never as part of a
  * command line the host assembles, and it runs inside the container's
  * existing isolation: internal network, read-only rootfs, capabilities
- * dropped. No new privilege is introduced by running it.
+ * dropped.
  */
 export async function runCommandExec(
   containerId: string,
@@ -1125,8 +1105,8 @@ export async function runCommandExec(
   });
 
   const stream = (await exec.start({ hijack: true, stdin: false })) as Duplex;
-  // One stream for the caller: a shell's stderr is part of its output, and
-  // splitting them would lose the order they were written in.
+  // One stream for the caller, which keeps the order the two were written
+  // in: a shell's stderr is part of its output.
   const output = new PassThrough();
   docker().modem.demuxStream(stream, output, output);
 

@@ -5,9 +5,9 @@ import { cn } from '@/lib/utils';
  * A row that can be put away, taking its height with it.
  *
  * Collapsed rather than slid out over the content: what is above the thread
- * has to be *gone* to be worth anything on a phone, and a header floating
- * over the first message would cover the message instead of yielding the
- * forty-five pixels. The thread below is `flex-1`, so the space is handed
+ * has to be gone to be worth anything on a phone, and a header floating over
+ * the first message would cover the message rather than yield the forty-five
+ * pixels. The thread below is `flex-1`, so the space is handed
  * straight to the conversation.
  *
  * The height is measured rather than named. A header with a two-line title,

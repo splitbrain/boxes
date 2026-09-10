@@ -12,8 +12,7 @@ import { loadVapidKeys, sendPush, type VapidKeys } from './push.ts';
  * The one place that says "something needs you".
  *
  * One channel: Web Push, which reaches every browser that subscribed,
- * including ones with no tab open — which is the case the whole feature
- * exists for.
+ * including ones with no tab open.
  *
  * Every send is fire-and-forget. A turn that is waiting on a human must not
  * also be waiting on a push service, so nothing here is ever awaited by the
@@ -34,8 +33,7 @@ export interface NotifyEvent {
   threadName: string | null;
   /**
    * Whether that conversation still has work running in it, for an event that
-   * knows. The difference between "come back when you like" and "come back,
-   * it will interrupt you", and worth the words it costs on a lock screen.
+   * knows.
    *
    * This thread's own work: another conversation in the same box having a
    * build running says nothing about whether this one is finished.
@@ -43,7 +41,7 @@ export interface NotifyEvent {
   background?: boolean;
 }
 
-/** The JSON a service worker receives; see dashboard/public/sw.js. */
+/** The JSON a service worker receives. */
 interface PushPayload {
   title: string;
   body: string;
@@ -59,9 +57,8 @@ interface PushPayload {
 /**
  * Title and body for one event.
  *
- * Exported so it can be read as itself: the only channel left encrypts its
- * payload end to end, so what a notification says cannot be checked on the
- * wire the way a plaintext POST's could.
+ * Exported so a test can read it: the payload is encrypted end to end, so
+ * what a notification says cannot be checked on the wire.
  */
 export function wording(event: NotifyEvent): { title: string; body: string } {
   const where = event.threadName
@@ -73,10 +70,8 @@ export function wording(event: NotifyEvent): { title: string; body: string } {
       body: `${where} is waiting for a permission decision.`,
     };
   }
-  // That something is, rather than what: the thread's own bar names the
-  // commands, and a lock screen is not the place to read one. The difference
-  // this is carrying is between a thread to come back to later and one that
-  // is about to say something on its own.
+  // That something is running, rather than what: a lock screen is not the
+  // place to read a command line.
   const still = event.background ? ' Something is still running.' : '';
   return {
     title: 'Boxes: waiting for you',
@@ -111,6 +106,7 @@ export class Notifier {
     return this.vapid().publicKey;
   }
 
+  /** The keypair, loaded or generated on first use. */
   private vapid(): VapidKeys {
     if (!this.keys) this.keys = loadVapidKeys(this.cfg.DATA_DIR);
     return this.keys;
@@ -123,12 +119,10 @@ export class Notifier {
    * awaits it: a turn already waiting on a human must not also wait on a push
    * service. Every failure inside is logged and swallowed.
    *
-   * Swallowed here rather than only in the delivery below, because the callers
-   * discard this promise. `sendPush` already answers with a result instead of
-   * throwing, but reading the subscriptions, generating the keypair on first
-   * use and pruning a dead row are all database and filesystem work that can
-   * fail — and a rejection nobody is holding is an unhandled rejection, which
-   * is the orchestrator exiting over a notification it could not send.
+   * Swallowed here because the callers discard this promise, and a rejection
+   * nobody is holding would take the orchestrator down. `sendPush` answers
+   * with a result rather than throwing, but reading the subscriptions,
+   * generating the keypair and pruning a dead row can all fail.
    */
   async notify(event: NotifyEvent): Promise<void> {
     try {

@@ -60,9 +60,9 @@ function approval(state: ApprovalState): NonNullable<
 /**
  * A tool call's raw input as an args object.
  *
- * The value arrived as JSON over the wire, so it is JSON by construction;
- * the cast says that rather than re-validating a tree we already parsed.
- * Anything that is not a plain object has no args to show.
+ * The value arrived as JSON over the wire, so it is JSON by construction,
+ * and the cast says that rather than re-validating a parsed tree. Anything
+ * that is not a plain object has no args to show.
  */
 type JsonObject = NonNullable<
   Extract<ThreadMessageLike['content'][number] & object, { type: 'tool-call' }>['args']
@@ -129,8 +129,7 @@ function imagePart(src: string) {
  * endpoint so it can be opened: a PDF in the browser's viewer, anything else
  * as the download it is. `sourceType: 'id'` says the data is a reference
  * rather than the bytes, which is what stops assistant-ui offering a
- * download of something the browser never had — the chip's own link is in
- * thread.aui.tsx.
+ * download of something the browser never had.
  *
  * Without a session there is nothing to fetch from, so everything is a chip.
  * That is the shape a test reads, and it loses only the picture.
@@ -158,8 +157,6 @@ function attachmentPart(part: AttachmentPart, sessionId?: string) {
  * that carries an application's own vocabulary: a name the renderer is keyed
  * by, and the notification itself as its data. The part's `type` discriminant
  * is dropped on the way, because `name` is what does that job here.
- *
- * See components/TaskNotification.tsx, which is what the name resolves to.
  */
 function taskPart({ type: _type, ...notification }: TaskPart) {
   return { type: 'data' as const, name: TASK_NOTIFICATION_PART, data: notification };
@@ -178,12 +175,10 @@ function taskPart({ type: _type, ...notification }: TaskPart) {
  * replaces the call's content — which is what the schema says an update does
  * — replaces its images too, with nothing to keep in step.
  *
- * One consequence to expect rather than fix: the thread coalesces *adjacent*
+ * One consequence to expect rather than fix: the thread coalesces adjacent
  * tool calls into one "n tool calls" group, and an image between two of them
  * ends the first group. Two calls that each produced a screenshot therefore
- * read as two groups with a picture under each, which is the grouping worth
- * having — the alternative puts both images after the pair and leaves the
- * reader matching them up.
+ * read as two groups with a picture under each.
  */
 function toolImages(part: ToolPart) {
   return part.content.flatMap((c) => {

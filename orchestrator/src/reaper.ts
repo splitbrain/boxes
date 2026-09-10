@@ -6,8 +6,7 @@ import type { SessionManager } from './sessions.ts';
 
 /**
  * The interval every background loop here runs on. Each one re-asserts
- * something rather than reacting to an event, so a minute is both often enough
- * to matter and cheap enough to ignore.
+ * something rather than reacting to an event.
  */
 const TICK_MS = 60_000;
 
@@ -34,9 +33,8 @@ function loop(what: string, everyMs: number, tick: () => Promise<void>): { stop:
  *
  * It does delete what a session left: the same tick sweeps the containers,
  * networks, volumes and workspace directories labelled with sessions that no
- * longer exist. That is the one thing reconcile() at boot cannot do, because
- * it reads rows and asks Docker about each, and an orphan is by definition
- * something no row names.
+ * longer exist. An orphan is something no row names, so reconcile() at boot
+ * cannot find it.
  */
 export function startReaper(
   db: Db,
@@ -62,12 +60,8 @@ export function startReaper(
       const upstream = manager.upstream(row.id);
       if (upstream.attachedCount > 0) continue;
       // A box with a command still running in it, or a monitor still watching
-      // something, is not idle however quiet it has gone. Read from the box
-      // rather than reported to it, so nothing has to say when the work ends
-      // for this to stop holding: it is a reading of the present, and a task
-      // that died unannounced is gone from the next one. Whose work it is
-      // does not matter here — any of the session's threads holds the box.
-      // See gateway/background.ts.
+      // something, is not idle however quiet it has gone. Any of the
+      // session's threads holds the box.
       if (upstream.backgroundActive) continue;
       if (now - row.last_active_at < idleMs) continue;
 
@@ -83,8 +77,7 @@ export function startReaper(
 
     manager.maintenance();
     // Docker read the other way round from reconcile(): what is labelled with
-    // a session that no longer exists, and is therefore nobody's. See
-    // SessionManager.sweepOrphans.
+    // a session that no longer exists, and is therefore nobody's.
     await manager.sweepOrphans();
   };
 
@@ -110,9 +103,7 @@ export function startImageRefresher(
     return { stop: () => {} };
   }
 
-  // A registry that is down, or a tag built locally and pullable from nowhere,
-  // is not the orchestrator's problem: the image already here still works, so
-  // this is the one loop whose failure is a warning rather than an error.
+  // The one loop whose failure is a warning rather than an error.
   return loop('session image refresh', cfg.SESSION_IMAGE_PULL_MINUTES * 60_000, async () => {
     try {
       await manager.refreshSessionImage();
@@ -129,10 +120,10 @@ export function startImageRefresher(
  * Starts the loop that re-asserts the proxy's state every minute: its
  * attachment to each session network, and the policy it is running.
  *
- * Both need re-asserting for the same reason. The proxy holds nothing at rest,
- * so a restart leaves it with no policy at all and compose can recreate it
- * without its dynamic network attachments. This loop is what closes both
- * windows, and is why the push is idempotent and cheap.
+ * Both need re-asserting for the same reason. The proxy holds nothing at
+ * rest, so a restart leaves it with no policy at all, and compose can
+ * recreate it without its dynamic network attachments. This loop closes both
+ * windows.
  */
 export function startProxyReconciler(
   manager: SessionManager,

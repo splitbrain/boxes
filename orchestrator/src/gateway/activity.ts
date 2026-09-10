@@ -3,48 +3,31 @@ import { startsBackgroundWork } from './background.ts';
 /**
  * Whether the agent is producing output on a thread, now.
  *
- * The question the whole dashboard asks and could never quite ask before.
- * Boxes had one bit — a prompt this gateway forwarded has not come back yet —
- * and read three different things off it: the agent is talking, you may not
- * type, nothing more will happen until you do. Background work pulls those
- * apart, in both directions. A turn that spawns a background subagent stays
- * open long after the agent has said its piece, so the browser showed a stop
- * button and no way to send while the thread sat waiting for its reader. And
- * a task reporting in wakes the agent with no prompt open at all, so the
- * output of that turn arrived while the same bit said the thread was idle.
- *
- * ACP has no word for it. There is no "the agent is done for now"
- * notification and no stop reason on a prompt being deferred — but this
- * adapter does say it, sideways: it sends a `usage_update` at the end of
- * every processing cycle, and that one carries a `cost` where the ones it
- * sends while a message streams do not. Measured, not guessed, against
- * `@agentclientprotocol/claude-agent-acp` 0.70.0 — the package installed in
- * the session image — where the result handler emits it before it decides
- * whether to settle the turn or hold it open. So a cost-bearing usage_update
+ * ACP has no word for it: there is no "the agent is done for now"
+ * notification and no stop reason on a prompt being deferred. This adapter
+ * says it sideways — it sends a `usage_update` at the end of every processing
+ * cycle, and that one carries a `cost` where the ones it sends while a
+ * message streams do not. Its result handler emits that before deciding
+ * whether to settle the turn or hold it open, so a cost-bearing usage_update
  * is the agent stopping, for a held turn and for a cycle the harness woke on
  * its own alike.
  *
- * It is not promised, though: the adapter only sends it when the backend
- * reported usage, and no other adapter promises anything of the sort. So
- * silence is the fallback, and it is the one every other adapter falls back
- * to: an update says the agent is working, and silence, once it has lasted
- * `quietMs`, says it has stopped.
+ * It is not promised: the adapter sends it only when the backend reported
+ * usage, and no other adapter promises anything of the sort. So silence is
+ * the fallback — an update says the agent is working, and silence, once it
+ * has lasted `quietMs`, says it has stopped.
  *
- * The one exception is a tool call the agent is waiting on. A `npm test` that
- * runs for two minutes emits nothing while it runs, and calling that silence
- * idle would put a send button under a working agent. Its call is open, and
- * an open call is evidence where silence is not — so a thread with one stays
- * speaking however quiet it goes. A call that runs *in the background* is
- * exactly the opposite and is not counted, which is why this and
- * `background.ts` share the one predicate that decides which those are.
+ * The one exception is a tool call the agent is waiting on. An `npm test`
+ * that runs for two minutes emits nothing while it runs, so a thread with an
+ * open call stays speaking however quiet it goes. A call that backgrounds its
+ * work is the opposite and is not counted, which is why this and
+ * `background.ts` share the predicate that decides which those are.
  *
  * Two thresholds, because the two readers want opposite things. The UI flips
- * at `quietMs` and is cheap to get wrong in either direction: an early flip
- * shows a send button while the model thinks between tool calls, and sending
- * is allowed anyway. The push waits for `settleMs`, because "your turn has
- * finished" on a lock screen is a claim that cannot be taken back. Neither
- * threshold is consulted when the adapter says the cycle is over — that is
- * the whole point of reading it.
+ * at `quietMs`, where an early flip only shows a send button while the model
+ * thinks between tool calls. The push waits for `settleMs`, because "your
+ * turn has finished" on a lock screen is a claim that cannot be taken back.
+ * Neither is consulted when the adapter says the cycle is over.
  */
 
 /** Cancels a delayed call, and is safe to run after it has already fired. */
@@ -184,9 +167,8 @@ export class Activity {
    * the agent having stopped.
    *
    * A call that backgrounds its work is not followed: that is the whole point
-   * of backgrounding it, and holding a thread "speaking" until a two-hour
-   * build finished would restore the bug this class exists to fix — the box
-   * stays awake for it either way, which is `background.ts`'s job.
+   * of backgrounding it, and the box stays awake for it either way, which is
+   * `background.ts`'s job.
    */
   private track(
     acpThreadId: string,

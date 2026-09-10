@@ -1,15 +1,13 @@
 /**
  * Words for the work a thread has left running, wherever it is shown.
  *
- * Boxes used to answer "is this thread busy" with a single bit — a prompt the
- * gateway forwarded is still open — and that bit stopped meaning what the
- * screen said it meant as soon as agents began leaving work behind them. A
- * turn that spawns a background subagent keeps its prompt open long after the
- * agent has finished talking; a task reporting in wakes the agent with no
- * prompt open at all. So the gateway sends three facts instead
- * (`TurnStateParams`), and what a reader is shown is built from all three:
- * `speaking` drives the spinner and the composer, and this is the vocabulary
- * for the third — the one that says a quiet thread is not a finished one.
+ * Whether a prompt is open says little on its own: a turn that spawns a
+ * background subagent keeps its prompt open long after the agent has finished
+ * talking, and a task reporting in wakes the agent with no prompt open at
+ * all. So the gateway sends three facts (`TurnStateParams`), and a reader is
+ * shown all three: `speaking` drives the spinner and the composer, and this
+ * is the vocabulary for the third, the one that says a quiet thread is not a
+ * finished one.
  *
  * The states themselves are named in `tab-title.ts`, where a tab has to pick
  * exactly one of them.

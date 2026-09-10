@@ -4,8 +4,8 @@
 #
 # The whole deployment is one published port: the orchestrator serves the
 # dashboard, the API and the /ws gateway on it. Putting it on the internet is
-# a reverse proxy's job, and no proxy is named here — see README.md, which
-# covers the one rule any of them has to follow about /ws.
+# a reverse proxy's job, and no proxy is named here. Whichever one is put in
+# front has to forward the WebSocket upgrade on /ws.
 #
 # The orchestrator creates session containers at runtime, each on an internal
 # network of its own, so they appear in no compose file.

@@ -14,17 +14,6 @@ import { EMPTY_POLICY, injectionPatterns, policyHash } from './policy.ts';
  * is the only thing an agent can reach and the boundary between a session, the
  * LAN, and every other session.
  *
- * It runs three listeners:
- *
- *   - the front door, facing the sessions. It vets every destination and then
- *     either tunnels it opaquely or, for a host with a credential configured,
- *     hands it to the interception engine.
- *   - the interception engine, on loopback. It terminates TLS for those hosts
- *     under the deployment CA and swaps the session's placeholder for the real
- *     credential, refusing anything else.
- *   - the upstream tunnel, on loopback. Every connection the engine makes
- *     leaves through it, so one vetting path covers both routes out.
- *
  * It holds no secret at rest: no config file, no database, no CA on disk. It
  * boots with no policy at all and is given one over the control channel.
  */
@@ -50,7 +39,7 @@ function log(msg: string, fields: Record<string, unknown> = {}): void {
 
 // --- state: the whole of it, in memory ---------------------------------------
 
-/** Empty until the orchestrator pushes, which is today's behavior. */
+/** Empty until the orchestrator pushes. */
 let policy: EgressPolicy = EMPTY_POLICY;
 
 /** False until a policy has been pushed, however empty that policy is. */
@@ -59,12 +48,15 @@ let applied = false;
 /** Denials since boot, by reason, reported back on the control channel. */
 const denials = new Map<string, number>();
 
+/** When this process started, for the uptime it reports. */
 const bootedAt = Date.now();
 
+/** Counts one denial under a reason. */
 function denied(reason: string): void {
   denials.set(reason, (denials.get(reason) ?? 0) + 1);
 }
 
+/** What the proxy reports on the control channel. */
 function status(): EgressStatus {
   return {
     applied,
@@ -91,6 +83,11 @@ const upstream = createForwardServer({
 
 let upstreamPort = 0;
 
+/**
+ * The interception engine, on loopback. It terminates TLS for the hosts a
+ * credential is configured for, under the deployment CA, and swaps the
+ * session's placeholder for the real credential.
+ */
 const interceptor = new Interceptor({
   policy: () => policy,
   upstreamProxyUrl: () => `http://127.0.0.1:${upstreamPort}`,
@@ -98,6 +95,10 @@ const interceptor = new Interceptor({
   log,
 });
 
+/**
+ * The front door, facing the sessions. It vets every destination, then either
+ * tunnels it opaquely or hands it to the interception engine.
+ */
 const front = createForwardServer({
   policy: () => policy,
   interceptPort: () => interceptor.port(),
@@ -105,6 +106,7 @@ const front = createForwardServer({
   log,
 });
 
+/** The control channel, facing the orchestrator. */
 const control = createControlServer({
   apply: async (pushed) => {
     const previous = policy;
@@ -112,8 +114,8 @@ const control = createControlServer({
     try {
       await interceptor.apply();
     } catch (err) {
-      // A policy the engine cannot run is not applied at all, rather than
-      // half-applied with credentials nothing can swap in.
+      // A policy the engine cannot run is rolled back whole, so no
+      // credential is left configured that nothing can swap in.
       policy = previous;
       await interceptor.apply().catch(() => undefined);
       throw new Error(`could not apply policy: ${(err as Error).message}`);
@@ -132,7 +134,7 @@ const control = createControlServer({
 
 // --- boot --------------------------------------------------------------------
 
-/** Listens on a server and resolves with the port it actually got. */
+/** Listens on a server and resolves with the port the OS assigned. */
 function listen(server: Server, port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -143,6 +145,7 @@ function listen(server: Server, port: number, host: string): Promise<number> {
   });
 }
 
+/** Starts the three listeners, resolving the control bind address last. */
 async function main(): Promise<void> {
   upstreamPort = await listen(upstream, 0, '127.0.0.1');
   log('upstream tunnel listening', { port: upstreamPort });
@@ -154,7 +157,7 @@ async function main(): Promise<void> {
   if (bind === null) {
     // Binding wide would publish a secret-bearing endpoint to every session
     // network. Loopback keeps it unreachable, and the orchestrator's failed
-    // pushes say so loudly in /healthz.
+    // pushes show up in /healthz.
     log('WARNING: could not resolve the control interface; binding to loopback only');
   }
   await listen(control.server, CONTROL_PORT, bind ?? '127.0.0.1');

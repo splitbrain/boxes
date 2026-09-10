@@ -254,7 +254,8 @@ const ThreadRoot: FC<{
  * The stock tool group, with one Boxes edit: it opens itself when a call
  * inside it is waiting on the user.
  *
- * A tool call collapses because its output is usually not what you came for.
+ * A tool call collapses because its output is usually not what a reader came
+ * for.
  * A permission request is: the adapter blocks until it is answered, so a
  * question folded away behind a "1 tool call" summary stalls the turn until
  * someone thinks to look inside.
@@ -286,8 +287,8 @@ const DefaultToolGroup: FC<PropsWithChildren<{ group: ThreadGroupPart }>> = ({
   );
 };
 
-// Boxes edit: the renderer for the one part kind that is ours rather than the
-// registry's. See components/TaskNotification.tsx.
+// Boxes edit: the renderer for the one part kind that is Boxes' rather than
+// the registry's.
 const DATA_PARTS = {
   by_name: { [TASK_NOTIFICATION_PART]: TaskNotificationPart },
 };
@@ -589,11 +590,10 @@ const AssistantMessage: FC = () => {
                   </div>
                 );
               case "indicator":
-                /* Boxes edit: the blocks, not a pulsing bullet. This is the
-                   thing you watch while a turn is thinking and nothing else
-                   has arrived yet — often the only thing on the screen — and
-                   a dot fading in and out is indistinguishable from a page
-                   that has stopped repainting. */
+                /* Boxes edit: the blocks, not a pulsing bullet. It is often
+                   the only thing on screen while a turn is thinking, and a
+                   dot fading in and out is indistinguishable from a page that
+                   has stopped repainting. */
                 return (
                   <span
                     data-slot="aui_assistant-message-indicator"

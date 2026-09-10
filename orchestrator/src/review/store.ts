@@ -392,9 +392,8 @@ function formatContext(lines: string[], from: number): string {
  * A language identifier for a context block's fence, by file extension.
  *
  * The desktop tool asks Chroma to match the filename and shortens the handful
- * of names below. Reproducing Chroma's full lexer table here would be a
- * liability, so this covers the languages it shortens plus what a Boxes
- * workspace actually holds. An extension neither knows falls through to no
+ * of names below. This covers the languages it shortens plus what a Boxes
+ * workspace holds. An extension neither knows falls through to no
  * language, which changes only how a context block is syntax-coloured when the
  * markdown is rendered: both tools take the language from the first word of
  * the info string and both find the `context` marker after it, so a file one
@@ -629,9 +628,9 @@ function contextMatchesAt(fileLines: string[], context: string[], fromLine: numb
  * 1-based line number, or 0 when there is none.
  *
  * The search runs outwards from `near`, so the match closest to where the
- * context used to be wins. Code that repeats itself — a run of closing braces,
- * blank lines, the same few lines of boilerplate — would otherwise pull an
- * annotation to whichever copy comes first in the file.
+ * context was written wins. Code that repeats itself — a run of closing
+ * braces, blank lines, boilerplate — would otherwise pull an annotation to
+ * whichever copy comes first in the file.
  */
 function findContext(fileLines: string[], context: string[], near: number): number {
   const limit = fileLines.length - context.length + 1;

@@ -44,11 +44,10 @@ export interface ExecLimits {
  * a character boundary.
  *
  * The cap is in bytes because that is what bounds the response and the stored
- * row, while the chunk is a string — so slicing it by length would both
- * overshoot the budget, by up to four times on non-ASCII output, and be able
- * to cut a character in half and leave a replacement glyph at the end of it.
- * A UTF-8 continuation byte is `10xxxxxx`, so walking back over those from the
- * cut lands on the start of the character being dropped.
+ * row, while the chunk is a string: slicing by length overshoots the budget
+ * by up to four times on non-ASCII output. A UTF-8 continuation byte is
+ * `10xxxxxx`, so walking back over those from the cut lands on the start of
+ * the character being dropped.
  */
 export function truncateToBytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
@@ -99,8 +98,7 @@ export async function runCommand(
       }
       // Whether the cap left anything of this chunk out, rather than whether
       // the byte total reached it: the cut lands on a character boundary, so
-      // the last byte or two of the budget can be unspendable and a total that
-      // has to arrive exactly on the cap would never trip.
+      // the last byte or two of the budget can be unspendable.
       if (piece.length < chunk.length) {
         truncated = true;
         exec.kill();
@@ -129,8 +127,7 @@ export function trailer(outcome: ExecOutcome): string {
  * Records one finished run, and never lets a failed write break the response.
  *
  * The outcome carries the output, which is the shape {@link runCommand}
- * returns: passing the two separately let a caller store one run's text
- * against another's exit code.
+ * returns, so one run's text cannot be stored against another's exit code.
  *
  * The thread is what the run is listed under. Null when the session had no
  * thread to log it against, which stores a row nobody is shown.

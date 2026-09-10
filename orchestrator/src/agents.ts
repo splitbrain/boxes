@@ -18,23 +18,19 @@ import { chownToAgent } from './workspaces.ts';
  * What the agent is configured with, and how a session gets it.
  *
  * Three things go in: an `AGENTS.md`, skills, and slash commands. They live in
- * named *sets*. One set — `global` — is applied to every session; a session
- * may name one more, and the two are merged, the named set winning where both
- * define a skill or a command of the same name. That is the whole model: one
- * thing that is always true of every box, and a way to say "this box is for
- * reviewing Go" without repeating the first.
+ * named sets. One set — `global` — is applied to every session; a session may
+ * name one more, and the two are merged, the named set winning where both
+ * define a skill or a command of the same name.
  *
  * The database is the source of truth and the files are derived from it. At
  * every create and every start, a session's merged set is written out as a
  * directory under `${DATA_DIR}/agents/<id>`, bind-mounted read-only into the
- * container, and installed into `~/.claude` by the entrypoint. That is the one
- * awkward hop in the design and it is deliberate: `~/.claude` is on the home
- * volume, which the orchestrator has no path to, and Claude reads its user
- * configuration from there and nowhere else.
+ * container, and installed into `~/.claude` by the entrypoint. That hop is
+ * needed because `~/.claude` is on the home volume, which the orchestrator
+ * has no path to, and Claude reads its user configuration from there alone.
  *
- * Editing a set therefore reaches a session at its next start, not while it
- * runs. Saying that plainly in the UI is better than a half-live mechanism
- * that reloads an AGENTS.md but not a skill.
+ * Editing a set therefore reaches a session at its next start rather than
+ * while it runs.
  */
 
 /** Where the merged sets are materialized, under DATA_DIR. */
@@ -67,8 +63,8 @@ export function agentConfigPath(dataDir: string, sessionId: string): string {
 
 /**
  * The same directory as the Docker daemon sees it, which is what a bind source
- * has to name. See `hostWorkspacePath` for why this is not simply the path
- * this process uses.
+ * has to name. Bind sources are resolved by the daemon rather than by the
+ * process asking for the mount.
  */
 export function hostAgentConfigPath(hostDataDir: string, sessionId: string): string {
   return posix.join(hostDataDir, AGENTS_SUBDIR, sessionId);
@@ -82,9 +78,8 @@ export function ensureAgentsRoot(dataDir: string): void {
 /**
  * Sets, their items, and the merged bundle a session is given.
  *
- * Every mutation returns the whole set, the way the review endpoints return
- * the whole file view: Boxes is driven from a phone, and one round trip per
- * screen beats one per field.
+ * Every mutation returns the whole set, so a client needs one round trip per
+ * screen rather than one per field.
  */
 export class AgentStore {
   constructor(
@@ -208,9 +203,8 @@ export class AgentStore {
   }
 
   /**
-   * Removes a set. The global one stays: it is the thing every session gets,
-   * and a deployment without it would have nowhere to put a rule that always
-   * applies.
+   * Removes a set. The global one stays, because it is the thing every
+   * session gets.
    *
    * Sessions that named it are not blocked and not touched. Their files are
    * already materialized; the column clears itself and they fall back to the
@@ -275,16 +269,13 @@ export class AgentStore {
   // --- merging --------------------------------------------------------------
 
   /**
-   * What a session that selected `setId` actually gets: the global set with
-   * that one laid over it.
+   * What a session that selected `setId` gets: the global set with that one
+   * laid over it.
    *
-   * The two kinds of content merge differently because they are different
-   * kinds of thing. An AGENTS.md is prose, and prose accumulates: the global
-   * one comes first and the set's follows, separated by a blank line, so a set
-   * adds to the house rules rather than silently replacing them. A skill or a
-   * command is addressed by name, and two files cannot share one — so the
-   * set's wins, which is what makes "the same command, but for this project"
-   * expressible at all.
+   * The two kinds of content merge differently. An AGENTS.md is prose and
+   * accumulates: the global one comes first and the set's follows, separated
+   * by a blank line. A skill or a command is addressed by name, and two files
+   * cannot share one, so the set's wins.
    */
   bundle(setId: string | null): AgentBundlePreview {
     const global = this.db
@@ -329,8 +320,8 @@ export class AgentStore {
    * SKILL.md`, `commands/<name>.md`, and a `manifest` naming each of them.
    * The manifest is what makes the install reversible — the container records
    * it and, at the next start, removes exactly what it put there before, so a
-   * skill deleted here disappears from the box instead of lingering forever on
-   * its home volume.
+   * skill deleted here disappears from the box rather than staying on its
+   * home volume.
    *
    * The directory's own inode is kept and only its contents are replaced: a
    * running container has it bind-mounted, and swapping the directory would
@@ -348,9 +339,8 @@ export class AgentStore {
     const manifest: string[] = [];
 
     if (bundle.agentsMd !== '') {
-      // Claude reads its user-level memory from ~/.claude/CLAUDE.md. What the
-      // dashboard calls AGENTS.md is that file; the name in the UI is the one
-      // people write these in, and this is where it has to land to apply to
+      // Claude reads its user-level memory from ~/.claude/CLAUDE.md, which is
+      // what the dashboard calls AGENTS.md. Landing it here applies it to
       // every directory the agent works in rather than only to /workspace.
       this.write(dir, 'CLAUDE.md', bundle.agentsMd);
       manifest.push('CLAUDE.md');

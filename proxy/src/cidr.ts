@@ -115,11 +115,10 @@ export function isBlockedAddress(address: string): boolean {
   }
 
   const groups = parseV6(text);
-  if (groups === null) return true; // fail closed on anything unparseable
+  if (groups === null) return true;
 
   // v4-mapped (::ffff:a.b.c.d) and v4-compatible (::a.b.c.d) forms are vetted
-  // as the IPv4 address they reach, or the check is bypassed by rewriting the
-  // target.
+  // as the IPv4 address they reach.
   const isV4Mapped =
     groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff;
   const isV4Compat =

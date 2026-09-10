@@ -6,14 +6,12 @@ import { historyIndex } from '@/lib/history';
  * Makes the back button close a modal surface instead of leaving the screen
  * it was opened over.
  *
- * On a phone, back is the dismiss gesture — and in an installed app on iOS it
- * is the *only* one, since there is no browser chrome and no Escape key. A
- * dialog that is nothing but component state is therefore invisible to the one
- * control the visitor reaches for: the press goes to the router, and the
+ * On a phone, back is the dismiss gesture, and in an installed app on iOS it
+ * is the only one, since there is no browser chrome and no Escape key. A
+ * dialog that is nothing but component state is therefore invisible to the
+ * one control the visitor reaches for: the press goes to the router, and the
  * screen underneath is torn down while the thing they wanted to dismiss was
- * the dialog. The review had both halves of that: a hunk sheet survived the
- * press that closed the file underneath it, and the comment composer went
- * with the file in a single press, taking whatever had been typed.
+ * the dialog.
  *
  * So opening pushes a marker: one history entry at the same URL. Nothing about
  * the page changes, which is the point — the entry exists to be popped. Back
@@ -26,12 +24,11 @@ import { historyIndex } from '@/lib/history';
  * dismissed by a tap anywhere, and giving those a marker would race the tap
  * that dismisses them: Radix closes on the way down, the click lands on
  * whatever was underneath on the way up, and a pop arriving after a link's
- * push would undo the visitor's own navigation. They are left alone
- * deliberately; see ARCHITECTURE.md.
+ * push would undo the visitor's own navigation, so they are left alone.
  *
  * @param open Whether the surface is showing.
- * @param onClose Called when back is what closed it. Must actually close it —
- *   the marker is already gone by then.
+ * @param onClose Called when back is what closed it. It has to close the
+ *   surface, because the marker is already gone by then.
  */
 export function useHistoryOverlay(open: boolean, onClose: () => void): void {
   const navigate = useNavigate();

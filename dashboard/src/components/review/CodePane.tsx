@@ -91,10 +91,10 @@ export function CodePane({
    * opened at the top.
    *
    * One pane serves every file, so the scroll offset survives the swap unless
-   * something says otherwise — which is how a 40-line file used to open half
-   * way down because the last one was long. Before paint, so the reader never
-   * sees the wrong position; keyed on the path, so the poll refetching the
-   * open file does not throw away where they had got to.
+   * something says otherwise, and a 40-line file would open half way down
+   * after a long one. Before paint, so the reader never sees the wrong
+   * position; keyed on the path, so the poll refetching the open file does
+   * not throw away where they had got to.
    */
   useLayoutEffect(() => {
     const element = scrollRef.current;

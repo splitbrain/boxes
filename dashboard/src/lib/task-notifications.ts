@@ -3,10 +3,9 @@ import type { TaskUsage } from '../../../shared/task-notifications.ts';
 /**
  * What the thread does with a background task's report.
  *
- * The block itself — what the harness sends, and how it is read back out of a
- * transcript — is shared/task-notifications.ts, because the orchestrator reads
- * the same blocks for a different reason. This is the display half: the name
- * the renderer is keyed by, and the one line that says what a task cost.
+ * What the harness sends, and how it is read back out of a transcript, is
+ * shared between both ends. This is the display half: the name the renderer
+ * is keyed by, and the one line that says what a task cost.
  */
 
 /** The name the converted part carries, and the renderer is keyed by. */

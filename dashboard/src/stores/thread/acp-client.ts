@@ -242,7 +242,7 @@ export class AcpClient {
       return;
     }
 
-    // A response to something we sent.
+    // A response to a request this client sent.
     if (msg.id !== undefined && msg.method === undefined) {
       const waiting = this.pending.get(msg.id);
       if (!waiting) return;
@@ -269,16 +269,14 @@ export class AcpClient {
 
     if (msg.method === TURN_STATE_METHOD) {
       const params = msg.params as Partial<TurnStateParams> | undefined;
-      // Read defensively: an older orchestrator, or an ACP client of its own,
-      // sends the one field this notification used to carry.
+      // Read defensively: an older orchestrator may omit fields this build
+      // expects.
       this.handlers.onTurnState({
         sessionId: params?.sessionId ?? '',
         active: params?.active === true,
         speaking: params?.speaking === true,
-        // An orchestrator of the version in between sent one boolean about
-        // the whole box. It is not knowable here whose work it was, and a bar
-        // that says something unnamed is running is what that version could
-        // say for itself.
+        // An older orchestrator sends one boolean about the whole box. Whose
+        // work it is cannot be known here, so it becomes one unnamed entry.
         background: Array.isArray(params?.background)
           ? params.background
           : params?.background === true

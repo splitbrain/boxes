@@ -23,11 +23,10 @@ let held = 0;
  * those pixels away to keep the focused thing in view, and what goes off the
  * top is the header.
  *
- * That offset is what made the bar feel unreliable: it belongs to a scroller
- * no gesture reaches, because every touch lands in the thread's scroller
- * instead, so the header stays gone until the thread is back at its top and an
- * overscroll finally reaches the document. With nothing to scroll there is
- * nothing to strand, and the header is simply always where it was put.
+ * That offset belongs to a scroller no gesture reaches, because every touch
+ * lands in the thread's scroller instead, so the header stays gone until the
+ * thread is back at its top and an overscroll reaches the document. With
+ * nothing to scroll there is nothing to strand.
  *
  * Scoped to the views that own the viewport. The reading column — the session
  * list, the forms — scrolls the document on purpose, and the browser hiding its

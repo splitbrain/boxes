@@ -11,14 +11,12 @@ import { refetchOnVisible } from '../lib/poll.ts';
 /**
  * The review view's whole state: the tree and the open file.
  *
- * **Freshness is the fetch.** There is no poll. Every review fetch reads the
+ * Freshness is the fetch, and there is no poll. Every review fetch reads the
  * filesystem on the spot — the tree endpoint runs `ls-files` and `status` per
  * request, the file endpoint reads the file, and drift recomputes on both — so
- * what matters is being fresh on arrival, and arrival is three moments: the
- * view mounting, a file closing back to the tree, and the tab becoming visible
- * again. Boxes is driven from a phone, where the reviewer is in the thread or
- * in the review and not both, so a timer would be paying for an answer nobody
- * is looking at.
+ * what matters is being fresh on arrival. Arrival is three moments: the view
+ * mounting, a file closing back to the tree, and the tab becoming visible
+ * again.
  *
  * The store is a singleton keyed by session id rather than one per mount, so
  * navigating between files does not lose the tree, and remounting the route

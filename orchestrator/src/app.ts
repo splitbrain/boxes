@@ -42,12 +42,7 @@ import { ReviewService } from './review/service.ts';
 import { SessionManager } from './sessions.ts';
 import { setSessionOwner } from './workspaces.ts';
 
-/**
- * The HTTP surface: the REST API, the exec endpoint and the static bundle.
- *
- * Separate from index.ts, which boots a process, so a test can drive these
- * routes over a real database without a Docker socket or an open port.
- */
+/** The HTTP surface: the REST API, the exec endpoint and the static bundle. */
 
 /** Version reported by the health endpoint. */
 const VERSION = '1.0.0';
@@ -65,7 +60,7 @@ export interface Orchestrator {
   cfg: ReturnType<typeof config>;
   /** Owns the egress policy and keeps the proxy holding it. */
   egress: EgressManager;
-  /** Where "a thread wants you" goes; see notify.ts. */
+  /** Where "a thread wants you" goes. */
   notifier: Notifier;
   /** Reads and writes review data over the sessions' workspace directories. */
   review: ReviewService;
@@ -121,9 +116,7 @@ export function buildApp(
     }
     // Fastify's own refusals — a body over the route's limit, a content type
     // with no parser — already carry both the status and the sentence worth
-    // showing. Flattening them into "Internal error" would hide the one thing
-    // the user could act on, and a 4xx is by definition not this server's
-    // fault to conceal.
+    // showing, so they are passed through as they are.
     const status = (err as { statusCode?: number }).statusCode;
     if (typeof status === 'number' && status >= 400 && status < 500) {
       return reply.code(status).send({ error: (err as Error).message });
@@ -215,9 +208,8 @@ export function buildApp(
    * Marks a conversation done, or takes the mark off again.
    *
    * A note the reader keeps about which of a box's conversations they are
-   * finished with. It changes how the thread is drawn in a list and nothing
-   * about the thread: it still runs, still answers, and is marked undone the
-   * same way it was marked.
+   * finished with. It changes how the thread is drawn in a list, and the
+   * thread still runs, still answers, and can be marked undone.
    */
   app.post('/api/sessions/:id/threads/:threadId/done', async (req) => {
     const { id, threadId } = req.params as { id: string; threadId: string };
@@ -310,9 +302,8 @@ export function buildApp(
    * workspace.
    *
    * Raw bytes rather than a multipart form: there is one file per request and
-   * its name is in the query, so the parts a form would carry are the parts
-   * this does not need — and octet-stream is a body Fastify can hand over as
-   * a Buffer without a dependency that parses envelopes.
+   * its name is in the query, and octet-stream is a body Fastify hands over
+   * as a Buffer without a dependency that parses envelopes.
    *
    * The upload happens before the prompt that mentions it, and is what makes
    * the mention true. It needs no container: a workspace is a directory this
@@ -340,7 +331,7 @@ export function buildApp(
       // upload is somebody working here, and the reaper counts idleness.
       manager.touch(id);
       // And the one way a workspace grows with nothing running in it, which
-      // is the case the size cache stops measuring; see diskusage.ts.
+      // is the case the size cache stops measuring.
       manager.workspaceChanged(id);
       log.session(id).info('attachment stored', { path: stored.path, size: stored.size });
       return stored;
@@ -351,23 +342,20 @@ export function buildApp(
    * Serves one stored attachment back, which is how the thread shows the
    * picture the user attached.
    *
-   * Contained the same way the review's file endpoint is, and for the same
-   * reason: this reads out of a tree the agent controls, so a link planted in
-   * the attachments directory would otherwise serve whatever the
-   * orchestrator's own uid can read. `resolveInRoot` holds that invariant —
-   * see review/fs.ts, which holds it alone.
+   * This reads out of a tree the agent controls, so a link planted in the
+   * attachments directory could otherwise serve whatever the orchestrator's
+   * own uid can read. `resolveInRoot` holds the containment.
    *
    * What a browser can show — images, SVG, PDF — is served as itself, and
-   * everything else as a download of unknown type. The headers are what make
-   * that safe for the one image format that can carry script: `sandbox` and
+   * everything else as a download of unknown type. `sandbox` and
    * `default-src 'none'` leave an SVG opened as a document with no script and
-   * no origin, and an SVG behind an `<img>` is inert anyway. A PDF is served
-   * unsandboxed for the viewer's sake; see attachments.ts.
+   * no origin, and an SVG behind an `<img>` is inert. A PDF is served
+   * unsandboxed so the browser's viewer takes it.
    */
   app.get('/api/sessions/:id/attachments/:name', async (req, reply) => {
     const { id, name } = req.params as { id: string; name: string };
-    // Stored names are a single path component by construction. Anything
-    // shaped otherwise is not one of ours and is not looked for.
+    // Stored names are a single path component by construction, so anything
+    // shaped otherwise is not looked for.
     if (name.includes('/') || name.includes('\\')) {
       throw new HttpError(404, 'Attachment not found');
     }
@@ -385,11 +373,11 @@ export function buildApp(
       'Content-Type': served.contentType,
       'Content-Length': String(stat.size),
       'Content-Disposition': `${served.inline ? 'inline' : 'attachment'}; filename="${name}"`,
-      // The type is decided here and must not be second-guessed from the
-      // bytes, which is what would let a download be treated as a document.
+      // The type is decided here rather than sniffed from the bytes, so a
+      // download is never treated as a document.
       'X-Content-Type-Options': 'nosniff',
-      // Load-bearing, not belt-and-braces: this is what lets an SVG be served
-      // as an SVG. Nothing in one of these may run or fetch anything.
+      // What lets an SVG be served as an SVG: nothing in one may run or
+      // fetch anything.
       'Content-Security-Policy': served.sandbox ? "default-src 'none'; sandbox" : "default-src 'none'",
       // Short, rather than immutable: the name is stable but the file under
       // it belongs to a workspace the agent can rewrite.
@@ -420,17 +408,15 @@ export function buildApp(
    * makes reviewing a stopped session — the natural moment, once the agent is
    * done — cost nothing.
    *
-   * The responses are batched on purpose. Boxes is driven from a phone, and a
-   * phone on a slow link should get one round trip per screen rather than one
-   * per piece of it: the tree endpoint carries the whole left panel, the file
-   * endpoint the whole file view.
+   * The responses are batched so a client gets one round trip per screen:
+   * the tree endpoint carries the whole left panel, the file endpoint the
+   * whole file view.
    *
-   * They also do not touch a session's activity timestamp. Reviewing is not the
+   * None of them touches a session's activity timestamp. Reviewing is not the
    * agent working, so reading a review must not hold off the reaper.
    *
-   * There is no fingerprint endpoint to poll: every one of these reads the
-   * filesystem on the spot, so a fetch is the freshness. See the review store
-   * in the dashboard for the three moments that refetch.
+   * Every one reads the filesystem on the spot, so a fetch is the freshness
+   * and there is nothing to poll.
    */
 
   app.get('/api/sessions/:id/review/tree', async (req) => {
@@ -497,12 +483,10 @@ export function buildApp(
    * The AGENTS.md, skills and slash commands a session is given.
    *
    * `global` is applied to every session and always exists; any other set is
-   * chosen when a session is created and merged over it. Every mutation answers
-   * with the whole set rather than the piece that changed, which is the same
-   * bargain the review endpoints make: one round trip per screen.
+   * chosen when a session is created and merged over it. Every mutation
+   * answers with the whole set rather than the piece that changed.
    *
-   * What is written here reaches a box when that box next starts. Nothing on
-   * these routes touches a running container.
+   * What is written here reaches a box when that box next starts.
    */
 
   app.get('/api/agent-sets', async () => agents.listSets());
@@ -541,11 +525,10 @@ export function buildApp(
   });
 
   /**
-   * What a session selecting this set would actually get, global set included.
+   * What a session selecting this set gets, global set included.
    *
-   * A merge of two sets is the one thing about this feature that is not obvious
-   * from either half, so the editor shows the result rather than asking anyone
-   * to hold it in their head.
+   * A merge of two sets is not obvious from either half, so the editor shows
+   * the result.
    */
   app.get('/api/agent-sets/:setId/preview', async (req) => {
     const { setId } = req.params as { setId: string };
@@ -603,9 +586,9 @@ export function buildApp(
   /**
    * Registers a browser for push, or refreshes what is stored for it.
    *
-   * There is no user to attach this to — Boxes has no accounts — so a
-   * subscription is simply one more browser this deployment notifies, and
-   * whatever authenticates the rest of `/api` is what decides who may add one.
+   * There is no user to attach this to, since Boxes has no accounts, so a
+   * subscription is one more browser this deployment notifies and whatever
+   * authenticates the rest of `/api` decides who may add one.
    */
   app.post('/api/push/subscribe', async (req, reply) => {
     const body = req.body as PushSubscribeBody | undefined;

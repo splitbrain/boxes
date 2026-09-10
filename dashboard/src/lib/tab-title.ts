@@ -1,16 +1,16 @@
 /**
  * What a browser tab is called, and the symbol that says what it wants.
  *
- * Boxes is a thing you leave running and come back to, usually with several
+ * A reader leaves Boxes running and comes back to it, usually with several
  * tabs open on several boxes. A row of tabs all called "Boxes" says nothing
  * about which one is mid-turn and which one has been sitting on a question
- * for ten minutes — which is exactly what you opened them to find out.
+ * for ten minutes.
  *
  * The symbol goes first because the front of a title is the part a narrow tab
  * still shows, and it is the part that changes.
  */
 
-/** What a tab is doing, in the order of how much it wants you. */
+/** What a tab is doing, in the order of how much it wants a reader. */
 export type TabState = 'permission' | 'question' | 'running' | 'waiting' | 'idle';
 
 /**
@@ -44,9 +44,8 @@ export const TAB_STATE_LABEL: Record<TabState, string> = {
  * conversations it is.
  *
  * The box first and the thread second, the same order and the same names the
- * thread's own header uses — which box you are in matters more than which of
- * its conversations, and a title that disagreed with the header would be a
- * second vocabulary to learn.
+ * thread's own header uses: which box a thread is in matters more than which
+ * of its conversations it is.
  */
 export function threadTitle(
   state: TabState,

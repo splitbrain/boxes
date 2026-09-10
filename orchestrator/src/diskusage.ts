@@ -2,51 +2,28 @@ import { readdir, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
- * How much disk a session is taking up, measured in the background and read
- * from a cache.
+ * How much disk a session is taking up, measured off the request path and
+ * read from a cache.
  *
- * Two directories rather than one: the workspace the agent works in, and the
- * home its thread history, tool caches and runtime installs are in — which on
- * a box that has been working is usually the larger of the two. They are
- * summed rather than reported apart, because the question a card is answering
- * is how big this box has got.
+ * Two directories, summed: the workspace the agent works in, and the home its
+ * thread history, tool caches and runtime installs are in.
  *
- * The session list is polled every five seconds, and walking a workspace is
- * the most expensive thing anything on that path could do: a checkout with a
- * `node_modules` in it is a hundred thousand files, and there may be a dozen
- * sessions. So a request never waits for a measurement. `bytes()` answers
- * with what was last measured — null before the first one — and starts a walk
- * only when there is a reason to believe the answer has moved.
+ * A request never waits for a measurement. `bytes()` answers with what was
+ * last measured — null before the first one — and starts a walk only when the
+ * answer may have moved. A measurement of a running box stands for a quarter
+ * of an hour, and a box that is down is measured once and then left alone.
  *
- * Two things make that rare. A measurement stands for a quarter of an hour,
- * because the number is rounded to whole megabytes on a card and an agent
- * cannot write enough to shift one in less: measuring more often costs a walk
- * per session and buys a digit nobody was reading. And a box that is not up
- * is not measured at all beyond the once. Nothing is running in it, so
- * nothing in it is changing — the size a stopped session shows is a fact
- * rather than a sample, and re-walking it every quarter of an hour for the
- * days or weeks it sits there would be the whole cost of this feature, spent
- * on an answer known in advance.
- *
- * Lazy rather than a background loop, for the same reason the background
- * probe is: a deployment nobody is looking at should not be walking disk on a
- * timer. Nothing asks unless a browser is listing sessions, and then the
- * first answer is a poll behind.
- *
- * The home volume is not in this. It is a named volume the orchestrator has
- * no path to, it holds the adapter's transcripts rather than the agent's
- * work, and it is not what anybody means by "how big has this session got".
+ * The walks are lazy rather than on a timer, so a deployment nobody is
+ * looking at walks no disk.
  */
 
 /**
  * How long a measurement of a running box stands before a reader starts
  * another.
  *
- * Long, because the answer is shown rounded to two significant figures: an
- * agent would have to write a hundred megabytes for the card to change at
- * all, and one that is doing that will still be doing it in a quarter of an
- * hour. A box that has just been created is not made to wait for it — there
- * is no measurement yet, and the first read starts one.
+ * Long, because the answer is shown rounded to two significant figures: it
+ * takes about a hundred megabytes to change what a card says. A box with no
+ * measurement yet does not wait for this; its first read starts a walk.
  */
 export const SESSION_SIZE_TTL_MS = 15 * 60_000;
 
@@ -55,18 +32,15 @@ export const SESSION_SIZE_TTL_MS = 15 * 60_000;
  *
  * Sizes rather than allocated blocks — `du --apparent-size` rather than `du`.
  * The two disagree by whatever the filesystem does underneath, which for a
- * tree of many small files is most of the answer, and the one people can
- * check against is the one that adds up the files they can see.
+ * tree of many small files is most of the answer.
  *
  * Symlinks are counted as nothing and never followed. `readdir` reports the
  * link itself rather than what it points at, so a link the agent planted in
- * its workspace cannot walk this out of the tree — the same containment the
- * review surface and workspace removal keep.
+ * its workspace cannot walk this out of the tree.
  *
  * A directory that disappears mid-walk is skipped, because a walk of a live
- * workspace races with the agent working in it, and half an answer is the
- * right answer for a rough number. The root is the exception: a workspace
- * that cannot be read at all is news, and throws.
+ * workspace races with the agent working in it. The root is the exception: a
+ * workspace that cannot be read at all throws.
  */
 export async function directorySize(root: string): Promise<number> {
   let total = 0;
@@ -108,9 +82,11 @@ export interface UsageOptions {
   pathsOf: (sessionId: string) => Array<string | null>;
   /** How long a measurement stands. */
   ttlMs: number;
+  /** Test seam: the clock a measurement is stamped against. */
   now?: () => number;
   /** Test seam: how one directory is measured. */
   measure?: (path: string) => Promise<number>;
+  /** Called when a walk fails, so the caller can log it. */
   onTrouble?: (sessionId: string, error: Error) => void;
 }
 
@@ -122,10 +98,9 @@ interface Measurement {
   /**
    * Whether the box was up when this was taken.
    *
-   * What says a stopped session still needs one walk: the last measurement
-   * was of a workspace that was being written to, and the settled size is a
-   * different number. Once a measurement has been taken with the box down,
-   * nothing can change it, and none is taken again.
+   * A stopped session still gets one walk, because the measurement before it
+   * was of a workspace being written to. Once one has been taken with the box
+   * down, nothing can change it and none is taken again.
    */
   live: boolean;
 }
@@ -138,10 +113,8 @@ export class SessionUsage {
   /**
    * The walks, one after another.
    *
-   * A list request asks about every session at once, and starting a dozen
-   * disk walks in parallel would make all of them slower and the box less
-   * responsive while they ran. They are all going to the same disk, and none
-   * of them is being waited for.
+   * A list request asks about every session at once, and the walks all go to
+   * the same disk. Nothing waits for one.
    */
   private queue: Promise<void> = Promise.resolve();
 
@@ -164,13 +137,11 @@ export class SessionUsage {
    * is reason to think that has moved.
    *
    * Null means "no answer yet" rather than "empty": before the first walk
-   * finishes, and for a session with no workspace directory at all. The card
-   * shows nothing rather than a zero, which would be a claim.
+   * finishes, and for a session with no workspace directory.
    *
    * `live` is whether the box could still be writing to the workspace. Only a
-   * container known to be down makes it false — a Docker read that failed
-   * says nothing about whether the agent is working, and freezing a size on
-   * that would be freezing it on a guess.
+   * container known to be down makes it false, since a Docker read that
+   * failed says nothing about whether the agent is working.
    */
   bytes(sessionId: string, live: boolean): number | null {
     const paths = this.pathsOf(sessionId).filter((p): p is string => p !== null);
@@ -183,16 +154,10 @@ export class SessionUsage {
   /**
    * Drops what was measured, so the next read walks again.
    *
-   * For a session going away, and for the one thing that puts enough bytes in
-   * a stopped workspace to move the number: an upload. A box that is down
-   * cannot grow on its own, which is the assumption the freeze above rests
-   * on, and an attachment is where that would otherwise quietly stop being
-   * true.
-   *
-   * The review surface writes into a stopped workspace too, and deliberately
-   * does not call this: a REVIEW.md is kilobytes, invisible in a figure
-   * rounded to two significant figures, and re-walking a checkout every time
-   * somebody types a comment is the cost this cache exists to avoid.
+   * For a session going away, and for an upload, which is the one thing that
+   * puts enough bytes in a stopped workspace to move the number. A box that
+   * is down cannot otherwise grow, which is what freezing its measurement
+   * rests on.
    */
   forget(sessionId: string): void {
     this.measured.delete(sessionId);
@@ -220,8 +185,7 @@ export class SessionUsage {
    * Queues one session's walks, unless it already has some coming.
    *
    * Its directories are walked one after another and summed, and a failure in
-   * either abandons the pair: half a session's size, reported as the whole of
-   * it, is worse than the answer this held a minute ago.
+   * either abandons the pair rather than reporting half a session's size.
    */
   private start(sessionId: string, paths: readonly string[], live: boolean): void {
     if (this.walking.has(sessionId)) return;
@@ -231,15 +195,13 @@ export class SessionUsage {
         let bytes = 0;
         for (const path of paths) bytes += await this.measure(path);
         // Recorded against the state the box was in when the walk was asked
-        // for, not the state it is in now. A session stopped while its own
-        // settling walk was queued is one whose next read asks again, which
-        // is the right way round to be wrong.
+        // for rather than the state it is in now, so a session stopped while
+        // its settling walk was queued is walked again at its next read.
         this.measured.set(sessionId, { bytes, at: this.now(), live });
       } catch (err) {
-        // Hold the last answer — a workspace that could not be read is not a
-        // workspace known to be empty — but record the attempt, so one that
-        // keeps failing is retried on the interval rather than on every
-        // request.
+        // Hold the last answer, since a workspace that could not be read is
+        // not one known to be empty, but record the attempt so a walk that
+        // keeps failing is retried on the interval rather than per request.
         const last = this.measured.get(sessionId);
         this.measured.set(sessionId, { bytes: last?.bytes ?? null, at: this.now(), live });
         this.onTrouble(sessionId, err as Error);

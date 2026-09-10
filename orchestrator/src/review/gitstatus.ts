@@ -7,10 +7,10 @@ import { REVIEW_FILE } from './tree.ts';
  *
  * A port of the desktop tool's `internal/gitstatus`, with the workspace layer
  * on top: a review spans every repository the workspace holds, so the
- * statuses of all of them are merged into one map and one base *expression*
- * is resolved separately in each. The parsers are pure and take git's output
- * as a string; the functions that actually run git sit at the bottom and do
- * nothing but call them.
+ * statuses of all of them are merged into one map and one base expression is
+ * resolved separately in each. The parsers are pure and take git's output as a
+ * string; the functions that run git sit at the bottom and do nothing but call
+ * them.
  */
 
 /** The git status of a file, as the tree shows it. */
@@ -242,10 +242,10 @@ export async function workspaceStatuses(
  * Resolves one revision expression in every repository of a workspace.
  *
  * `main` means main-in-each, through the merge base with that repository's own
- * HEAD. A repository the revision names nothing in is simply absent from the
- * result, which leaves it compared against its own working tree — a soft
- * failure, because a workspace holding one repository on a branch and another
- * that never heard of it is an ordinary shape, not a broken request.
+ * HEAD. A repository the revision names nothing in is absent from the result,
+ * which leaves it compared against its own working tree: a workspace holding
+ * one repository on a branch and another that never heard of it is an ordinary
+ * shape.
  */
 export async function resolveBases(map: RepoMap, rev: string): Promise<Map<string, Base>> {
   const bases = new Map<string, Base>();

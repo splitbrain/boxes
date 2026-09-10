@@ -11,22 +11,16 @@ import { cn } from '@/lib/utils';
  * What this thread has left running, above the composer, for as long as it is
  * running.
  *
- * It matters in the one state Boxes could not otherwise express. The agent
- * has finished, the thread is quiet, the composer is waiting for you — and a
- * monitor is watching a log, or a build has twenty minutes left. Without this
- * that thread is indistinguishable from a finished one, and the only evidence
- * is an old line where the agent promised to report back.
+ * It covers the one state nothing else expresses: the agent has finished, the
+ * thread is quiet, the composer is free, and a monitor is watching a log or a
+ * build has twenty minutes left. Without it such a thread looks finished, and
+ * the only evidence is an old line where the agent promised to report back.
  *
- * This thread's work and nobody else's. It was one boolean about the whole
- * box for a while, sent to every conversation in it, so a command one thread
- * forgot about said "something is still running" on a thread opened a minute
- * ago — with a stop button that could not have reached it. What is listed
- * here is what is running under this conversation's own agent process; see
- * `orchestrator/src/gateway/background.ts`.
+ * This thread's work and nobody else's: what is listed is what runs under
+ * this conversation's own agent process.
  *
- * Quiet, at the weight of the tool rows: it is a standing fact about the box
- * rather than a thing that just happened, and it sits under whatever the
- * thread is saying.
+ * Quiet, at the weight of the tool rows, because it is a standing fact about
+ * the box rather than a thing that just happened.
  */
 
 /** How often the ages are re-read. A minute's work is not timed to the second. */

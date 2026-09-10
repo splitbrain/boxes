@@ -5,16 +5,10 @@ import type { EgressCredential, EgressPolicy } from '../../shared/types.ts';
 /**
  * The policy the proxy applies, as pure functions over data.
  *
- * Nothing here does I/O and nothing here is stateful, so the two decisions
- * that matter — may this host be reached, and what credential may travel to
- * it — are testable on their own.
+ * Nothing here does I/O and nothing here holds state.
  */
 
-/**
- * The policy of a proxy nobody has pushed to yet: today's behavior. Frozen,
- * because it is shared and an allowlist that could be appended to would be a
- * hole rather than a default.
- */
+/** The policy of a proxy nobody has pushed to yet. Frozen, because it is shared. */
 export const EMPTY_POLICY: EgressPolicy = Object.freeze({
   allowedHosts: Object.freeze([] as string[]),
   ca: null,
@@ -29,8 +23,7 @@ export const EMPTY_POLICY: EgressPolicy = Object.freeze({
  * A pattern is either an exact name or `*.example.com`, where the star stands
  * for exactly one label: `*.example.com` matches `api.example.com` but neither
  * `example.com` nor `a.b.example.com`. Matching is case-insensitive, and an IP
- * literal only ever matches an identical literal, because a wildcard over
- * addresses would be a hole rather than a convenience.
+ * literal matches only an identical literal.
  */
 export function hostMatches(host: string, pattern: string): boolean {
   const h = host.trim().toLowerCase().replace(/\.$/, '');
@@ -38,7 +31,6 @@ export function hostMatches(host: string, pattern: string): boolean {
   if (h === '' || p === '') return false;
 
   if (!p.startsWith('*.')) return h === p;
-  // A wildcard is a name pattern; addresses are matched literally or not at all.
   if (net.isIP(h) !== 0) return false;
 
   const suffix = p.slice(2);
@@ -54,15 +46,14 @@ export function hostMatchesAny(host: string, patterns: readonly string[]): boole
 }
 
 /**
- * Whether a host may be reached at all. An empty allowlist is off, which is
- * the behavior of a deployment that configured none: any public host, with the
- * address vetting in cidr.ts still the boundary.
+ * Whether a host may be reached at all. An empty allowlist is off: any public
+ * host, with the resolved-address vetting still the boundary.
  */
 export function hostAllowed(host: string, policy: EgressPolicy): boolean {
   if (policy.allowedHosts.length === 0) return true;
   if (hostMatchesAny(host, policy.allowedHosts)) return true;
   // A configured credential's hosts are implied members, so a narrow allowlist
-  // can never sever the very traffic this proxy exists to authenticate.
+  // cannot cut off the traffic the proxy authenticates.
   return policy.credentials.some((c) => hostMatchesAny(host, c.hosts));
 }
 
@@ -75,8 +66,8 @@ export function credentialsForHost(
 }
 
 /**
- * Whether a host's TLS has to be intercepted. Only a host with a credential is
- * ever decrypted; everything else stays an opaque tunnel.
+ * Whether a host's TLS has to be intercepted. Only a host with a credential
+ * is decrypted; everything else stays an opaque tunnel.
  */
 export function isInjectionHost(host: string, policy: EgressPolicy): boolean {
   return policy.ca !== null && credentialsForHost(host, policy).length > 0;
@@ -93,11 +84,10 @@ export function injectionPatterns(policy: EgressPolicy): string[] {
  * Rewrites one header value so it carries `secret` instead of `placeholder`,
  * or returns null when the value does not carry the placeholder at all.
  *
- * Two framings cover every client we care about without a per-tool rule:
- * the value contains the placeholder verbatim (`Bearer <p>`, `token <p>`, or
- * the bare value), or it is HTTP Basic and the placeholder is inside the
- * decoded `user:password` pair, which is the shape git's credential helper
- * produces.
+ * Two framings cover every client without a per-tool rule: the value carries
+ * the placeholder verbatim (`Bearer <p>`, `token <p>`, or the bare value), or
+ * it is HTTP Basic and the placeholder sits inside the decoded
+ * `user:password` pair, which is the shape git's credential helper produces.
  */
 export function swapCredentialValue(
   value: string,
@@ -143,11 +133,10 @@ function headerValue(
 /**
  * Decides what a request to an intercepted host may carry.
  *
- * A request with no credential at all passes through unauthenticated, exactly
- * as it does today. One carrying the deployment's placeholder is rewritten to
- * carry the real credential. One carrying anything else is refused here, so
- * that "this host is allowed" stops implying "any account at this host is
- * reachable".
+ * A request with no credential passes through unauthenticated. One carrying
+ * the deployment's placeholder is rewritten to carry the real credential. One
+ * carrying anything else is refused here, so a host being allowed does not
+ * make every account at that host reachable.
  */
 export function decideCredentials(
   host: string,
@@ -165,8 +154,8 @@ export function decideCredentials(
     const present = headerValue(headers, name);
     if (present === null) continue;
 
-    // Every credential that may travel in this header, in policy order. The
-    // first whose placeholder the value actually carries is the one it is.
+    // Credentials that may travel in this header, in policy order. The first
+    // whose placeholder the value carries is the one to swap.
     const candidates = credentials.filter((c) => c.headers.includes(name));
     let swapped: string | null = null;
     for (const credential of candidates) {

@@ -3,8 +3,8 @@
  * and the hands on it.
  *
  * Kept apart from the hook for the same reason as `scroll-away.ts`: this is
- * the whole of the behaviour, and asking a real browser about it meant asking
- * how fast the machine was. `use-follow-output.ts` is the wiring.
+ * the whole of the behaviour and none of it needs a browser.
+ * `use-follow-output.ts` is the wiring.
  */
 
 /**

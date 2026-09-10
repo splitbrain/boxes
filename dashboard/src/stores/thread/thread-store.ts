@@ -46,12 +46,11 @@ export interface ThreadSnapshot {
    * True while the agent is producing output: text, thinking, a tool call of
    * its own.
    *
-   * Not "a prompt is open", which is what it used to be and what background
-   * work made useless. The adapter holds a prompt open until the subagents a
-   * turn spawned settle, so a thread can be waiting for its reader for an
-   * hour with a prompt still in flight; and a thread the harness wakes to
-   * report a task has no prompt open while it works. The gateway decides
-   * this — see orchestrator/src/gateway/activity.ts.
+   * Not whether a prompt is open. The adapter holds a prompt open until the
+   * subagents a turn spawned settle, so a thread can be waiting for its
+   * reader for an hour with a prompt still in flight, and a thread the
+   * harness wakes to report a task has no prompt open while it works. The
+   * gateway decides this.
    */
   isRunning: boolean;
   /**
@@ -184,14 +183,14 @@ export class ThreadStore {
   }
 
   /**
-   * Whether the agent is actually saying anything.
+   * Whether the agent is saying anything.
    *
-   * The gateway's answer, not this browser's: it marks a thread as working
-   * the moment it forwards a prompt — so the browser that sent one has its
-   * spinner in a single hop — and stops when the agent has gone quiet, which
-   * is a thing only something watching the whole stream can see. A prompt of
-   * our own still in flight proves nothing either way once the adapter starts
-   * holding turns open for background work, so it is not consulted here.
+   * The gateway's answer rather than this browser's: it marks a thread as
+   * working the moment it forwards a prompt, so the browser that sent one has
+   * its spinner in a single hop, and stops when the agent has gone quiet,
+   * which only something watching the whole stream can see. A prompt this
+   * browser still has in flight proves nothing either way, so it is not
+   * consulted here.
    *
    * A turn blocked on a permission request is not running, it is waiting for
    * the user — which is the whole point of the request. Saying otherwise
@@ -435,8 +434,8 @@ export class ThreadStore {
    *
    * Content blocks rather than a string, because a prompt is not always
    * prose: an attachment puts an image and the note saying where it was
-   * saved into the same message. What the blocks are is the view's business
-   * — see views/SessionThread.tsx — and this only carries them.
+   * saved into the same message. What the blocks are is the view's business,
+   * and this only carries them.
    */
   async send(blocks: readonly ContentBlock[]): Promise<void> {
     const client = this.client;
@@ -455,7 +454,7 @@ export class ThreadStore {
       this.emit({ error: (err as Error).message });
       throw err;
     } finally {
-      // Nothing here is counted any more: whether the agent is working is the
+      // Nothing here is counted: whether the agent is working is the
       // gateway's answer, and a prompt of this browser's own coming back says
       // only that the request is over.
       this.emit();

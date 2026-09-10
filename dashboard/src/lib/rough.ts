@@ -42,10 +42,8 @@ const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
  * the question — the difference between 340 MB and 341 MB is nothing to
  * anybody, and between 1.4 GB and 2 GB is everything.
  *
- * Not `formatBytes` from attachments.ts, which names one file somebody just
- * picked: there a tenth of a kilobyte is the file they chose, and nothing
- * that goes through a file picker is measured in gigabytes. A workspace is
- * the other end of both.
+ * For a whole workspace rather than for one file somebody picked, where a
+ * tenth of a kilobyte matters and gigabytes never come up.
  */
 export function shortSize(bytes: number): string {
   let value = Math.max(bytes, 0);

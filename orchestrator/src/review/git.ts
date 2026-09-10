@@ -16,8 +16,7 @@ import { log } from '../log.ts';
  * orchestrator — the process holding the Docker socket.
  *
  * So every git process gets its argv prefix and its environment from one
- * builder here, and `hardeningFlags()` is asserted by a test: dropping one of
- * them has to be a visible act rather than a quiet edit.
+ * builder here, and a test asserts `hardeningFlags()`.
  *
  * Everything run through here is local. No invocation fetches, pushes, or
  * resolves a remote, and `GIT_TERMINAL_PROMPT=0` means one that somehow tried
@@ -73,8 +72,8 @@ export function hardeningFlags(root: string): string[] {
  * everything that would make git read configuration, prompt, or take a lock it
  * does not need.
  *
- * The proxy variables are dropped too. Nothing here goes to the network, and a
- * git that believed it had a proxy would only fail more slowly.
+ * The proxy variables are dropped too, because nothing here goes to the
+ * network.
  */
 export function hardenedEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -154,8 +153,8 @@ export async function git(root: string, args: string[]): Promise<GitResult> {
         env: hardenedEnv(),
         timeout: TIMEOUT_MS,
         maxBuffer: MAX_OUTPUT,
-        // Paths and file content are bytes; decoding is the caller's business
-        // only in that everything review shows is text.
+        // Paths and file content are bytes, and everything review shows is
+        // text, so they are decoded here.
         encoding: 'utf8',
         windowsHide: true,
       },

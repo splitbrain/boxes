@@ -55,8 +55,8 @@ jobs:
     name: test (${{ matrix.package }})
     runs-on: ubuntu-latest
     strategy:
-      # Three independent suites: one failing tells you more when the other
-      # two have still run.
+      # Three independent suites: one failing says more when the other two
+      # have still run.
       fail-fast: false
       matrix:
         package: [orchestrator, proxy, dashboard]

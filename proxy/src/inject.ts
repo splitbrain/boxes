@@ -4,17 +4,15 @@ import type { EgressPolicy } from '../../shared/types.ts';
 import { decideCredentials, injectionPatterns } from './policy.ts';
 
 /**
- * The TLS interception engine, and the only place a real credential is ever
- * written onto the wire.
+ * The TLS interception engine, and the one place a real credential is written
+ * onto the wire.
  *
- * It runs on loopback and is fed by the front door, which only ever hands it a
- * host that has a credential configured. Everything else stays an opaque
- * tunnel that this process cannot read, so interception is bounded by policy
- * rather than by trust in the engine.
+ * It runs on loopback and is fed by the front door, which hands it only a host
+ * that has a credential configured. Everything else stays an opaque tunnel
+ * this process cannot read.
  *
  * Every request it forwards goes back out through the upstream tunnel, so the
- * address vetting in cidr.ts still governs the connection that actually
- * leaves: decrypting a host buys it no way around the checks.
+ * resolved-address vetting still governs the connection that leaves.
  */
 
 /** What the interceptor needs from the process around it. */
@@ -33,10 +31,10 @@ export interface InterceptorOptions {
 const URL_LINKED_HEADERS = ['host', ':authority'];
 
 /**
- * What this proxy ever tells the engine to do with a request: leave it alone,
+ * What this proxy tells the engine to do with a request: leave it alone,
  * forward it with a rewritten header set, or answer it with a refusal. Stated
- * structurally rather than imported, because the engine's own callback result
- * type is not part of its public surface.
+ * structurally because the engine's callback result type is not part of its
+ * public surface.
  */
 type RequestDecision =
   | void
@@ -67,8 +65,8 @@ export class Interceptor {
    * Brings the engine in line with the current policy.
    *
    * A policy with no CA or no credential stops it, so a deployment that
-   * configures no credential decrypts nothing at all. A changed CA restarts
-   * it, because the certificates it mints are derived from that key. A changed
+   * configures no credential decrypts nothing. A changed CA restarts it,
+   * because the certificates it mints are derived from that key. A changed
    * credential needs neither, since the rule reads the policy per request.
    */
   async apply(): Promise<void> {
@@ -85,8 +83,7 @@ export class Interceptor {
     const server = mockttp.getLocal({
       https: { key: wanted.key, cert: wanted.cert },
       http2: true,
-      // A long-lived proxy must not accumulate every request it has ever
-      // seen, and it is never asked to explain itself to a test.
+      // A long-lived proxy must not accumulate every request it has seen.
       recordTraffic: false,
       suggestChanges: false,
       cors: false,
@@ -98,8 +95,6 @@ export class Interceptor {
         .forAnyRequest()
         .thenPassThrough({
           beforeRequest: (req) => this.decide(req),
-          // Every upstream connection is made through the vetting tunnel, so
-          // the address it lands on has passed the same checks as any other.
           proxyConfig: { proxyUrl: this.opts.upstreamProxyUrl() },
         });
 
@@ -169,9 +164,8 @@ export class Interceptor {
     }
 
     // Replacing the header set wholesale is the callback's only option, so the
-    // originals are copied. The URL-linked headers are dropped rather than
-    // copied: the engine derives them from the request URL, and echoing them
-    // back unchanged reads to it as a contradictory rewrite.
+    // originals are copied. The URL-linked headers are dropped: the engine
+    // derives them from the request URL, and reads a copy as a rewrite.
     const headers: Headers = {};
     for (const [name, value] of Object.entries(req.headers)) {
       if (URL_LINKED_HEADERS.includes(name.toLowerCase())) continue;
