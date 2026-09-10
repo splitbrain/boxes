@@ -49,18 +49,11 @@ export class SessionManager {
   /** Permission requests waiting for a browser, across all sessions. */
   readonly pending: PendingStore;
 
-  /**
-   * How big each session's workspace has got, measured off the request path
-   * and rarely: the list is polled every few seconds, a walk of a checkout is
-   * not something to do per request, and a box that is down is not something
-   * to walk twice. See diskusage.ts.
-   */
+  /** How big each session has got, measured off the request path. */
   private readonly usage = new SessionUsage({
-    // Everything a session is on disk: the agent's files, and the home its
-    // thread history, caches and installed tools are in — which on a box that
-    // has been working is usually the larger of the two. A session still
-    // backed by a named home volume contributes only its workspace, there
-    // being no path to the other half.
+    // Everything a session is on disk. A session still backed by a named
+    // home volume contributes only its workspace, there being no path to the
+    // other half.
     pathsOf: (id) => [this.workspacePathOf(id), this.homePathOf(id)],
     ttlMs: SESSION_SIZE_TTL_MS,
     onTrouble: (id, error) =>
@@ -130,14 +123,12 @@ export class SessionManager {
 
   /**
    * Where a session's files are on this process's own filesystem, or null for
-   * a session still backed by a named volume — which the review surface reads
-   * as "not reviewable until this session is started once".
+   * a session still backed by a named volume.
    *
    * Derived from the current DATA_DIR rather than read from the row, so moving
-   * the data volume moves the workspaces with it; the stored column only says
-   * whether the session has a directory at all. An unknown or deleted session
-   * is null too: the caller's own 404 says so more precisely than a throw from
-   * here would.
+   * the data volume moves the workspaces with it; the stored column says only
+   * whether the session has a directory. An unknown or deleted session is
+   * null as well, and the caller answers that with its own 404.
    */
   workspacePathOf(id: string): string | null {
     const row = this.getRow(id);
@@ -181,11 +172,9 @@ export class SessionManager {
    *
    * A container can be run as any uid, so the workspace bind is fine either
    * way. The home volume is not: Docker initialises a new one from the image's
-   * own `/home/agent`, so it arrives owned by the uid the *image* was built
-   * on, and nothing outside the container can chown it afterwards. Mismatched,
-   * the agent cannot write its own home and every turn fails on something
-   * obscure — so it is worth one loud line at boot rather than being
-   * discovered later.
+   * own `/home/agent`, so it arrives owned by the uid the image was built on,
+   * and nothing outside the container can chown it afterwards. Mismatched,
+   * the agent cannot write its own home and every turn fails.
    *
    * A warning and not a refusal: the image is the deployment's to fix, the
    * rest of the orchestrator works, and reviewing an existing session does not
@@ -212,12 +201,10 @@ export class SessionManager {
   }
 
   /**
-   * Pulls the session image again, so a tag that moves actually moves here.
+   * Pulls the session image again, so a moving tag moves here.
    *
-   * Best-effort on purpose: the image already on the host still works, and a
-   * registry that is down — or a tag that was built locally and can be pulled
-   * from nowhere — must not become the orchestrator's problem. Nothing
-   * running is touched; a session adopts what arrived the next time it is
+   * Best-effort: the image already on the host still works. Nothing running
+   * is touched, and a session adopts what arrived the next time it is
    * started.
    */
   async refreshSessionImage(): Promise<void> {
@@ -228,8 +215,8 @@ export class SessionManager {
       log.info('the session image moved; sessions adopt it as they are started', {
         image: this.cfg.SESSION_IMAGE,
       });
-      // The copy it moved off is now untagged, on this host, and a gigabyte or
-      // two. Nothing else is ever going to reclaim it.
+      // The copy it moved off is now untagged, on this host, and a gigabyte
+      // or two that nothing else reclaims.
       await this.pruneSupersededImages(before);
     }
   }
@@ -241,7 +228,7 @@ export class SessionManager {
    * makes one. `supersededId` is the image the pull replaced, known exactly
    * because this process watched it happen; the sweep alongside it catches
    * the ones an earlier process replaced and did not live to clean up, which
-   * it can do because the image carries a label of its own (docker.ts).
+   * the image's own label makes possible.
    *
    * Nothing here is forced. An image a container was created from is refused
    * by the daemon, and that refusal is what makes this safe to run while
@@ -254,9 +241,8 @@ export class SessionManager {
     const current = await dk.imageId(this.cfg.SESSION_IMAGE);
     const candidates = new Set(await dk.listSupersededSessionImages());
     // A deployment building its own session image without the label has no
-    // superseded copy this can find later — but the one this process just
-    // replaced is known outright, so that case is covered while the process
-    // that saw it lives.
+    // superseded copy this can find later. The one this process just replaced
+    // is known outright.
     if (supersededId) candidates.add(supersededId);
     candidates.delete(current ?? '');
 
@@ -278,18 +264,16 @@ export class SessionManager {
    * Removes Docker objects and workspace directories belonging to sessions
    * that no longer exist.
    *
-   * Everything Boxes creates is labelled with its session (docker.ts, LABEL),
-   * and reconcile() reads that one way only: for each row, what Docker has.
-   * Nothing read it the other way, so anything left behind by a crash between
-   * `docker create` and the row's own update, or by a teardown that failed
-   * halfway and only logged it, stayed on the host forever — invisible to
-   * Boxes, and a home volume of it is where an agent's runtime installs went.
+   * Everything Boxes creates is labelled with its session, and reconcile()
+   * reads that one way only: for each row, what Docker has. This reads it the
+   * other way, and so finds what a crash between `docker create` and the
+   * row's own update, or a teardown that failed halfway, left behind.
    *
-   * The rule is exact rather than heuristic, and it is exact because of the
-   * order create() works in: the row is inserted *before* any Docker object
-   * exists, so an object labelled with a session that has no live row cannot
-   * be one that is on its way up. A deleted session's tombstone counts as no
-   * row, which is what makes a failed teardown recoverable.
+   * The rule is exact rather than heuristic because of the order create()
+   * works in: the row is inserted before any Docker object exists, so an
+   * object labelled with a session that has no live row cannot be one on its
+   * way up. A deleted session's tombstone counts as no row, which is what
+   * makes a failed teardown recoverable.
    *
    * Ordering matters: a network with a container still on it, or a volume
    * still mounted into one, is refused. Containers go first.
@@ -306,17 +290,14 @@ export class SessionManager {
     const sessions = new Set(strays.map((o) => o.sessionId));
     if (sessions.size === 0) return;
 
-    // The one shape that is likelier to be a database these objects do not
-    // belong to than a genuine pile of orphans: a sessions table with nothing
-    // in it at all, and a host full of sessions. A data volume mounted from
-    // the wrong place, or replaced, leaves exactly that — and going ahead
-    // would take the home volume of every session on the host, which is the
-    // one loss here that nothing can recover.
+    // An empty sessions table beside a host full of sessions is likelier to
+    // be a database these objects do not belong to than a genuine pile of
+    // orphans: a data volume mounted from the wrong place, or replaced,
+    // leaves exactly that, and sweeping would take every session's home.
     //
-    // Deleted sessions are counted, tombstones and all, which is what keeps
-    // this from firing on the ordinary case it would otherwise break: a
-    // deployment whose sessions have all been deleted still has rows, and its
-    // failed teardowns still get swept.
+    // Deleted sessions are counted, tombstones and all, so a deployment whose
+    // sessions have all been deleted still has rows and still gets its failed
+    // teardowns swept.
     const known = (
       this.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }
     ).n;
@@ -344,10 +325,9 @@ export class SessionManager {
     for (const volume of orphaned(volumes)) {
       await this.sweeping(volume.sessionId, 'volume', () => dk.removeVolume(volume.name));
     }
-    // And the files, which are the size of all of the above put together. The
-    // workspace and home of a session with no row are unreachable by every
-    // surface Boxes has: no card lists them, no review opens one, and no
-    // container mounts either.
+    // And the files, which are the size of all of the above put together.
+    // The workspace and home of a session with no row are reachable from
+    // nothing Boxes has.
     for (const sessionId of sessions) {
       await this.sweeping(sessionId, 'workspace', () =>
         Promise.resolve(ws.removeWorkspace(this.cfg.DATA_DIR, sessionId)),
@@ -363,8 +343,7 @@ export class SessionManager {
    *
    * A stray object that cannot be removed is worth a line and nothing more:
    * whatever is holding it will let go eventually, and the next sweep tries
-   * again. Stopping the sweep on it would leave the objects behind it for as
-   * long as this one is stuck.
+   * again.
    */
   private async sweeping(
     sessionId: string,
@@ -389,23 +368,19 @@ export class SessionManager {
    * Everything a session container is comes from the row and the two
    * directories the row points at — the image, the network, the mounts, the
    * environment — so a container is reproducible and losing one costs nothing
-   * durable. Until now it cost the session: `start` handed the missing id to
-   * the daemon, got a 404 back, and there was no other way in. The workspace
-   * and the home would be sitting intact on the data volume, unreachable
-   * through Boxes, and the only way out was to delete the session and copy
-   * the files by hand.
+   * durable.
    *
    * A container goes missing more easily than it sounds. `docker container
-   * prune` takes every stopped container, and an idle Boxes session *is* a
-   * stopped container — the reaper stops them all day. `docker system prune`
-   * does that and the network too, which is why this makes the network again
-   * as well.
+   * prune` takes every stopped container, and an idle Boxes session is a
+   * stopped container, since the reaper stops them all day. `docker system
+   * prune` does that and the network too, which is why this makes the network
+   * again as well.
    *
    * Only for a container the daemon says is not there. `unknown` is a daemon
-   * that would not answer, and rebuilding on that would mean replacing a
-   * container that is running perfectly well behind a failed inspect.
+   * that would not answer, and rebuilding on that would replace a container
+   * running perfectly well behind a failed inspect.
    *
-   * A session still on a workspace *volume* is left to `migrateWorkspace`,
+   * A session still on a workspace volume is left to `migrateWorkspace`,
    * which runs before this and rebuilds the container itself. Its row has no
    * workspace directory to bind, so `containerSpec` cannot describe it.
    */
@@ -582,10 +557,9 @@ export class SessionManager {
       workspaceSource: ws.hostWorkspacePath(this.hostDataDir, row.id),
       agentConfigSource: hostAgentConfigPath(this.hostDataDir, row.id),
       // A directory for every session created since homes became
-      // directories, and the old named volume for one created before — which
-      // goes on mounting it for as long as it lives. There is no migration:
-      // the two arrangements simply coexist until the last old session is
-      // deleted.
+      // directories, and the old named volume for one created before, which
+      // goes on mounting it for as long as it lives. There is no migration;
+      // the two arrangements coexist until the last old session is deleted.
       homeSource: row.home_dir
         ? ws.hostHomePath(this.hostDataDir, row.id)
         : row.home_volume,
@@ -663,11 +637,9 @@ export class SessionManager {
       throw new HttpError(400, `Unknown agent set: ${agentSetId}`);
     }
 
-    // Before anything is allocated, and after the checks above, which cost
-    // nothing: a request naming a set that is not there should not pull an
-    // image on its way to a 400. A deployment whose first pull failed would
-    // otherwise get the daemon's "no such image" halfway through creating a
-    // session, and a teardown to go with it.
+    // Before anything is allocated, and after the checks above: a request
+    // naming a set that is not there should not pull an image on its way to a
+    // 400.
     try {
       await this.ensureSessionImage();
     } catch (err) {
@@ -725,9 +697,9 @@ export class SessionManager {
       // Before the container, because it is one of its mounts.
       this.agents.materialize(id, agentSetId);
       // A bind mount covers what the image put in /home/agent rather than
-      // being seeded from it the way a named volume was, so the seeding is
-      // ours to do. See dk.seedHomeFromImage — an empty home costs the
-      // agent's own `~/.local/bin` on the PATH of a login shell.
+      // being seeded from it the way a named volume is, so seedHomeFromImage
+      // fills it. An empty home costs the agent's own `~/.local/bin` on the
+      // PATH of a login shell.
       ws.createHome(this.cfg.DATA_DIR, id);
       await dk.seedHomeFromImage(
         ws.hostHomePath(this.hostDataDir, id),
@@ -769,11 +741,10 @@ export class SessionManager {
     // Before the two below, which both ask the daemon about a container that
     // may not be there: after this one, there is a container to ask about.
     row = await this.restoreMissingContainer(row);
-    // Before the mount check below, not after: a roll recreates the container
-    // from containerSpec, which already binds the agent configuration, so a
+    // Before the mount check below: a roll recreates the container from
+    // containerSpec, which already binds the agent configuration, so a
     // session that moves image comes back with the mount and the check that
-    // follows finds nothing left to do. The other order would recreate the
-    // same container twice.
+    // follows finds nothing to do.
     row = await this.rollOntoCurrentImage(row);
     row = await this.ensureAgentConfigMount(row);
     await dk.startContainer(row.container_id!);
@@ -836,8 +807,8 @@ export class SessionManager {
    * Nothing is lost if this fails halfway, because the directory is already
    * written and the next start tries again.
    *
-   * A running session is left alone. Restarting it under the user would be a
-   * worse surprise than configuration arriving one stop/start cycle late.
+   * A running session is left alone, and gets the mount at its next
+   * stop/start cycle.
    */
   private async ensureAgentConfigMount(row: SessionRow): Promise<SessionRow> {
     if (!row.container_id) return row;
@@ -900,9 +871,8 @@ export class SessionManager {
       slog.warn('network teardown failed', { error: (err as Error).message });
     }
     // The workspace and the home hold the agent's work and the adapter's
-    // thread history. Nothing else refers to either once the session is gone,
-    // so a session that is deleted takes them with it rather than leaving them
-    // orphaned.
+    // thread history, and nothing refers to either once the session is gone,
+    // so a deleted session takes them with it.
     if (row.workspace_dir) {
       try {
         ws.removeWorkspace(this.cfg.DATA_DIR, row.id);
@@ -923,7 +893,7 @@ export class SessionManager {
       slog.warn('agent configuration removal failed', { error: (err as Error).message });
     }
     // Only a session from before each of these became a directory still has
-    // the volume it used to be.
+    // a volume.
     if (row.ws_volume) await dk.removeVolume(row.ws_volume);
     if (row.home_volume) await dk.removeVolume(row.home_volume);
   }
@@ -967,9 +937,8 @@ export class SessionManager {
    * at.
    *
    * A box that is down cannot grow on its own, which is what lets a stopped
-   * session be measured once and then left alone. An upload is the exception
-   * — the one way enough bytes arrive in a workspace with nothing running in
-   * it to move the figure — and this is it saying so.
+   * session be measured once and then left alone. An upload is the one
+   * exception, and this is it saying so.
    */
   workspaceChanged(id: string): void {
     this.usage.forget(id);
@@ -1027,15 +996,9 @@ export class SessionManager {
       canFork: upstream?.canFork ?? false,
       agentSetId: row.agent_set_id,
       agentSetName: this.agents.nameOf(row.agent_set_id),
-      // What was last measured, and null until there is a measurement. Never
-      // waits for one: this is a card's rough indicator, and the list behind
-      // it is polled every five seconds.
-      //
-      // A container known to be down is measured once and then left alone —
-      // nothing is running in it, so nothing in it is changing. 'unknown' is
-      // not 'exited': a Docker read that failed says nothing about whether
-      // the agent is working, and a size frozen on that would be frozen on a
-      // guess. See diskusage.ts.
+      // What was last measured, and null until there is a measurement.
+      // 'unknown' counts as live: a Docker read that failed says nothing
+      // about whether the agent is working.
       diskBytes: this.usage.bytes(
         row.id,
         dockerState !== 'exited' && dockerState !== 'missing',
@@ -1131,8 +1094,8 @@ export class SessionManager {
    * names none gets.
    *
    * Nobody is dropped and nothing reconnects. A browser is pinned to its own
-   * thread for the life of its socket, so the session's default is only ever
-   * read at a handshake — see UpstreamSession.switchThread.
+   * thread for the life of its socket, so the session's default is read only
+   * at a handshake; see UpstreamSession.switchThread.
    */
   selectThread(id: string, threadId: string): ThreadSummary {
     this.mustGet(id);

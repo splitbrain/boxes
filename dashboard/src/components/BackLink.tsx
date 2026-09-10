@@ -4,10 +4,9 @@ import type { Up } from '@/hooks/use-up';
 /**
  * The labelled back link above a stacked page.
  *
- * A page draws this twice — once in the state where it is still loading and
- * once in the state where it has its data — and the two used to disagree: one
- * a text arrow, the other the icon. Leaving is the one thing that works in
- * both states, so it should not move or change shape between them.
+ * A page draws this twice, once while it is still loading and once with its
+ * data. Leaving works in both states, so it must not move or change shape
+ * between them.
  *
  * A real anchor with a real href, so middle click and copy-link work, but the
  * ordinary click pops rather than pushes: see useUp for why nothing labelled

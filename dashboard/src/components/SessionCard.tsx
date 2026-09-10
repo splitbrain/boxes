@@ -29,7 +29,7 @@ export function sessionBadges(s: SessionSummary): Array<{ kind: BadgeKind; label
   }
   // What the agent is doing, rather than whether a request is open upstream:
   // a prompt held open for a background subagent is not a running turn to
-  // anybody reading this list. See lib/activity.ts.
+  // anybody reading this list.
   if (s.speaking) badges.push({ kind: 'turn', label: 'running turn' });
   if (s.backgroundBusy) badges.push({ kind: 'task', label: STILL_RUNNING });
   if (s.status === 'error') badges.push({ kind: 'error', label: 'error' });
@@ -226,22 +226,15 @@ export function SessionCard({ session }: { session: SessionSummary }) {
  * The bullet on a thread's row: what that conversation is doing, in one dot,
  * and the whole of what a row says about it.
  *
- * It said which thread was the session's default until now — green for the
- * current one, grey for the rest — which the row already says twice, in its
- * weight and in `aria-current`, and which spent the colour that means "the
- * container is up" on something that is not a state a thread can be in. Being
- * up is a precondition of every one of these.
- *
- * The labelled badges that used to sit at the end of a busy row are gone with
- * it. They said in words what the dot now says in colour, on the two states
- * out of four that had them, and a row is a place to pick a conversation out
- * of a list rather than to read about one.
+ * Which thread is the session's default is not among them: the row says that
+ * twice already, in its weight and in `aria-current`. Being up is a
+ * precondition of every state here.
  *
  * The order is what outranks what, and it is the reader's order rather than
- * the machine's: a question stops everything, talking is the next most
- * interesting, and work still running is the quiet one worth seeing — it is
- * the thread holding the box awake. Labelled as well as coloured, because a
- * dot with no label is nothing at all to a screen reader.
+ * the machine's: a question stops everything, talking is next, and work still
+ * running is the quiet one worth seeing, because it is the thread holding the
+ * box awake. Labelled as well as coloured, because a dot with no label says
+ * nothing to a screen reader.
  */
 export function threadDot(thread: ThreadSummary): { kind: BadgeKind; label: string } {
   if (thread.pendingCount > 0) return { kind: 'waiting', label: 'waiting for approval' };

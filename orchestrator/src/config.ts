@@ -11,16 +11,13 @@ import { DEFAULT_SESSION_GID, DEFAULT_SESSION_UID } from './workspaces.ts';
  * configuration at all.
  */
 
+/** A positive whole number of minutes. */
 const durationMinutes = z.coerce.number().int().positive();
 
 /**
  * An on/off setting, spelled the way a person would write one.
  *
- * Not `z.coerce.boolean()`, which reads any non-empty string as true and so
- * turns `SETTING=false` into on — the one mistake a boolean environment
- * variable exists to make. An unrecognised value fails at boot with the rest
- * of the configuration, rather than quietly meaning whichever of the two is
- * worse.
+ * An unrecognised value fails at boot with the rest of the configuration.
  */
 const flag = z
   .enum(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'])
@@ -53,14 +50,14 @@ const schema = z.object({
    * the image's own user back and says so when the two have drifted.
    *
    * Setting these to the uid the orchestrator itself runs as is what lets it
-   * drop root: there is then nothing to give away. See workspaces.ts.
+   * drop root: there is then nothing to give away.
    */
   SESSION_UID: z.coerce.number().int().positive().default(DEFAULT_SESSION_UID),
   SESSION_GID: z.coerce.number().int().positive().default(DEFAULT_SESSION_GID),
   /**
-   * How often the session image is pulled again, so that a moving tag such as
-   * `:latest` actually moves. A session adopts what has arrived when it is
-   * next started; nothing running is disturbed.
+   * How often the session image is pulled again, so a moving tag such as
+   * `:latest` keeps moving. A session adopts what has arrived when it is next
+   * started; nothing running is disturbed.
    *
    * 0 turns the refresh off, which is what an image built on the host wants —
    * there is no registry to pull it from, and trying every hour would only
@@ -72,11 +69,10 @@ const schema = z.object({
    * Whether a copy of the session image that a pull has superseded is removed
    * from this host.
    *
-   * On, because the alternative is a gigabyte or two of it per release, kept
-   * forever, that nothing else will ever reclaim: an untagged image is not
-   * something a deployment goes looking for. Only images carrying the session
+   * On, because an untagged image left behind is a gigabyte or two per
+   * release that nothing else reclaims. Only images carrying the session
    * image's own label are touched, and only once no container is left running
-   * on one — see docker.ts.
+   * on one.
    *
    * Off is for a host that keeps old images deliberately: to roll back to one
    * without the registry, or because something outside Boxes runs them.
@@ -93,17 +89,9 @@ const schema = z.object({
    * How long an answer about what is running in a box stands before the box
    * is asked again, in seconds.
    *
-   * This is a Docker API call per running session per window, so it is not
-   * free — and it is also what a browser is shown, so it should not lag a
-   * build finishing by much. There is no cap on the answer itself and no need
-   * of one: it is a reading rather than a tally, so a stale one is at most
-   * this old and never wrong for longer.
-   *
-   * Two readers on two clocks. The reaper asks when it sweeps, and the lazy
-   * refresh behind the probe is enough for that. A person watching a thread
-   * is the other, and nothing reports a build finishing — so while a browser
-   * is attached this is the clock the bar above their composer goes away on.
-   * See gateway/background.ts.
+   * One Docker API call per running session per window, and also what a
+   * browser is shown, so it trades that cost against how long a finished
+   * build still reads as running.
    */
   BACKGROUND_POLL_SECONDS: z.coerce.number().int().positive().default(20),
 
@@ -111,17 +99,11 @@ const schema = z.object({
    * How long a thread has to say nothing before the agent counts as having
    * stopped, in seconds.
    *
-   * The fallback, and for the adapter Boxes ships with it is only that: that
-   * one marks the end of a processing cycle with a `usage_update` carrying a
-   * cost, and gateway/activity.ts takes it. This is for the adapters that say
-   * nothing — no stop reason arrives for a prompt being held open, and a turn
-   * the harness started on its own has no request to end, so how long a gap
-   * has to be before it is read as the end is all that is left. Wrong in either direction it costs
-   * little: a short one puts a send button under a model that is thinking
-   * between tool calls, which was allowed anyway, and a long one leaves the
-   * spinner up a second or two after the agent has finished. A tool call the
-   * agent is waiting on suspends the question entirely — see
-   * gateway/activity.ts.
+   * The fallback. The adapter Boxes ships with marks the end of a processing
+   * cycle with a `usage_update` carrying a cost, which is read instead. This
+   * covers the adapters that say nothing: no stop reason arrives for a prompt
+   * held open, and a turn the harness started on its own has no request to
+   * end. A tool call the agent is waiting on suspends the question.
    */
   AGENT_QUIET_SECONDS: z.coerce.number().int().positive().default(3),
 
@@ -130,10 +112,8 @@ const schema = z.object({
    * finished, in seconds. Measured from the last thing the agent said, so it
    * includes AGENT_QUIET_SECONDS.
    *
-   * Longer than the quiet threshold on purpose: the screen can afford to be
-   * wrong for a moment and correct itself, and a push notification cannot.
-   * "Your turn has finished" on a lock screen is a claim there is no taking
-   * back, so it waits until the silence is convincing.
+   * Longer than the quiet threshold: a screen can be wrong for a moment and
+   * correct itself, and a push notification cannot.
    */
   AGENT_SETTLE_SECONDS: z.coerce.number().int().positive().default(30),
 
@@ -141,10 +121,8 @@ const schema = z.object({
    * Largest single attachment a prompt may carry into a workspace, in
    * mebibytes.
    *
-   * The cap is on the upload rather than on the workspace, because the
-   * workspace has no size worth policing here — the agent can fill it faster
-   * than any user with a file picker. What this bounds is one request the
-   * orchestrator buffers in memory before writing it out.
+   * The cap is on the upload rather than on the workspace: it bounds one
+   * request the orchestrator buffers in memory before writing it out.
    */
   MAX_ATTACHMENT_MB: z.coerce.number().int().positive().default(25),
 
@@ -184,7 +162,7 @@ const schema = z.object({
   /**
    * Hosts sessions may reach, comma or whitespace separated. Exact names and
    * one-label wildcards: `github.com, *.githubusercontent.com`. Empty is off,
-   * which leaves every public host reachable, as it is today.
+   * which leaves every public host reachable.
    */
   EGRESS_ALLOWED_HOSTS: z.string().default(''),
 
@@ -201,7 +179,7 @@ export type Config = Readonly<z.infer<typeof schema>> & {
   readonly egressAllowedHosts: readonly string[];
   /**
    * The credentials this deployment translates: the entries of CREDENTIAL_SET
-   * whose secret is actually configured.
+   * whose secret this deployment configured.
    */
   readonly egressCredentials: readonly ConfiguredCredential[];
 };
@@ -210,9 +188,8 @@ export type Config = Readonly<z.infer<typeof schema>> & {
  * One credential the proxy can translate, and everything the deployment knows
  * about it that is not the secret itself.
  *
- * The host lists and header names are fixed here rather than configured,
- * because they are facts about the services, not preferences: getting them
- * wrong either breaks a tool or widens what a credential can reach.
+ * The host lists and header names are fixed here rather than configured:
+ * they are facts about the services rather than preferences.
  */
 export interface CredentialSpec {
   /** Stable identifier, used in logs, status and the placeholder file. */
@@ -285,15 +262,16 @@ export interface SessionProfile {
   gitEmail: string;
 }
 
+/** The config parsed at first use, or null before then. */
 let cached: Config | null = null;
 
 /**
- * An empty value means the setting was not provided.
+ * Drops the empty entries of an environment, so an empty value reads as a
+ * setting nobody provided.
  *
  * `FOO=` in an .env file, and a compose pass-through for a variable the host
- * does not set, both arrive as an empty string. Treating that as a value
- * rather than as an absence would fail the regex and enum fields at boot,
- * for a setting nobody actually set.
+ * does not set, both arrive as an empty string, which would fail the regex
+ * and enum fields at boot.
  */
 function withoutEmpty(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));

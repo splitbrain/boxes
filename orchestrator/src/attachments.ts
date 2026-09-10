@@ -8,15 +8,13 @@ import { chownToAgent } from './workspaces.ts';
  *
  * Everything an attachment could be — a screenshot, a PDF, a CSV, a heap
  * dump — is the same thing here: bytes written into the workspace under a
- * name the agent can type into a `Read` call. Nothing about the file's type
- * is decided in this module, because nothing here has to be: what a client
- * puts in the prompt about what it uploaded is the client's business, and an
- * orchestrator that understood mime types would be an orchestrator that has
- * to be taught every new one.
+ * name the agent can type into a `Read` call. Nothing here decides the file's
+ * type, and what a client says about what it uploaded is the client's own
+ * business.
  *
- * The workspace is a plain directory this process owns (see workspaces.ts),
- * so an upload is a file write rather than a copy into a container — which is
- * also why it works while the session is stopped.
+ * The workspace is a plain directory this process owns, so an upload is a
+ * file write rather than a copy into a container, and it works while the
+ * session is stopped.
  */
 
 /** Directory attachments live in, relative to the workspace root. */
@@ -38,19 +36,16 @@ const GITIGNORE = '*\n';
  * Content types an attachment may be served back as itself.
  *
  * Images, SVG included, and PDFs — the formats a browser shows rather than
- * saves, which is what the thread and the chip's link between them need. An
- * SVG can carry script, and these are files the
- * agent can write, served from the same origin as the dashboard — but the
- * two ways one can be opened are both already shut. Through an `<img>`, which
- * is how the thread shows it, a browser runs nothing in an SVG and fetches
- * nothing it references. Opened directly as a document, the response's own
- * `default-src 'none'; sandbox` leaves it with no script, no origin and no
- * network. Serving it as `application/octet-stream` instead would only cost
- * the user sight of a diagram.
+ * saves. An SVG can carry script, and these are files the agent can write,
+ * served from the same origin as the dashboard, so both ways of opening one
+ * are shut: through an `<img>`, which is how the thread shows it, a browser
+ * runs nothing in an SVG and fetches nothing it references, and opened as a
+ * document it gets `default-src 'none'; sandbox`, which leaves it no script,
+ * no origin and no network.
  *
- * Everything not here is still a download of unknown type. HTML is the
- * deliberate omission: a page served as one runs as this origin, and unlike
- * an SVG there is no way to show it that does not.
+ * Everything not here is a download of unknown type. HTML is the deliberate
+ * omission: a page served as one runs as this origin, and there is no way to
+ * show it that does not.
  */
 const SERVABLE_TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -109,10 +104,9 @@ const MAX_COLLISIONS = 100;
  * underscore settles all of it at once, and leaves a name that survives
  * being typed into a shell.
  *
- * Unicode letters are kept: a name is something the user reads back, and
- * `Größe.png` becoming `Gr__e.png` is a worse answer than the one problem it
- * would solve. A leading dot is dropped rather than replaced, so an upload
- * cannot land on `.gitignore` and turn the ignore rule above off.
+ * Unicode letters are kept, so `Größe.png` is not reduced to `Gr__e.png`. A
+ * leading dot is dropped rather than replaced, so an upload cannot land on
+ * `.gitignore` and turn the ignore rule above off.
  */
 export function safeAttachmentName(name: string): string {
   const base = name.split(/[/\\]/).pop() ?? '';

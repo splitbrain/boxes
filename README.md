@@ -169,7 +169,7 @@ the repo, point at it instead:
 BOXES_ENV=~/.config/boxes.env docker compose up -d
 ```
 
-To actually run an agent turn you need one credential:
+To run an agent turn you need one credential:
 
 ```sh
 claude setup-token          # then export it, or put it in ./.env
@@ -343,7 +343,7 @@ work rather than only what is uncommitted.
 The review is over the whole workspace, not over one repository in it. A box
 that holds two clones side by side, a dependency checked out beside them, or a
 repository inside a repository browses as one tree, and each file is shown with
-the status and diff of the repository it is actually in — repository roots are
+the status and diff of the repository it is in — repository roots are
 marked so you can see where one stops and the next begins. Files that are in no
 repository show too, without the git parts. There is nothing to pick and
 nothing to switch between. **Compare against** takes one revision for the whole
@@ -438,8 +438,8 @@ running in the background counts as not idle: a command still going or a
 monitor still watching holds the stop off. The box is asked what is running in
 it rather than told, every `BACKGROUND_POLL_SECONDS`, so backgrounding a long
 build and closing the tab is safe, and a task that ends without reporting —
-killed, crashed, or simply quiet — stops holding the box the moment it is
-actually gone.
+killed, crashed or gone quiet — stops holding the box the moment it is
+gone.
 
 **Work still running says so.** A thread that has left something going says so
 above the composer, and names it: expand the bar and each command is there with
@@ -465,7 +465,7 @@ thread**: a permission request has been queued, or a turn has finished and is
 waiting for you. A turn finishing in front of you is not announced — that is
 the screen you are already looking at. "Finished" means the agent has stopped
 talking rather than that a request came back, so a turn holding a background
-subagent open is announced when the agent actually goes quiet, and the
+subagent open is announced when the agent goes quiet, and the
 notification says what is still running.
 
 **Web Push** is the one channel, and it reaches a browser with no tab open,
@@ -597,15 +597,16 @@ toolchain is already in the image.
 ### Language toolchains
 
 The image carries Node, Python, Go, Rust and PHP, so a session can work in any
-of them without installing anything:
+of them without installing anything. Each is whatever its source ships, so ask
+the image itself for a version:
 
-| | Version | From | Also |
-|---|---|---|---|
-| Node | 22 | NodeSource | npm; `NPM_CONFIG_PREFIX` is `~/.local` |
-| Python | 3.14 | Ubuntu 26.04 | `python3-venv`, `pipx` |
-| Go | 1.26 | Ubuntu 26.04 | `GOPATH` is `~/go`, cache `~/.cache/go-build` |
-| Rust | 1.93 | Ubuntu 26.04 | `cargo`, `rustfmt`, `cargo-clippy`, `rust-src` |
-| PHP | 8.5 | Ubuntu 26.04 | Composer 2.9, and the mbstring, xml, curl, zip, intl, sqlite3, gd and bcmath extensions |
+| | From | Also |
+|---|---|---|
+| Node | NodeSource | npm; `NPM_CONFIG_PREFIX` is `~/.local` |
+| Python | Ubuntu | `python3-venv`, `pipx` |
+| Go | Ubuntu | `GOPATH` is `~/go`, cache `~/.cache/go-build` |
+| Rust | Ubuntu | `cargo`, `rustfmt`, `cargo-clippy`, `rust-src` |
+| PHP | Ubuntu | Composer, and the mbstring, xml, curl, zip, intl, sqlite3, gd and bcmath extensions |
 
 `build-essential`, `cmake`, `pkg-config` and `libssl-dev` are there too, so a
 crate or an extension with a native dependency builds. `uv` is installed as
@@ -812,18 +813,18 @@ That matters for the one obvious way to make the image smaller.
 `playwright-cli install-browser chromium --only-shell` in a derived image
 drops the full browser and keeps just the headless shell, which is around 390
 MB of the roughly 660 MB the browsers occupy — and it is what `playwright-cli`
-actually launches, so nothing in the default path notices. What it costs is
+launches, so nothing in the default path notices. What it costs is
 the headed run above, and it costs it quietly: `chrome-headless-shell` accepts
 `headless: false` without complaint and stays headless anyway, so a suite that
 asked for a head gets a screenshot that looks plausible and is not what it
 asked for. Worth taking if this deployment never wants a head, worth knowing
 about either way.
 
-A deployment that only ever drives Chromium drops the Firefox and WebKit
+A deployment that drives only Chromium drops the Firefox and WebKit
 libraries by deleting that block from its own copy of the Dockerfile — a
 derived image cannot take them back out, since an `apt-get purge` in a later
-layer removes the files without recovering the bytes. Note that Xvfb comes in
-with Chromium's dependencies, so it survives that deletion.
+layer removes the files without recovering the bytes. Xvfb comes in with
+Chromium's dependencies, so it survives that deletion.
 
 ### The agent installs it itself
 
@@ -858,7 +859,7 @@ CLI binary it is usually enough; for anything with a postinst it is not.
 
 ### The deployment bakes it in
 
-For a package the sessions on this deployment should simply have — a language
+For a package the sessions on this deployment should have — a language
 runtime, a headless browser and its libraries, a database client — build an
 image on top of the published one and point `SESSION_IMAGE` at it. Root at
 build time, no root at runtime, and none of the container hardening changes:
@@ -895,8 +896,8 @@ is no registry to pull it from.
 Neither Docker-in-Docker nor a mounted Docker socket. A session with the host's
 socket would have root-equivalent control of the host *and* of this deployment:
 it could read every other session's workspace and `egress-secrets.json` — the
-CA key and the placeholder map — which is precisely what token translation
-exists to prevent. `--privileged` for a nested daemon is host root by another
+CA key and the placeholder map — which is what token translation exists to
+prevent. `--privileged` for a nested daemon is host root by another
 route, and would apply to every session rather than the one that asked. A
 session that genuinely needs to run containers wants either an opt-in
 `sysbox-runc` runtime on the host, or a facility where the orchestrator creates
@@ -941,8 +942,8 @@ Known residual risks, accepted deliberately:
 - Sibling sessions share a deployment's placeholders, so they map to the same
   real credentials. Per-session placeholders arrive with per-session
   credentials.
-- Protocol behaviour is pinned to `claude-agent-acp` 0.75.1. Re-check
-  capabilities and WebSocket framing on upgrade.
+- Protocol behaviour depends on the `claude-agent-acp` build the session
+  image pins. Re-check capabilities and WebSocket framing on upgrade.
 
 ## Development
 

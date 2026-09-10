@@ -9,9 +9,9 @@ import { api } from '../api.ts';
  * worker is woken whether or not a tab exists, which is the difference
  * between this and asking the page to notice something.
  *
- * A plain module-level store with a subscriber set, the same shape as
- * sessions.ts: React reads it through useSyncExternalStore and nothing
- * outside this file needs a hook to change it.
+ * A plain module-level store with a subscriber set: React reads it through
+ * useSyncExternalStore, and nothing outside this file needs a hook to change
+ * it.
  */
 
 /** Why this browser cannot subscribe, when it cannot. */
@@ -70,10 +70,10 @@ export function usePush(): PushState {
 /**
  * Whether this browser is running as an installed app.
  *
- * iOS exposes the Push API only to a page added to the Home Screen, and there
- * is no way to ask "will this work if installed" — the API is simply absent
- * until then. So a browser missing it while running in a tab on a platform
- * that has service workers is told to install rather than told it cannot.
+ * iOS exposes the Push API only to a page added to the Home Screen, and the
+ * API is absent until then, with no way to ask whether installing would help.
+ * So a browser missing it while running in a tab on a platform that has
+ * service workers is told to install rather than told it cannot.
  */
 function installed(): boolean {
   const legacy = (navigator as { standalone?: boolean }).standalone;
@@ -131,8 +131,7 @@ async function worker(): Promise<ServiceWorkerRegistration> {
  * registered worker are asking at first load, long before anybody taps the
  * toggle.
  *
- * Resolves either way. Nothing on the page depends on the outcome, and a
- * browser without service workers is a browser this is simply not for.
+ * Resolves either way: nothing on the page depends on the outcome.
  */
 export async function installWorker(): Promise<void> {
   if (!window.isSecureContext || !('serviceWorker' in navigator)) return;
@@ -246,9 +245,8 @@ export async function enablePush(): Promise<void> {
 /**
  * Unsubscribes this browser, in the browser and in the orchestrator.
  *
- * The orchestrator is told first: a subscription it still holds after the
- * browser dropped it is one it will push to until a 410 comes back, and this
- * is the one moment we can save it that.
+ * The orchestrator is told first, because a subscription it still holds after
+ * the browser dropped it is one it pushes to until a 410 comes back.
  */
 export async function disablePush(): Promise<void> {
   if (state.busy) return;

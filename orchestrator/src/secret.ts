@@ -6,10 +6,9 @@ import { log } from './log.ts';
 /**
  * Resolution of the gateway's WebSocket auth token.
  *
- * An unset WS_AUTH_TOKEN means the deployment generates its own, because a
- * shipped default for a secret would be a published password. The generated
- * value lives in the data volume, so it survives restarts and rebuilds, and
- * that file is the only place the token is written.
+ * An unset WS_AUTH_TOKEN means the deployment generates its own. The
+ * generated value lives in the data volume, so it survives restarts and
+ * rebuilds, and that file is the only place the token is written.
  */
 
 /** Filename under DATA_DIR holding the generated token. */

@@ -11,8 +11,8 @@ import { Button } from '@/components/ui/button';
  * so there is only one of it.
  *
  * The comment is agent-influenceable text — the agent can write into
- * REVIEW.md — so it is rendered as a text node and nothing else. Plain text in
- * v1: `whitespace-pre-wrap` keeps the reviewer's own line breaks without
+ * REVIEW.md — so it is rendered as a text node and nothing else:
+ * `whitespace-pre-wrap` keeps the reviewer's own line breaks without
  * interpreting anything.
  */
 export function CommentCard({

@@ -3,8 +3,8 @@
  *
  * A task started in the background — a command left running, a subagent, a
  * monitor watching something — does not answer into the turn that started it.
- * It reports later, and the way it reports is that the harness wakes the agent
- * with a message in the *user's* role carrying a block of XML:
+ * It reports later, and the harness wakes the agent with a message in the
+ * user's role carrying a block of XML:
  *
  *     <task-notification>
  *     <task-id>bnztwmmw5</task-id>
@@ -12,28 +12,18 @@
  *     <event>2200/30321 ok=2193 bad=7 — rate limited, pausing 61s</event>
  *     </task-notification>
  *
- * Which is addressed to the model and is not the user speaking. Both sides of
- * Boxes have to read it, for different reasons — the dashboard draws it as a
- * row instead of a bubble (dashboard/src/lib/task-notifications.ts), and the
- * orchestrator counts what is still running so the idle reaper does not stop a
- * box with work in it (orchestrator/src/gateway/background.ts) — so the format
- * is described once, here, rather than in two places that would drift.
+ * The block is addressed to the model rather than typed by the user. It
+ * travels as text, which is the one thing an adapter's transcript carries
+ * unchanged, so a replay reads back what was sent and one parser serves both
+ * the live stream and the reconnect.
  *
- * It travels as text, which is what makes it readable at all: text is the one
- * thing that survives an adapter's transcript unchanged, so what is read back
- * on replay is exactly what was sent, and one parser serves both the live
- * stream and the reconnect. Same bargain as the attachment envelope in
- * dashboard/src/lib/attachments.ts.
- *
- * Tolerant by design. A block this build cannot make sense of is left as the
- * text it is, because showing the XML is a much better failure than dropping
- * what a task said. The one shape not handled is a notification the harness
- * wrapped in a `<system-reminder>`, which is how the CLI's own transcript
- * carries them: the notification inside is still read, and the wrapper's own
- * lines stay as text around it. Over ACP they arrive bare.
+ * A block this build cannot read is left as the text it is. A notification
+ * the harness wrapped in a `<system-reminder>`, which is how the CLI's own
+ * transcript carries them, is still read, and the wrapper's own lines stay as
+ * text around it. Over ACP they arrive bare.
  */
 
-/** Marks a notification, and is what `parseTaskNotifications` looks for. */
+/** Delimiters of one notification block. */
 const OPEN = '<task-notification>';
 const CLOSE = '</task-notification>';
 
@@ -41,7 +31,9 @@ const CLOSE = '</task-notification>';
 export interface TaskUsage {
   /** Tokens the task spent; the harness reports these for a subagent. */
   tokens?: number;
+  /** Tool calls the task made. */
   toolUses?: number;
+  /** How long the task ran, in milliseconds. */
   durationMs?: number;
 }
 
@@ -50,10 +42,9 @@ export interface TaskNotification {
   /** The harness's id for the task, which outlives any one notification. */
   taskId: string;
   /**
-   * The tool call that started the task, when the harness names it — which it
-   * does for a background command and not for a subagent or a monitor. It is
-   * the id ACP calls `toolCallId`, so it is what correlates a report with the
-   * call that started the work.
+   * The tool call that started the task, when the harness names it, which it
+   * does for a background command and not for a subagent or a monitor. The
+   * same id ACP calls `toolCallId`.
    */
   toolUseId?: string;
   /**
@@ -61,10 +52,11 @@ export interface TaskNotification {
    * is still going, which is what a monitor's event is.
    */
   status?: string;
-  /** One line saying what happened; always present, and what the row shows. */
+  /** One line saying what happened. Always present. */
   summary: string;
   /** What the task said: a subagent's answer, or a monitor's event. */
   body?: string;
+  /** What the task cost, when the harness reports it. */
   usage?: TaskUsage;
 }
 
@@ -107,18 +99,14 @@ function usageOf(body: string): TaskUsage | undefined {
  * One block's contents as a notification, or null when this build cannot
  * read it.
  *
- * The id and the summary are what a row is made of, so a block missing
- * either is not one of these — which is also what keeps a message *about*
- * the format from being read as an instance of it.
+ * A block missing either the id or the summary is not one of these.
  */
 function notificationOf(body: string): TaskNotification | null {
   const taskId = field(body, 'task-id');
   const summary = field(body, 'summary');
   if (!taskId || !summary) return null;
 
-  // A subagent answers with `result` and a monitor reports an `event`; the
-  // two never arrive together, and joining them costs nothing if they ever
-  // do.
+  // A subagent answers with `result`, a monitor with an `event`.
   const said = [field(body, 'result'), field(body, 'event')].filter(Boolean).join('\n\n');
   const toolUseId = field(body, 'tool-use-id');
   const status = field(body, 'status');
@@ -138,9 +126,8 @@ function notificationOf(body: string): TaskNotification | null {
  * A block of message text as the notifications in it and the prose around
  * them, or null when it holds none.
  *
- * Null rather than a single text segment so a caller can tell "nothing to do
- * here" from "one segment of text", and so the ordinary case — a message the
- * user typed — costs one `indexOf` and nothing else.
+ * Null rather than one text segment, so a caller can tell that there is
+ * nothing to do here.
  */
 export function parseTaskNotifications(text: string): NotificationSegment[] | null {
   if (!text.includes(OPEN)) return null;
@@ -152,11 +139,9 @@ export function parseTaskNotifications(text: string): NotificationSegment[] | nu
     const open = text.indexOf(OPEN, read);
     if (open === -1) break;
     const close = text.indexOf(CLOSE, open);
-    // An opening tag with nothing closing it is somebody talking about the
-    // format rather than using it, and is left as the text it is. A block cut
-    // in half by a chunk boundary would read the same way, and cannot happen:
-    // the harness sends a notification as one content block, live and on
-    // replay, because a message in the user's role is not streamed.
+    // An unclosed opening tag is prose about the format rather than a block,
+    // and is left as text. The harness sends a notification as one content
+    // block, so a block cannot be cut in half here.
     if (close === -1) break;
 
     const notification = notificationOf(text.slice(open + OPEN.length, close));
@@ -179,9 +164,9 @@ export function parseTaskNotifications(text: string): NotificationSegment[] | nu
 /**
  * Statuses that say the task will not report again.
  *
- * An absent status is a task still going, which is what a monitor's event is.
- * An unknown one is read the same way: a newer harness reporting something
- * this build has not heard of is not proof that anything ended.
+ * An absent status is a task still going, which is what a monitor's event
+ * is. An unknown one is read the same way: a status this build has not heard
+ * of is no proof that anything ended.
  */
 const TERMINAL = new Set(['completed', 'failed', 'killed']);
 

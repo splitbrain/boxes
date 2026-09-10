@@ -11,8 +11,8 @@ import type { AvailableCommand } from '../stores/thread/acp-types.ts';
  * Completion for the slash commands the adapter advertises.
  *
  * The commands come from the thread's session/update stream, so what the
- * composer offers is whatever this agent actually accepts, and it changes
- * with the agent rather than with this build.
+ * composer offers is what this agent accepts, and it changes with the agent
+ * rather than with this build.
  */
 
 /** The commands the composer completes, published by the thread route. */

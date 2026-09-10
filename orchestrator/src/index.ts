@@ -19,14 +19,10 @@ const { app, manager, egress, setProxyWarnings } = buildApp(cfg, db);
 /**
  * Largest ACP frame the gateway accepts from a browser, in bytes.
  *
- * Nothing the dashboard sends comes near it — a prompt carries text, and a
- * file the user attached is uploaded over HTTP rather than put in the
- * message. But the gateway is an ACP endpoint any client may speak to, and
- * ACP prompts can carry an image inline as base64, so the ceiling is worth
- * stating: ws defaults to 100 MiB, which is not a limit so much as the
- * absence of one. A frame over it closes the connection (1009) rather than
- * failing the request, so the number wants to be one nothing legitimate
- * reaches.
+ * The gateway is an ACP endpoint any client may speak to, and an ACP prompt
+ * can carry an image inline as base64, so a ceiling is worth stating: ws
+ * defaults to 100 MiB. A frame over it closes the connection with 1009 rather
+ * than failing the request, so the number is one nothing legitimate reaches.
  */
 const MAX_WS_FRAME_BYTES = 16 * 1024 * 1024;
 
@@ -44,8 +40,7 @@ const wss = new WebSocketServer({
  *
  * The long shape names a thread, and is a connection to that conversation.
  * The short one names none and means whichever thread the session has
- * current, which is what an external ACP client and every link from before
- * this existed use — their contract does not change at all.
+ * current, which is what an external ACP client uses.
  */
 const WS_PATH =
   /^\/ws\/sessions\/([A-Za-z0-9_-]{1,64})(?:\/threads\/([A-Za-z0-9_-]{1,64}))?\/acp$/;

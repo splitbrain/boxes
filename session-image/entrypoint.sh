@@ -155,11 +155,11 @@ fi
 # of the image at session creation and never refreshed, so links written then
 # would name whichever revision that image carried, and an image rebuilt onto a
 # newer Playwright would leave every one of them dangling. Relinking against
-# the image actually running is what keeps a long-lived session working across
+# the image that is running is what keeps a long-lived session working across
 # an upgrade, and the sweep below is what clears out what the upgrade orphaned.
 #
 # Only links are swept. A real directory here is a browser some project
-# downloaded, which is not ours to remove.
+# downloaded, which this must not remove.
 link_image_browsers() {
   browsers="${PLAYWRIGHT_BROWSERS_PATH:-}"
   image="${BOXES_IMAGE_BROWSERS:-}"
@@ -224,8 +224,8 @@ fi
 # anywhere rather than for this image: which browsers are already here, which
 # are a download away, and which command to reach for.
 #
-# Not left to the README because the README is read by whoever runs the
-# deployment and this is read by whoever is in the session. An agent that does
+# Written for whoever is in the session rather than for whoever runs the
+# deployment. An agent that does
 # not know Chromium is already linked reaches for `npx playwright install`,
 # which is the one form that still costs something: npx never consults PATH, so
 # it downloads a second copy of the tool before discovering there is nothing to

@@ -16,27 +16,20 @@ export type DockerState = 'running' | 'exited' | 'missing' | 'unknown';
 /**
  * One thing a conversation has left running in its box.
  *
- * Read from the processes alive in the container rather than reported by
- * anything: nothing tells Boxes when a build finishes, and the tally that
- * tried to keep score of it drifted permanently the first time a report went
- * missing. See `orchestrator/src/gateway/background.ts`.
+ * Read from the processes alive in the container: nothing reports when a
+ * command finishes.
  */
 export interface BackgroundProcess {
   /**
    * Stable for as long as the process lives, and what a stop names.
    *
-   * Not the pid: `docker top` reads the host's numbering and the box has its
-   * own, so the pid Boxes sees is not one the box could be told to kill. This
-   * is derived from the command line, which is the same string in both.
+   * Derived from the command line rather than the pid: the host and the box
+   * number processes separately, so the pid here is not one the box accepts.
    */
   id: string;
-  /** What the agent asked for — "npm run build" — as far as it can be read. */
+  /** The command the agent ran, as far as the host reports it. */
   command: string;
-  /**
-   * When it started, in epoch milliseconds, or null where the host's `ps`
-   * would not say. A build with twenty minutes behind it and one started ten
-   * seconds ago are different news.
-   */
+  /** When it started, in epoch milliseconds, or null where `ps` does not say. */
   startedAt: number | null;
 }
 
@@ -59,30 +52,23 @@ export interface ThreadSummary {
   /**
    * True while a prompt this gateway forwarded is still open on this thread.
    *
-   * Which is not the same as the agent working: a turn that spawned a
-   * background subagent stays open long after the agent has said its piece
-   * and gone quiet. `speaking` is the one to show a reader; this is here for
-   * the reaper and for anybody debugging the pair.
+   * An open turn is not the agent working: a turn that spawned a background
+   * subagent stays open after the agent has gone quiet. `speaking` says
+   * whether the agent is working.
    */
   turnActive: boolean;
   /**
    * Whether this conversation has work still running in its box, with no turn
    * to say so.
-   *
-   * Whose work it is comes off the process; see
-   * `orchestrator/src/gateway/background.ts`. Which is what makes this worth
-   * carrying on a thread at all: a list of a box's conversations can say which
-   * one is holding it up, rather than only that something is.
    */
   backgroundBusy: boolean;
   /**
    * True while the agent is producing output on this thread — text, thinking,
    * a tool call of its own.
    *
-   * The honest answer to "is it working", and the only one that survives
-   * background work: a thread woken by a task reporting in is speaking with
-   * no prompt open, and a thread holding a subagent's turn open is silent
-   * with one. See `orchestrator/src/gateway/activity.ts`.
+   * Independent of `turnActive`: a thread woken by a task reporting in speaks
+   * with no prompt open, and a thread holding a subagent's turn open is
+   * silent with one.
    */
   speaking: boolean;
   /** Permission requests from this thread waiting for a browser to answer. */
@@ -90,9 +76,8 @@ export interface ThreadSummary {
   /**
    * Whether the reader has marked this conversation finished with.
    *
-   * A note to whoever reads the list, and nothing else: a thread marked done
-   * still runs, still takes prompts, still forks, and can be marked undone
-   * again. Nothing in the orchestrator reads it.
+   * A note for the list and nothing else. A thread marked done still runs and
+   * still takes prompts, and the mark can be taken off again.
    */
   done: boolean;
   createdAt: number;
@@ -109,8 +94,7 @@ export interface SessionSummary {
   dockerState: DockerState;
   /**
    * True while a prompt this gateway forwarded is open on any of the
-   * session's threads. Derived from them rather than stored beside them, so
-   * the two can never disagree.
+   * session's threads. Derived from the threads rather than stored.
    */
   turnActive: boolean;
   /** True while the agent is producing output on any of them. */
@@ -119,10 +103,8 @@ export interface SessionSummary {
    * Whether the box still has work running in it — a command left running, a
    * monitor watching something — with no turn to say so.
    *
-   * About the box rather than any one conversation, which is the question a
-   * card in a list is answering and the one the idle reaper asks. What is
-   * running, and whose it is, is per thread and goes to the thread that owns
-   * it; see `TurnStateParams.background`.
+   * About the box rather than any one conversation. What is running, and
+   * which thread owns it, is on {@link TurnStateParams.background}.
    */
   backgroundBusy: boolean;
   /** Permission requests waiting for a browser to answer them, on any thread. */
@@ -134,24 +116,21 @@ export interface SessionSummary {
   attachedCount: number;
   /**
    * Bearer token an ACP client authenticates the WebSocket upgrade with,
-   * carried in the subprotocol. One token covers the whole deployment, and
-   * the list carries it so opening a thread needs no further request.
+   * carried in the subprotocol. One token covers the whole deployment.
    */
   wsToken: string;
   /** Every conversation this session owns, oldest first. */
   threads: ThreadSummary[];
   /**
-   * The thread a connection that names none gets — `/sessions/:id`, the short
-   * WebSocket path, an external ACP client, a bookmark from before per-thread
-   * routes existed. A default rather than the truth about what is loaded, and
-   * null before the session has any thread at all.
+   * The thread a connection that names none gets: `/sessions/:id`, the short
+   * WebSocket path, an external ACP client. A default rather than what any
+   * browser has loaded, and null before the session has any thread.
    */
   currentThreadId: string | null;
   /**
-   * True when the adapter advertised `sessionCapabilities.fork`. The capability
-   * is unstable in the ACP schema, so the UI offers forking only when it is
-   * there, and false is also what an adapter that has not yet been reached
-   * reports.
+   * True when the adapter advertised `sessionCapabilities.fork`. The
+   * capability is unstable in the ACP schema, so an adapter may omit it.
+   * False is also what an adapter that has not been reached yet reports.
    */
   canFork: boolean;
   /**
@@ -164,21 +143,13 @@ export interface SessionSummary {
   agentSetName: string | null;
   /**
    * How much disk this session is taking up, in bytes, or null when there is
-   * no answer yet.
+   * no measurement yet.
    *
-   * Its workspace and its home together — the agent's files, and the thread
-   * history, tool caches and runtime installs that on a box which has been
-   * working are usually the larger half. One number, because the question a
-   * card is answering is how big this box has got.
-   *
-   * Rough on purpose, and a reading rather than a tally: the orchestrator
-   * walks the directories in the background and answers list requests from
-   * what it last measured. A running box is re-measured at most every quarter
-   * of an hour, and a stopped one is measured once and then not again —
-   * nothing is running in it, so nothing in it is changing. Null covers both
-   * "not measured yet" — the first poll after the orchestrator started — and
-   * a session with no directory to walk at all. Zero would be a claim; null
-   * is the absence of one. See `orchestrator/src/diskusage.ts`.
+   * Its workspace and its home together. Measured in the background and read
+   * from the last measurement, so it lags: a running box is re-measured at
+   * most every fifteen minutes, and a stopped one is not re-measured at all.
+   * Null covers both a session not measured yet and one with no directory to
+   * walk.
    */
   diskBytes: number | null;
   createdAt: number;
@@ -192,21 +163,19 @@ export interface SessionDetail extends SessionSummary {
   networkName: string;
   subnet: string;
   /**
-   * The named volume that used to hold the workspace, and still does for a
-   * session created before workspaces became directories. Empty once the
-   * session is directory-backed, which it becomes at its next start.
+   * The named volume holding the workspace of a session created before
+   * workspaces became directories. Empty for a directory-backed session,
+   * which a volume-backed one becomes at its next start.
    */
   wsVolume: string;
   /**
    * Where the session's files are on the orchestrator's own filesystem, or
-   * null while the session is still volume-backed — which is also what says
-   * the review surface cannot read it yet.
+   * null while the session is still volume-backed.
    */
   workspaceDir: string | null;
   /**
-   * The named volume that used to hold the home, and still does for a session
-   * created before homes became directories. Empty once the session is
-   * directory-backed, which every session created since is.
+   * The named volume holding the home of a session created before homes
+   * became directories. Empty for a directory-backed session.
    */
   homeVolume: string;
   /**
@@ -265,10 +234,9 @@ export interface AcpLogPage {
 /**
  * Which copy of one image the deployment is running, and when it was built.
  *
- * The digest is the registry's manifest digest wherever there is one, because
- * that is what a published tag is compared against. An image built on this
- * host has never been in a registry and has none, so its own config digest
- * stands in: it names the same one image, just to nobody else.
+ * The digest is the registry's manifest digest where there is one. An image
+ * built on this host has never been in a registry, so its config digest
+ * stands in.
  */
 export interface ImageInfo {
   /** `sha256:...`, of the manifest where there is one and of the config otherwise. */
@@ -279,9 +247,8 @@ export interface ImageInfo {
    * What the image takes on this host, in bytes, or null where it says
    * nothing.
    *
-   * The daemon's own figure, which is the uncompressed size of every layer
-   * rather than the download — layers shared with another image are counted
-   * here and are not fetched twice.
+   * The daemon's figure: the uncompressed size of every layer, not the
+   * download. A layer shared with another image is counted here as well.
    */
   sizeBytes: number | null;
 }
@@ -408,8 +375,8 @@ export interface EgressCredential {
 }
 
 /**
- * The proxy's entire configuration. It holds this in memory only, has none of
- * it at rest, and starts with none of it at all until the orchestrator pushes.
+ * The proxy's entire configuration. The proxy holds it in memory only, and
+ * has none of it until the orchestrator pushes.
  */
 export interface EgressPolicy {
   /**
@@ -473,20 +440,17 @@ export interface ReviewTreeEntry {
   /** Path relative to the workspace, slash-separated. */
   path: string;
   isDir: boolean;
-  /** Absent on files, which are the bulk of a tree. */
+  /** Absent on files. */
   children?: ReviewTreeEntry[];
-  /**
-   * True on the directory a repository is rooted at, so the boundaries are
-   * visible while scrolling across them. Absent everywhere else.
-   */
+  /** True on the directory a repository is rooted at. Absent everywhere else. */
   repo?: boolean;
 }
 
 /**
  * One repository the workspace holds.
  *
- * A review is over the workspace, not over a repository in it, so these are an
- * attribute of the paths in the tree rather than a thing to pick between.
+ * A review is over the workspace rather than over one repository in it, so
+ * these describe the paths in the tree.
  */
 export interface ReviewRepo {
   /**
@@ -512,18 +476,14 @@ export interface ReviewRepo {
  * main-in-each, through the merge base with that repository's own HEAD.
  *
  * Empty means each repository's own working tree, which is the default. Where
- * it landed is on {@link ReviewRepo.baseCommit}, because it is a different
- * commit in every repository and in some of them none.
+ * it landed is on {@link ReviewRepo.baseCommit}.
  */
 export interface ReviewBase {
   /** What the user asked for: a branch, a tag, a short id. */
   rev: string;
 }
 
-/**
- * The whole left panel in one response: a phone on a slow link gets one round
- * trip per screen rather than one per piece of it.
- */
+/** The whole left panel in one response. */
 export interface ReviewTreeResponse {
   /** Every repository the workspace holds, sorted by path. */
   repos: ReviewRepo[];
@@ -587,7 +547,7 @@ export interface ReviewFileResponse {
    * repository claims it — in which case it has no status and no diff.
    */
   repo: string | null;
-  /** Plain text. The browser tokenizes it; nothing here is render markup. */
+  /** Plain text; the browser tokenizes it. */
   content: string;
   /** True when the file was longer than the cap and the rest was dropped. */
   truncated: boolean;
@@ -595,8 +555,7 @@ export interface ReviewFileResponse {
   binary: boolean;
   /**
    * True when the change under review deleted the file. The tree still lists
-   * it, because a deletion is part of what is being reviewed, but there is
-   * nothing on disk to show.
+   * it, and there is nothing on disk to show.
    */
   deleted: boolean;
   /** The file's real size in bytes, whatever was returned. */
@@ -644,8 +603,7 @@ export interface ReviewBaseResponse {
 /**
  * The id of the set that is applied to every session.
  *
- * A constant rather than a flag column: there is exactly one, it is seeded by
- * the migration that creates the table, and both ends need to name it.
+ * There is exactly one, seeded by the migration that creates the table.
  */
 export const GLOBAL_AGENT_SET = 'global';
 
@@ -711,18 +669,12 @@ export interface AgentItemBody {
 /**
  * What one session's merged configuration comes to: the global set, with the
  * selected set laid over it.
- *
- * Returned by the preview endpoint so the editor can show what a session would
- * actually get, which is the one thing a two-set merge makes non-obvious.
  */
 export interface AgentBundlePreview {
   /** The global AGENTS.md and the set's, joined by a blank line. */
   agentsMd: string;
   items: AgentItem[];
-  /**
-   * Names the selected set took over from the global one, by kind. The editor
-   * marks these, since an override is silent otherwise.
-   */
+  /** Names the selected set took over from the global one, by kind. */
   overrides: Array<{ kind: AgentItemKind; name: string }>;
 }
 
@@ -732,28 +684,18 @@ export interface AgentBundlePreview {
  * Notification the gateway sends a browser to say whether a prompt turn is
  * running on the thread it is watching.
  *
- * ACP has nothing for this. A client learns a turn is running because it sent
- * the prompt itself and is awaiting the response — which is exactly what a
- * browser that navigated away and came back did not do. The orchestrator is
- * the client of record, so it is the only thing that knows, and this is how
- * it says so: once to each browser after its replay, and again on every
- * transition.
+ * ACP has no method for this: a client learns a turn is running by awaiting
+ * the prompt it sent, which a browser that navigated away and came back never
+ * sent. Sent to each browser after its replay, and again on every transition.
  *
- * The underscore is ACP's extension prefix, and a notification cannot be
- * replied to — so a client that has never heard of this ignores it, which is
- * what keeps the endpoint usable by ACP clients that are not this dashboard.
+ * The underscore is ACP's extension prefix, and a notification takes no
+ * reply, so a client that has never heard of this ignores it.
  */
 export const TURN_STATE_METHOD = '_boxes/turn_state';
 
 /**
  * Params of a `_boxes/turn_state` notification: everything the gateway knows
  * about what a thread is doing that a browser cannot work out for itself.
- *
- * Three facts rather than one, because one bit cannot answer the three
- * questions a reader asks — is the agent talking, may I type, will anything
- * happen if I say nothing. Background work is what pulled them apart, and it
- * is the third field. What the UI makes of the three is
- * `dashboard/src/lib/activity.ts`.
  */
 export interface TurnStateParams {
   /** The adapter's own id for the thread, as every ACP message names it. */
@@ -761,9 +703,8 @@ export interface TurnStateParams {
   /**
    * True while a prompt the gateway forwarded is still open on that thread.
    *
-   * Not what a reader is shown: the adapter holds a prompt open until the
-   * background subagents its turn spawned settle, so this stays true through
-   * however long the agent then spends waiting for somebody to type.
+   * The adapter holds a prompt open until the background subagents its turn
+   * spawned settle, so this stays true after the agent has gone quiet.
    */
   active: boolean;
   /** True while the agent is producing output on that thread, now. */
@@ -771,11 +712,6 @@ export interface TurnStateParams {
   /**
    * What this conversation has left running in the box, and nothing another
    * conversation left there.
-   *
-   * It was a boolean about the whole box once, sent to every thread, which
-   * made a shell one conversation forgot about into "something is still
-   * running" on a thread opened a minute ago — with a stop button beside it
-   * that could not reach the work.
    */
   background: BackgroundProcess[];
 }

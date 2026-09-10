@@ -11,9 +11,6 @@ import { cn } from '@/lib/utils';
  * A background task reporting in, drawn where the block of XML it arrived as
  * would otherwise be.
  *
- * See lib/task-notifications.ts for what arrives and why, and
- * stores/thread/translate.ts for where it stops being text.
- *
  * Quiet, at the size of the tool rows a working turn is otherwise made of: a
  * task reporting in is news about work going on elsewhere rather than a turn
  * of the conversation, and the thread reads better for not pretending
@@ -86,8 +83,7 @@ function TaskBody({
 }) {
   const [open, setOpen] = useState(!finished);
   const ref = useRef<HTMLDivElement>(null);
-  // The lock, minus the fight with a thread following its own output. See
-  // hooks/use-disclosure-lock.ts.
+  // The lock, minus the fight with a thread following its own output.
   const lockScroll = useDisclosureLock(ref, ANIMATION_DURATION);
 
   const onOpenChange = useCallback(

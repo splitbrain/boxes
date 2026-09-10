@@ -2,11 +2,10 @@
  * The dashboard's service worker: the part of Boxes that runs when Boxes is
  * not open.
  *
- * A push arrives here whether or not a tab exists — that is the whole reason
- * this file exists. Everything else a service worker can do (caching, offline
- * shells) is deliberately absent: the dashboard is useless without the
- * orchestrator anyway, and a stale cached bundle talking to a newer API is a
- * class of bug worth not having.
+ * A push arrives here whether or not a tab exists. Caching and offline
+ * shells are deliberately absent: the dashboard is useless without the
+ * orchestrator, and a stale cached bundle talking to a newer API is a class
+ * of bug worth not having.
  *
  * Served from the bundle root so its scope is the whole origin. It is plain
  * JavaScript rather than TypeScript because it is not part of the Vite graph:
@@ -80,8 +79,8 @@ self.addEventListener('notificationclick', (event) => {
 });
 
 /**
- * Re-registers when the push service rotates a subscription out from under
- * us, which Safari in particular does on its own schedule.
+ * Re-registers when the push service rotates a subscription out, which
+ * Safari in particular does on its own schedule.
  *
  * Without this the browser silently stops receiving anything: the old
  * subscription is dead and the orchestrator never hears about the new one.

@@ -47,7 +47,7 @@ let nextHandleId = 1;
  * A browser cannot set an Authorization header on a WebSocket, so a client
  * offers the token as a bearer.<token> subprotocol entry alongside acp.v1.
  * The gateway checks it here, on the upgrade itself. Which subprotocol is
- * negotiated is the server's own `handleProtocols`; see index.ts.
+ * negotiated is decided by the server's own `handleProtocols`.
  */
 export function checkUpgrade(
   protocolHeader: string | undefined,
@@ -144,12 +144,11 @@ function wsStream(ws: WebSocket, sessionId: string): Stream {
  * Wires one browser connection to the session's persistent upstream, pinned
  * to one of its threads.
  *
- * `threadId` is the thread the URL named, or null when it named none — an
- * external ACP client, or a link from before per-thread routes existed —
- * which pins to the session's current thread instead. Either way the pinning
- * happens here rather than in the browser: the ACP contract is the same one
- * it always was, a `session/new` that hands back an id the client did not
- * choose.
+ * `threadId` is the thread the URL named, or null when it named none, as an
+ * external ACP client does, which pins to the session's current thread
+ * instead. Either way the pinning happens here rather than in the browser,
+ * and the ACP contract stays a `session/new` that hands back an id the client
+ * did not choose.
  *
  * Disconnecting drops the handle from the broadcast set and touches nothing
  * else.
@@ -240,8 +239,7 @@ export function attachDownstream(
       // Queued permission requests wait for the replay rather than going out
       // the moment the socket opens. A client rebuilds its whole thread from
       // the replay, so a question delivered before it lands is thrown away
-      // with everything else that was on screen — and it is only ever sent
-      // once, which left the turn paused with nobody able to answer.
+      // with everything else that was on screen, and it is sent only once.
       if (method === 'session/load') up.flushPendingTo(handle);
       // An empty answer is not an error: session/load delivers the replay as
       // session/update notifications rather than as its result.

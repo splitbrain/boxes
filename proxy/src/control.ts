@@ -6,20 +6,18 @@ import type { EgressPolicy, EgressStatus } from '../../shared/types.ts';
 import { parsePolicy } from './policy.ts';
 
 /**
- * The control channel: how the proxy gets its policy, and the reason it needs
- * no configuration file and no secret at rest.
+ * The control channel: how the proxy gets its policy.
  *
  * The proxy boots empty. The orchestrator pushes the allowlist, the CA and the
  * credential map over this endpoint, and the proxy holds all of it in memory
- * for as long as it runs. Restart it and it has nothing again until the
+ * for as long as it runs. A restarted proxy has nothing again until the
  * orchestrator's reconciler pushes afresh.
  *
  * Two things keep it out of a session's reach. It binds to the compose network
- * only — sessions sit on internal networks with no route to that address,
- * because this process bridges them at L7 and does not route — and it requires
- * a bearer token. Nobody configures the token: the first push over that
- * interface sets it, and every later push has to match. The only party that
- * can reach the interface to claim it is the orchestrator.
+ * only, and a session sits on an internal network with no route to that
+ * address. It also requires a bearer token, which nobody configures: the first
+ * push sets it and every later push has to match, and the orchestrator is the
+ * only party that can reach the interface to claim it.
  */
 
 /** Largest policy body accepted, in bytes. */
@@ -48,13 +46,12 @@ function tokensMatch(a: string, b: string): boolean {
  * the network that carries the default route.
  *
  * Session networks are created internal, so they install no default route.
- * The compose network does, which makes "the interface the default route
- * leaves by" an exact description of the one the orchestrator is on, without
- * either side having to be told anything. Connecting a UDP socket performs
- * that route lookup and sends nothing.
+ * The compose network does, so the interface the default route leaves by is
+ * the one the orchestrator is on. Connecting a UDP socket performs that route
+ * lookup and sends nothing.
  *
- * Returning null means the lookup failed, and the caller binds to loopback:
- * no control channel is a safe failure, an exposed one is not.
+ * Null means the lookup failed, and the caller then binds to loopback: an
+ * unreachable control channel is a safe failure and an exposed one is not.
  */
 export async function resolveControlAddress(): Promise<string | null> {
   const address = await new Promise<string | null>((resolve) => {
@@ -84,7 +81,7 @@ export async function resolveControlAddress(): Promise<string | null> {
   });
 
   if (address === null || address === '0.0.0.0') return null;
-  // Only bind to an address this container actually holds.
+  // Only bind to an address this container holds.
   const held = Object.values(os.networkInterfaces())
     .flatMap((entries) => entries ?? [])
     .some((entry) => entry.address === address);
@@ -99,12 +96,13 @@ export interface ControlServer {
 }
 
 /**
- * Builds the control server. It is not listening when it is returned, and it
+ * Builds the control server. The server is returned before it listens, and
  * holds no token until the first authenticated push claims the channel.
  */
 export function createControlServer(opts: ControlOptions): ControlServer {
   let token: string | null = null;
 
+  /** Answers with one JSON body and the length that goes with it. */
   const send = (res: http.ServerResponse, code: number, body: unknown): void => {
     const text = JSON.stringify(body);
     res.writeHead(code, {

@@ -10,8 +10,8 @@
 # Every probe passes `curl -f`, so a 403 from the egress proxy leaves a
 # non-zero exit status.
 #
-# The token-translation and allowlist sections below only assert what the
-# deployment actually configured. Run it with credentials and an allowlist to
+# The token-translation and allowlist sections below assert only what the
+# deployment configured. Run it with credentials and an allowlist to
 # exercise all of it:
 #
 #   PROFILE_DEFAULT_GH_TOKEN=ghp_...

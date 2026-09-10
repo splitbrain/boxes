@@ -8,34 +8,18 @@ import type { BackgroundProcess } from '../../../shared/types.ts';
  * the agent says it will report back, the thread goes quiet, and — with the
  * browser closed — every test the reaper makes says the session is idle. Half
  * an hour later the container is stopped, and with it the build, the crawl or
- * the monitor watching them. Nothing says so afterwards: the thread's last
- * line is still the agent promising to report, and the report never comes.
+ * the monitor watching them.
  *
- * So the box is asked what is running in it, rather than told. This used to
- * be a tally kept from the adapter's updates: a tool call that backgrounds
- * something added an entry, and the harness's `<task-notification>` block
- * removed it again. The adding worked. The removing never happened once in
- * production — the harness delivers that block as a queued *prompt*, and the
- * ACP adapter drops a queued turn's echo from the feed as something the
- * client already knows about, which is true of a prompt the client sent and
- * false of one the harness injected. So nothing was ever removed, the tally
- * only ever grew, and a box that had run a background command was held awake
- * until a four-hour cap let go of it.
+ * So the box is asked what is running in it rather than told. This is a level
+ * rather than a count of transitions, so it cannot drift and needs nothing to
+ * be reported: a task killed with no notification, an adapter restarted, a
+ * frame lost all answer correctly on the next reading, because the question
+ * is about the present.
  *
- * That was an edge: a count of transitions, wrong forever after one is
- * missed. This is a level. It reads what is running now, so it cannot drift,
- * cannot wedge, and needs nothing to be reported at all — a task killed with
- * no notification, an adapter restarted, a frame lost, all answer correctly
- * on the next reading because the question is only ever about the present.
- *
- * The reading is per conversation, because that is the question a reader
- * asks. It was a boolean about the whole box once, and every thread was sent
- * it: a shell one conversation left behind said "something is still running"
- * on all of them, including a thread opened a minute ago that had never run
- * anything. The box does say which conversation each process belongs to — see
- * `readTree` — and the answer is only useful once it does, because the
- * stop button beside it has to reach the work rather than the reader's own
- * conversation.
+ * The reading is per conversation, which the box itself says: every agent
+ * process carries on its command line the conversation it is running, and
+ * `readTree` reads it. The stop button beside the work has to reach that work
+ * rather than the reader's own conversation.
  */
 
 /**
@@ -50,7 +34,7 @@ import type { BackgroundProcess } from '../../../shared/types.ts';
  * conversation: it is written on the process.
  *
  * `--session-id` wins where both appear, which is a fork: `--resume` names
- * the conversation it was forked *from*, and its work is not that one's.
+ * the conversation it was forked from, and its work is not that one's.
  * `--resume-session-at` is a message id rather than a session id, and does
  * not match — the `=` is part of what is looked for.
  */
@@ -121,7 +105,7 @@ export function unexplained(reading: BackgroundReading): string | null {
  *
  * FNV-1a, because this needs to be short, stable across readings, and the
  * same on both sides of a stop request. It is not a security boundary: the
- * stop resolves it against the box's own processes and can only ever match
+ * stop resolves it against the box's own processes and can only match
  * something the box is running.
  */
 export function processId(command: string): string {
@@ -144,10 +128,7 @@ export function processId(command: string): string {
  *       2>/dev/null || true && shopt -u extglob … && eval 'npm run build'
  *       < /dev/null && pwd -P >| /tmp/claude-9138-cwd
  *
- * The words the agent chose are in there, between the quotes. Boxes said for
- * a while that they were not — that a process carried the wrapper and the
- * command was lost with it — and built the bar that says so around it. They
- * are simply in the middle of the line.
+ * The words the agent chose are in there, between the quotes.
  *
  * Anything that is not that shape is its own name: a process the harness did
  * not wrap, or a wrapper of some later shape, reads better as itself than as
@@ -169,7 +150,7 @@ export function commandOf(process: string): string {
  * The shape being read is the one the session image runs: the adapter Boxes
  * spawned, one agent process under it per conversation, and under those the
  * shells the agent's tool calls run in. So the adapter's own children are
- * agents, by depth, and that alone was the rule once.
+ * agents, by depth.
  *
  * The id on a command line is the other half. A process carrying one is an
  * agent wherever it sits under the adapter, so a launcher or a re-exec
@@ -182,11 +163,9 @@ export function commandOf(process: string): string {
  * spawns the adapter as an exec and does not keep one there between
  * connections, so a container that is up and has never been opened — or that
  * has outlived the orchestrator process that opened it — runs the entrypoint
- * and nothing else. That used to read as a shape this could not understand,
- * which counted as busy: every such box said "still running" and the reaper
- * would not touch it for as long as it lasted. A box with nothing of ours in
- * it is empty, and the id is what keeps that safe — an agent that outlived
- * its adapter is still an agent, and its work is still found.
+ * and nothing else. Such a box reads as empty, and the id is what keeps that
+ * safe: an agent that outlived its adapter is still an agent, and its work is
+ * still found.
  */
 function readTree(
   processes: readonly ContainerProcess[],
@@ -206,11 +185,11 @@ function readTree(
   };
 
   // The agents first, because they are what tells the adapter apart from
-  // them. `claude-agent-acp` is the name of the adapter's *package*, and the
-  // CLI it spawns lives inside that package's own node_modules — so the token
-  // Boxes launched the adapter with is on the agent's command line too, three
-  // directories into a path. What is not is a conversation id: that is on
-  // every agent and on nothing else.
+  // them. `claude-agent-acp` names the adapter's package, and the CLI it
+  // spawns lives inside that package's own node_modules, so the token Boxes
+  // launched the adapter with is on the agent's command line too, three
+  // directories into a path. A conversation id is not: that is on every agent
+  // and on nothing else.
   const named = new Set(
     processes.filter((p) => threadOfAgent(p.command) !== null).map((p) => p.pid),
   );
@@ -431,9 +410,9 @@ export class BackgroundProbe {
    * Whether anything at all is running in the box, and a refresh started if
    * the reading has gone stale.
    *
-   * Never awaits: the first call answers false — an empty box is what a
-   * session that has just started actually has — and the reading behind it
-   * arrives before the reaper's next sweep, which is minutes away.
+   * Never awaits: the first call answers false, which is what a session that
+   * has just started has, and the reading behind it arrives before the
+   * reaper's next sweep.
    */
   get active(): boolean {
     this.freshen();

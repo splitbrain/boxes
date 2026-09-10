@@ -4,11 +4,11 @@
  *
  * Kept apart from the hook that listens for them because this is the whole of
  * the behaviour and none of it needs a browser: a run of samples in, a
- * decision out. `use-scroll-away.ts` is the wiring, and `scroll-away.test.ts`
- * is where the thresholds below are actually held to.
+ * decision out. `use-scroll-away.ts` is the wiring, and the tests are where
+ * the thresholds below are held to.
  */
 
-/** How near the top the header is simply always there. */
+/** How near the top the header always stands. */
 export const AT_TOP = 48;
 /**
  * How near the bottom counts as pinned to it.
@@ -18,10 +18,8 @@ export const AT_TOP = 48;
  * command, keeps the scroller against its bottom and grows the content behind
  * it. Every one of those steps looks like reading down, and none of it is.
  *
- * Asking the scroller rather than the app is what makes that reliable. The
- * thread's own `isRunning` clears while the last chunks are still landing —
- * measured, not guessed — so a header that trusted it moved on its own right
- * at the end of every turn.
+ * Asking the scroller rather than the app is what makes that reliable: the
+ * thread's own `isRunning` clears while the last chunks are still landing.
  */
 export const AT_BOTTOM = 8;
 /** How far a downward run has to go before it gives way. */
@@ -29,11 +27,10 @@ export const HIDE_AFTER = 32;
 /**
  * And how far back up before it returns.
  *
- * The smaller of the two: going is a decision about the reading you are doing,
- * coming back is a request, and a request should not have to be repeated. Not
- * *much* smaller, though — a scroller settling after a smooth scroll drifts by
- * a dozen pixels in either direction, and a header that answered those would
- * flicker for a living. Any flick worth the name clears two dozen.
+ * The smaller of the two: going away is a decision, coming back is a request,
+ * and a request should not have to be repeated. Not much smaller, because a
+ * scroller settling after a smooth scroll drifts by a dozen pixels either
+ * way. Any flick worth the name clears two dozen.
  */
 export const SHOW_AFTER = 24;
 /**
@@ -96,12 +93,12 @@ export function scrollAwayStart(): ScrollAwayState {
 /**
  * The state after one scroll event.
  *
- * The rule is a run rather than a position: the header goes once you have
- * scrolled thirty-odd pixels further down without changing your mind, and
- * comes back on the first hint of going the other way. Runs are measured from
- * the last turn rather than from the last event, so the pixel of jitter a
- * finger leaves on the glass cannot toggle anything, and a slow drift down
- * still adds up to a decision.
+ * The rule is a run rather than a position: the header goes after thirty-odd
+ * pixels of scrolling further down without a change of direction, and comes
+ * back on the first hint of going the other way. Runs are measured from the
+ * last turn rather than from the last event, so the pixel of jitter a finger
+ * leaves on the glass cannot toggle anything, and a slow drift down still
+ * adds up to a decision.
  */
 export function scrollAway(state: ScrollAwayState, sample: ScrollAwaySample): ScrollAwayState {
   const { top, behind, now } = sample;
@@ -122,7 +119,7 @@ export function scrollAway(state: ScrollAwayState, sample: ScrollAwaySample): Sc
 
   // Against the bottom: whatever moved the scroller, it was the content
   // arriving rather than a reader leaving. Follow the position so the next run
-  // is measured from where reading actually resumes, and decide nothing. This
+  // is measured from where reading resumes, and decide nothing. This
   // is also what keeps the collapse from flapping down here: a taller viewport
   // clamps the scroll position, and the clamp arrives as an upward step that
   // would otherwise read as a request to come back.

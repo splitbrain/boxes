@@ -2,11 +2,9 @@
  * A prompt one view stages for another to pick up, consumed once.
  *
  * The review's "Hand to agent" opens the thread with a line already in the
- * composer. That used to travel in the history entry's state, which the
- * browser replays: pressing back and then forward re-staged the prompt, and a
- * turn nobody typed reappeared in the composer. History state describes an
- * entry, and this describes a handover — so it lives beside the router
- * instead of inside it, and taking it clears it.
+ * composer. It lives beside the router rather than in the history entry's
+ * state, which the browser replays: back and then forward would otherwise
+ * re-stage the prompt. Taking it clears it.
  *
  * Per session, because two tabs on two boxes are a thing this app supports.
  */

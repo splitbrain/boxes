@@ -57,11 +57,11 @@ import {
  * read-modify-write, and the routing of git questions to the repository that
  * can answer them.
  *
- * **The workspace is the review.** The root is always the session's
+ * The workspace is the review. The root is always the session's
  * `/workspace`, there is nothing to pick and nothing to switch between, and
- * every file under it is browsable in one tree. What a repository decides is
- * which status and which diff a *path* is shown with: the closest enclosing
- * one, by longest prefix. See `repos.ts`.
+ * every file under it is browsable in one tree. A repository decides which
+ * status and which diff one path is shown with: the closest enclosing one, by
+ * longest prefix.
  *
  * REVIEW.md is the single source of truth and it is shared with the agent, so
  * there is no annotation table anywhere. Every mutation is
@@ -72,9 +72,7 @@ import {
  * than data, because every write re-serializes the whole parsed file.
  *
  * It sits at `/workspace/REVIEW.md`, outside every repository, so it cannot be
- * accidentally committed or show up in a repository's own status — and
- * "address the comments in REVIEW.md" stays one line however many
- * repositories the workspace holds.
+ * committed by accident or show up in a repository's own status.
  *
  * Nothing here starts or touches a session container. That is the point of the
  * workspace being a directory: the natural moment to review is when the agent
@@ -104,10 +102,9 @@ export class ReviewService {
   /**
    * The repositories a session's workspace holds, as last discovered.
    *
-   * Rediscovered by the tree fetch and reused by everything else. With the
-   * poll gone there is no background caller to keep a TTL honest, so fetches
-   * are the clock: `GET /review/tree` walks again, and a file open, a comment
-   * and a base change all reuse what it left.
+   * Rediscovered by the tree fetch and reused by everything else. Fetches are
+   * the clock: `GET /review/tree` walks again, and a file open, a comment and
+   * a base change all reuse what it left.
    */
   private readonly repoMaps = new Map<string, RepoMap>();
 
@@ -210,10 +207,8 @@ export class ReviewService {
 
     const review = await this.driftAll(id, workspace);
     const entries = markRepoRoots(withDeleted(tree.entries, deletedPaths(statuses)), map);
-    // The paths this response offers, remembered for the file open that almost
-    // always follows it. Without this the cache was only ever filled by the
-    // first file request, which then paid for the `git ls-files` and the status
-    // run a second time — the exact cost it exists to avoid.
+    // The paths this response offers, remembered for the file open that
+    // almost always follows it.
     this.rememberPaths(id, entries);
 
     return {
@@ -234,12 +229,10 @@ export class ReviewService {
    *
    * The diff and the status come from the repository that owns the path, with
    * the path spelled the way that repository spells it. A file no repository
-   * claims gets neither, which is the old no-git behaviour narrowed from the
-   * whole session to the one file.
+   * claims gets neither.
    *
    * The content is plain text. Highlighting happens in the browser, so nothing
-   * on this wire is render markup — which is also what keeps the orchestrator
-   * out of the presentation business and makes every line an addressable row.
+   * on this wire is render markup and every line is an addressable row.
    */
   async file(id: string, relPath: string): Promise<ReviewFileResponse> {
     const workspace = this.workspace(id);
@@ -525,12 +518,11 @@ export class ReviewService {
   /**
    * Resolves a client-supplied path, requiring that the tree lists it.
    *
-   * Containment (fs.ts) is the security boundary; this is the narrower rule
-   * that the API serves what the browser was shown. Containment is now against
-   * `/workspace` rather than a subdirectory of it, which is the same rule over
-   * a wider space: what a contained path may be in is any repository, or none.
-   * Every refusal is the same 404, so an escape attempt learns nothing an
-   * unknown file would not have told it.
+   * `resolveInRoot` is the security boundary; this is the narrower rule that
+   * the API serves what the browser was shown. Containment is against
+   * `/workspace`, so a contained path may be in any repository it holds, or in
+   * none. Every refusal is the same 404, so an escape attempt learns nothing
+   * an unknown file would not have told it.
    *
    * Null is not a refusal: the tree lists the path and the working tree does
    * not have it, which is a file the change deleted. What to say about one is

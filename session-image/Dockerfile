@@ -4,12 +4,9 @@
 #
 # Ubuntu, and Node from NodeSource rather than from the official node image,
 # because those are two independent choices and this image wants both current.
-# The OS is picked for its language toolchains: 26.04 carries PHP 8.5, Go 1.26
-# and Rust 1.93 where Debian stable carries 8.4, 1.24 and 1.85, and Debian
-# oldstable -- what the node image was pinning us to -- carried 8.2, 1.19 and
-# 1.63. Node is picked for the two npm globals the agent itself runs. Basing
-# on the node image would have tied the first choice to the second, and all it
-# ever supplied was Node, npm, and a uid 1000 this file renamed anyway.
+# The OS is picked for its language toolchains, which are newer than Debian
+# stable's. Node is picked for the two npm globals the agent itself runs. The
+# official node image would tie the first choice to the second.
 FROM ubuntu:26.04
 
 # What lets the orchestrator recognise a copy of this image after `:latest`
@@ -17,7 +14,7 @@ FROM ubuntu:26.04
 # and nothing about an untagged image otherwise says whose it was — so without
 # this the only way to reclaim the space is `docker image prune`, which is not
 # an operation a tool holding the host's Docker socket has any business
-# performing on images it did not fetch. See `orchestrator/src/docker.ts`.
+# performing on images it did not fetch.
 LABEL boxes.image=session
 
 # What the repositories below need before they can be added. apt reaches the
@@ -28,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Node from NodeSource, because Ubuntu's own is frozen at whatever the release
-# shipped for the whole of its life -- 26.04 is on 22.x with npm 9, and the
-# runtime the agent itself depends on should not be stuck there. The signing
+# shipped for the whole of its life, and the runtime the agent itself depends
+# on should not be stuck there. The signing
 # key is ASCII-armoured, so a .asc name is all `signed-by` needs and there is
 # no gnupg to install for a dearmor. `nodistro` is NodeSource's one
 # distribution-independent suite, so nothing here names a codename.
@@ -46,7 +43,6 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # procps is not only for a person in a terminal: Boxes reads the box's own
 # process table to find what a conversation has left running in it, and the
 # stop button beside that list kills by a pid only `ps` in here can give it.
-# See orchestrator/src/gateway/background.ts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       ripgrep \
@@ -76,7 +72,7 @@ RUN install -d -m 0755 /usr/share/keyrings \
 # Go, Rust and PHP, so a session can work in them without installing a
 # toolchain first. The distribution's own packages rather than upstream
 # tarballs: they carry its security updates and pin no checksum here. This is
-# the reason the base image is Ubuntu -- see README, "Language toolchains".
+# the reason the base image is Ubuntu.
 #
 # pkg-config and libssl-dev are not toolchains but are what the common
 # native-dependency crates and extensions look for; build-essential, already
@@ -108,7 +104,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # /usr at runtime, so a tool that is not here is one the agent has to build or
 # do without in the middle of a task.
 #
-# Chosen for what a coding agent actually hits, not for completeness -- these
+# Chosen for what a coding agent reaches for rather than for completeness -- these
 # add a few hundred megabytes between them, and a deployment that wants a
 # leaner image strips them in a derived one.
 #
@@ -190,7 +186,7 @@ RUN npm install -g --prefix /usr/local \
 # Pinned, like the ACP adapter, and for a better reason: this is 0.1.x, and it
 # depends on a prerelease Playwright.
 #
-# Chromium is the only browser *binary* here. Firefox and WebKit would roughly
+# Chromium is the only browser binary here. Firefox and WebKit would roughly
 # double the layer, and a coding agent wants a browser rather than a
 # compatibility matrix -- but a project that does want the matrix can download
 # them for itself, and the block after this one is what makes that work.
@@ -212,7 +208,7 @@ RUN npm install -g --prefix /usr/local \
 # at the end of the file. Read that block for why the two differ at runtime.
 #
 # libnss3-tools is not Playwright's: it is certutil, which the entrypoint uses
-# to put the deployment CA where Chromium will actually look for it.
+# to put the deployment CA where Chromium looks for it.
 #
 # --prefix for the reason the adapter's install gives above, and here it also
 # has to land somewhere the next command can reach: /usr/local/bin is on PATH,
@@ -271,18 +267,18 @@ RUN npm install -g --prefix /usr/local @playwright/cli@${PLAYWRIGHT_CLI_VERSION}
 # that looks like is a download that reports success followed by a launch that
 # dies on `libgtk-3.so.0`, or on WebKit's forty-odd gstreamer and flite
 # objects -- which reads as a broken image rather than as a missing package.
-# Putting the libraries here and leaving the binaries out is what makes the
-# documented "download the build your version wants" route in the README work
-# for all three browsers instead of only for Chromium.
+# Putting the libraries here and leaving the binaries out is what lets a
+# session download the build its own Playwright wants, for all three browsers
+# instead of only for Chromium.
 #
 # Deps rather than binaries is also the only half that keeps: a binary here
-# would be at the revision *this* image's Playwright pins, and a project
-# pinning its own resolves a different revision and downloads it anyway --
+# would be at the revision this image's Playwright pins, and a project pinning
+# its own resolves a different revision and downloads it anyway --
 # the same argument the /usr/local/bin/chromium link above exists to answer,
 # for whoever would rather take the revision that is here than fetch. Library
 # names are not versioned that way, so one install serves whatever Playwright
 # a project brings. It costs roughly what the two binaries would have, mostly
-# in WebKit's gstreamer stack; a deployment that only ever drives Chromium
+# in WebKit's gstreamer stack; a deployment that drives only Chromium
 # deletes this block and the check that pairs with it, which is the only way
 # to get the bytes back -- purging in a derived layer would not.
 #
@@ -356,7 +352,7 @@ ENV HOME=/home/agent \
 # something it can do on its own -- and it needs no privilege the session
 # does not already have, which is the point.
 #
-# Set *after* the global install above, deliberately. That one belongs in
+# Set after the global install above, deliberately. That one belongs in
 # /usr/local, on the image. Landing it in the session's home instead would pin
 # the adapter to whatever version that session was born with: a home is filled
 # from this image exactly once, when the session is created, and never
@@ -371,7 +367,7 @@ ENV NPM_CONFIG_PREFIX=/home/agent/.local \
 # a read-only /usr costs them nothing and there is nothing to redirect. What
 # they do not do is put those directories on PATH, which is what makes
 # `go install`, `cargo install` and `composer global require` produce a tool
-# the agent can then actually run. The tools create the directories
+# the agent can then run. The tools create the directories
 # themselves; being absent on PATH is harmless.
 ENV PATH=/home/agent/.local/bin:/home/agent/go/bin:/home/agent/.cargo/bin:/home/agent/.config/composer/vendor/bin:$PATH
 
@@ -497,12 +493,12 @@ RUN set -eu; \
 # soname the build does not link against, or an architecture the map has no
 # entry for at all -- each of which shows up only when the process execs.
 #
-# Firefox sharpens that: Playwright publishes a WebKit built for 26.04 but no
-# Firefox, and points 26.04 at the 24.04 Firefox build instead. So the one
-# browser here running against libraries from a release it was not built on
-# is the one this most needs to try, and a future image bump that moves the
-# base off a release Playwright still maps stops here rather than in a
-# session.
+# Firefox sharpens that: Playwright publishes a WebKit built for this base's
+# release but no Firefox, and points it at an older release's Firefox build
+# instead. So the one browser here running against libraries from a release it
+# was not built on is the one this most needs to try, and a future image bump
+# that moves the base off a release Playwright still maps stops here rather
+# than in a session.
 #
 # PLAYWRIGHT_BROWSERS_PATH is exported to the path a session will really use,
 # rather than left at the image's own, for two reasons: that directory is what
@@ -540,7 +536,7 @@ RUN set -eu; \
     ' "$deps/playwright-core"; \
     rm -rf /home/agent/.cache
 
-# Where a session looks for browsers, which is no longer where the image keeps
+# Where a session looks for browsers, which is not where the image keeps
 # them.
 #
 # Everything above this line needed the variable pointed at the image, because
@@ -550,9 +546,9 @@ RUN set -eu; \
 # resolves here without being copied, and a browser a project downloads for
 # itself lands beside the links rather than failing to land at all.
 #
-# What this buys is not the download -- that route worked before, by exporting
-# the variable per project, and the README still describes it. It is that
-# `playwright install chromium` stops hanging. Pointed at a directory the
+# What this buys is that `playwright install chromium` stops hanging, rather
+# than the download itself, which a project can still get by exporting the
+# variable for itself. Pointed at a directory the
 # agent cannot write, that command does not report the browser it already
 # found and does not fail either: it opens a connection to the egress proxy
 # and stalls with no output, indefinitely -- seven minutes and zero bytes when
@@ -565,7 +561,7 @@ RUN set -eu; \
 # its session is created and never refreshed, so a baked link would name
 # whichever revision that image carried and dangle the moment the image is
 # rebuilt onto a newer Playwright. The entrypoint relinks against the image it
-# is actually running under, and drops links that no longer resolve.
+# is running under, and drops links that no longer resolve.
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/agent/.cache/ms-playwright
 
 # The browser resolves through links of the kind the entrypoint writes.

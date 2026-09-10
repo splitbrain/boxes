@@ -30,12 +30,11 @@ import { Textarea } from '@/components/ui/textarea';
  * One set: its AGENTS.md, its skills and its slash commands.
  *
  * Everything here is a file the agent will read, so the editor is textareas
- * rather than forms — there is no schema to offer, and inventing one would
- * only get in the way of pasting a skill somebody already wrote.
+ * rather than forms: there is no schema to offer.
  *
- * Nothing saves as you type. Each section has its own Save, and what is saved
- * reaches a box the next time that box starts; the note at the top says so,
- * because a box already running would otherwise look like it ignored the edit.
+ * Nothing saves on typing. Each section has its own Save, and what is saved
+ * reaches a box the next time that box starts, which the note at the top
+ * says.
  */
 export function AgentSetEditor() {
   const { setId = '' } = useParams();
@@ -309,10 +308,9 @@ function ItemSection({
 }
 
 /**
- * What a box selecting this set actually ends up with.
+ * What a box selecting this set ends up with.
  *
- * The merge of two sets is the one thing about this feature that is not
- * visible from either half, so it is shown rather than left to be worked out.
+ * The merge of two sets is not visible from either half, so it is shown.
  */
 function Merged({ preview }: { preview: AgentBundlePreview }) {
   const skills = preview.items.filter((i) => i.kind === 'skill');

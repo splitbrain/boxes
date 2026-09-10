@@ -60,7 +60,7 @@ export interface ImagePart {
  * Built from the envelope the composer put in the prompt rather than from
  * anything the adapter says, which is what makes it identical live and on
  * replay: the envelope is text, and text is the one thing that survives a
- * transcript unchanged. See lib/attachments.ts.
+ * transcript unchanged.
  */
 export interface AttachmentPart {
   type: 'attachment';
@@ -75,9 +75,9 @@ export interface AttachmentPart {
  * A background task reporting in, as a row of its own.
  *
  * Built from the block of XML the harness wakes the agent with rather than
- * from anything the adapter says — the same bargain the attachment chip
- * makes, and for the same reason: the text is what survives a transcript, so
- * live and replayed threads draw the same row. See lib/task-notifications.ts.
+ * from anything the adapter says, on the same terms as the attachment chip:
+ * the text is what survives a transcript, so live and replayed threads draw
+ * the same row.
  */
 export interface TaskPart extends TaskNotification {
   type: 'task';
@@ -393,10 +393,9 @@ function mergeTool(part: ToolPart, u: ToolCallUpdate): void {
 /**
  * Renders a tool call's content as the plain text the fallback shows.
  *
- * An image is named rather than rendered here — the picture itself is shown
- * beside the card, by the conversion in convert.ts. Naming it is not
- * decoration: an empty result reads as a tool that produced nothing, which
- * is what a Read of a PNG used to look like.
+ * An image is named rather than rendered here; the picture itself is shown
+ * beside the card. Naming it keeps an image result from reading as a tool
+ * that produced nothing.
  */
 export function toolOutputText(part: ToolPart): string {
   return part.content

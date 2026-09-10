@@ -23,19 +23,17 @@ import { chownToAgent } from '../workspaces.ts';
  *
  * The rule is: resolve the client's path with `realpath`, require the result to
  * be at or under the root's own realpath, and refuse a final component that is
- * a symlink at all. The review being over the workspace rather than over one
- * repository in it does not change the rule; what changes is that a contained
- * path may now be in any repository, or in none.
+ * a symlink at all. A review covers the whole workspace, so a contained path
+ * may be in any repository it holds, or in none.
  *
  * Accepted residual: a determined agent can race the check against the open,
  * because Node exposes no way to open a file beneath a directory atomically
  * (there is no `openat`/`RESOLVE_BENEATH` binding). The window is between the
  * `realpath` and the `readFileSync` below. What it buys an attacker is one read
- * of one file that the orchestrator's own uid can read; what it costs to close
- * is either a native dependency or an exec per read, which is the design this
- * one replaced. Every read here uses this process's own file descriptors — no
- * shell, no argument interpolation — so nothing beyond the read itself follows
- * from winning the race.
+ * of one file that the orchestrator's own uid can read, and closing it costs
+ * either a native dependency or an exec per read. Every read here uses this
+ * process's own file descriptors — no shell, no argument interpolation — so
+ * nothing beyond the read itself follows from winning the race.
  */
 
 /** How much of a file the file endpoint will return. */
@@ -55,9 +53,9 @@ export type Resolved = { ok: true; path: string } | { ok: false; reason: PathRef
  * touches the filesystem.
  *
  * Rejects absolute paths, NUL bytes, Windows drive letters and backslashes, and
- * any `..` segment. A `..` *segment* rather than the two characters anywhere:
- * `[...slug].astro` is a real filename and has to stay openable, which is why
- * the check is on segments and not on the text.
+ * any `..` segment. A segment rather than the two characters anywhere:
+ * `[...slug].astro` is a real filename and has to stay openable, so the check
+ * is on segments rather than on the text.
  */
 export function validRelativePath(path: string): boolean {
   if (path === '' || path.length > 4096) return false;
@@ -169,9 +167,8 @@ export function fileLines(content: string): string[] {
  *
  * Temp file then rename, so a reader — the agent, reading REVIEW.md — never
  * sees a half-written document, and so a crash mid-write leaves the previous
- * version rather than a truncated one. The chown is what lets the agent edit or
- * delete what was written, which is the whole point of putting the review in
- * the workspace.
+ * version rather than a truncated one. The chown is what lets the agent edit
+ * or delete what was written.
  */
 export function writeFileAtomic(path: string, content: string): void {
   const tmp = `${path}.tmp`;

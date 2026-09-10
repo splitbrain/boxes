@@ -28,11 +28,9 @@ export interface Up {
  * more.
  *
  * This is the rule the whole strategy rests on: a control labelled back or up
- * never pushes. Every one of them used to be a plain link, so sessions →
- * thread → back left the stack as sessions, thread, sessions — and the
- * device's own back button then went *into* the thread again. Two controls
- * pointing the same way is what made the button feel unpredictable, and no
- * amount of remembering where the visitor came from fixes it.
+ * never pushes. A plain link would leave the stack as sessions, thread,
+ * sessions, and the device's own back button would then go into the thread
+ * again.
  *
  * What gets popped is everything this view put on the stack, in one step: the
  * file the review opened, the thread a fork moved to, the markers its dialogs

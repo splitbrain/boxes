@@ -5,24 +5,14 @@ import { log } from './log.ts';
 /**
  * What a session is made of on disk: its workspace, and its home.
  *
- * Both used to be named volumes — `ws-<id>` and `home-<id>` — mounted only
- * into the session container, which left the orchestrator with no filesystem
- * path to either: reaching a file meant a `docker exec`. Both are now
- * directories under DATA_DIR, bind-mounted in, so the orchestrator reads and
- * writes them as ordinary files, runs git over the workspace itself with no
- * container running, and can measure what a session is costing by walking two
- * directories.
+ * Both are directories under DATA_DIR, bind-mounted into the session
+ * container, so the orchestrator reads and writes them as ordinary files,
+ * runs git over a workspace with no container running, and measures what a
+ * session costs by walking two directories.
  *
- * The workspace moved first, for review. The home followed for the plainer
- * reason: everything a session is should be in one place. Its content is
- * different in kind — thread transcripts, the tool caches an agent installs
- * at runtime, and whatever credential a login inside the box wrote — and
- * nothing outside the container reads it. But a named volume was never a
- * boundary against this process, only a path it did not have: the volume sits
- * on the same host, under the same root. What it actually cost was that the
- * biggest thing a session owns was the one thing Boxes could not see.
- *
- * `homes/` is 0700 for that content, the same as `workspaces/`.
+ * A home holds thread transcripts, the tool caches an agent installs at
+ * runtime, and whatever credential a login inside the box wrote, so `homes/`
+ * is 0700, the same as `workspaces/`.
  */
 
 /**
@@ -32,8 +22,7 @@ import { log } from './log.ts';
  * on, so it is defined once here: `SESSION_UID`/`SESSION_GID` default to it in
  * config.ts, and `session-image/Dockerfile` builds its `agent` user on it
  * through build args of the same name. Outside the range a login user is
- * normally given, because a service sharing a uid with a person is exactly
- * what a per-service uid is for.
+ * normally given.
  *
  * A bind mount — unlike a named volume — is not ownership-initialised by
  * Docker, so every directory and file the orchestrator creates in a workspace
@@ -45,12 +34,8 @@ export const DEFAULT_SESSION_UID = 1020;
 export const DEFAULT_SESSION_GID = 1020;
 
 /**
- * The uid and gid in force, installed once at boot from the parsed config.
- *
- * Module state with an explicit installer, like docker.ts's client and
- * config.ts's own cache: the alternative is threading two numbers through
- * ReviewService and every atomic write under it, for a value that is fixed for
- * the life of the process.
+ * The uid and gid in force, installed once at boot from the parsed config and
+ * fixed for the life of the process.
  */
 let owner: { uid: number; gid: number } = {
   uid: DEFAULT_SESSION_UID,
@@ -89,9 +74,9 @@ export function workspacePath(dataDir: string, sessionId: string): string {
  *
  * Bind sources are resolved by the daemon, not by the process asking for the
  * mount, so a bind of a path under the orchestrator's own /data cannot use
- * the orchestrator's path for it. POSIX joining is correct on every host the
- * README supports: on Linux the daemon is the host, and under Docker Desktop
- * it lives in a Linux VM.
+ * the orchestrator's path for it. POSIX joining is correct on every supported
+ * host: on Linux the daemon is the host, and under Docker Desktop it runs in
+ * a Linux VM.
  */
 export function hostWorkspacePath(hostDataDir: string, sessionId: string): string {
   return posix.join(hostDataDir, WORKSPACES_SUBDIR, sessionId);
@@ -141,10 +126,9 @@ export function createWorkspace(dataDir: string, sessionId: string): string {
  * Creates a session's home directory, empty.
  *
  * Empty is not usable on its own: a bind mount covers whatever the image put
- * in `/home/agent`, and unlike a named volume Docker does not seed it. What
- * fills it is `seedHomeFromImage` in docker.ts, which copies the image's own
- * home in and hands it to the agent — the mode and owner set here are only
- * what stands until it does.
+ * in `/home/agent`, and Docker does not seed a bind the way it seeds a named
+ * volume. `seedHomeFromImage` copies the image's own home in, and the mode
+ * and owner set here stand until it does.
  */
 export function createHome(dataDir: string, sessionId: string): string {
   ensureWorkspacesRoot(dataDir);
@@ -170,15 +154,13 @@ export function removeHome(dataDir: string, sessionId: string): void {
 
 /**
  * Gives a path to the session's agent user, so the agent can edit and delete
- * what the orchestrator wrote — REVIEW.md above all, which is the point of
- * putting it in the workspace.
+ * what the orchestrator wrote, REVIEW.md above all.
  *
- * Only root can give a file away. A deployment that runs the orchestrator as
- * the session uid itself needs none of this and returns immediately, which is
- * the arrangement that lets the orchestrator drop root; one that runs it as
- * some other non-root user is left with files it owns itself, which works for
- * everything but a container actually mounting them, so the failure is logged
- * rather than thrown.
+ * Only root can give a file away. A deployment running the orchestrator as
+ * the session uid itself needs none of this and returns at once, which is
+ * what lets it drop root. One running as some other non-root user keeps the
+ * files it wrote, which works until a container mounts them, so the failure
+ * is logged rather than thrown.
  */
 export function chownToAgent(path: string): void {
   if (process.getuid?.() === owner.uid) return;

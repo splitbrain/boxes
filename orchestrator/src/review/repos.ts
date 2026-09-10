@@ -20,8 +20,8 @@ import { IGNORED_DIRS } from './tree.ts';
  *     repoFor('repo-a/inner/b.txt') -> repo-a/inner   (nested wins)
  *     repoFor('notes/todo.md')      -> null           (no repository)
  *
- * A nested repository needs no special case — it is simply a longer prefix
- * that wins — and a file no repository claims is shown without git.
+ * A nested repository needs no special case, being a longer prefix that
+ * wins, and a file no repository claims is shown without git.
  */
 
 /** One repository found in a workspace. */

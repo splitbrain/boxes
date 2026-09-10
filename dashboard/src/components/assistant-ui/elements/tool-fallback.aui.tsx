@@ -137,7 +137,7 @@ function ToolFallbackTrigger({
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
   status?: ToolCallMessagePartStatus;
-  /** Whether this call is actually putting a question to the user. */
+  /** Whether this call is putting a question to the user. */
   asking?: boolean;
 }) {
   const statusType = status?.type ?? "complete";
@@ -146,15 +146,14 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const Icon = statusIconMap[statusType];
-  // A call waiting on a permission question has not run, and one still running
-  // has not finished. Both used to read "Used tool", which said the opposite
-  // of what the buttons underneath were asking.
+  // A call waiting on a permission question has not run, and one still
+  // running has not finished, so neither reads as "Used tool".
   //
   // Boxes edit: requires-action alone does not mean "wants to run". A call
   // with no result inherits its message's status, so every unfinished call in
-  // a message that is waiting for something reads as requires-action — and
-  // said "Wants to run" over a question nobody had asked. `asking` is the
-  // narrower fact: there is an unanswered approval on this call.
+  // a message that is waiting for something reads as requires-action.
+  // `asking` is the narrower fact: there is an unanswered approval on this
+  // call.
   const label = isCancelled
     ? "Cancelled tool"
     : statusType === "requires-action"
@@ -364,15 +363,14 @@ const offersInterruptAction = (
  * Whether this call is putting a question to the user right now.
  *
  * Boxes edit. The runtime derives a part's status from its message's, and a
- * message with any result-less tool call in it is requires-action — so a call
- * that merely never reported back arrived here looking exactly like one
- * blocked on a permission decision, and got Allow and Deny buttons. In auto
- * mode there is no decision to make, which is where that was noticed; the
- * buttons were never answerable anywhere, because a tool of this deployment
- * runs in the session container and its result cannot come from a browser.
+ * message with any result-less tool call in it is requires-action, so a call
+ * that never reported back is indistinguishable from one blocked on a
+ * permission decision. Allow and Deny would be unanswerable on it: a tool of
+ * this deployment runs in the session container, and its result cannot come
+ * from a browser.
  *
- * An unanswered approval, or an interrupt the runtime can resume: those are
- * the two things a click here can actually settle.
+ * An unanswered approval, or an interrupt the runtime can resume, are the two
+ * things a click here settles.
  */
 const isAskingUser = (
   approval: ToolCallMessagePart["approval"],
@@ -613,8 +611,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     isRequiresAction && asking && offersInterruptAction(status, approval, interrupt);
 
   // Boxes edit: opened by the question rather than by the status, for the
-  // same reason. A card that unfolds itself is saying "there is something for
-  // you here", and an unfinished call is not.
+  // same reason. A card that unfolds itself claims to hold something to act
+  // on, and an unfinished call does not.
   const [open, setOpen] = useState(asking);
   const [prevAsking, setPrevAsking] = useState(asking);
   if (asking !== prevAsking) {

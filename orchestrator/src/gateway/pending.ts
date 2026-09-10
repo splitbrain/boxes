@@ -8,7 +8,7 @@ import { log } from '../log.ts';
  *
  * Each request gets a row, so the dashboard can show that something is waiting
  * and a restart does not lose that fact. The resolver that answers the request
- * lives in memory, so a row outliving its process can no longer be answered.
+ * lives in memory, so a row that outlives its process cannot be answered.
  */
 
 /** One queued permission request and the handlers waiting on its answer. */

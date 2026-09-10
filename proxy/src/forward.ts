@@ -9,11 +9,10 @@ import { hostAllowed, isInjectionHost } from './policy.ts';
  * The forwarding half of the proxy: allowlist, address vetting, and the pinned
  * connection out.
  *
- * It is a factory rather than a script because the proxy runs two of these.
- * The front door faces the session networks and may hand an intercepted host
- * to the TLS engine; the upstream tunnel listens on loopback and is where
- * every connection the TLS engine makes gets vetted, so that decrypting a
- * host never buys it a way around the checks below.
+ * The proxy runs two of these. The front door faces the session networks and
+ * may hand an intercepted host to the TLS engine; the upstream tunnel listens
+ * on loopback and vets every connection the TLS engine makes, so decrypting a
+ * host buys no way around the checks below.
  */
 
 /** Destination ports an agent may reach. */
@@ -63,8 +62,8 @@ export type Verdict =
 /**
  * Vets a target and returns the single address to pin the connection to. An IP
  * literal is checked as it stands; a hostname is resolved first and every
- * answer has to pass. The allowlist is checked before any of it, so a denied
- * host is not even looked up.
+ * answer has to pass. The allowlist is checked first, so a denied host is
+ * never looked up.
  */
 export async function vetTarget(target: Target, policy: EgressPolicy): Promise<Verdict> {
   if (!ALLOWED_PORTS.has(target.port)) {
@@ -126,7 +125,7 @@ function deny(res: http.ServerResponse, reason: string): void {
 
 /**
  * Builds a forward proxy: absolute-URI HTTP on port 80, CONNECT for
- * everything else. It is not listening when it is returned.
+ * everything else. The server is returned before it listens.
  */
 export function createForwardServer(opts: ForwardOptions): http.Server {
   const server = http.createServer();
@@ -136,8 +135,7 @@ export function createForwardServer(opts: ForwardOptions): http.Server {
   server.on('request', (req, res) => {
     const rawUrl = req.url ?? '';
     if (!/^https?:\/\//i.test(rawUrl)) {
-      // A non-absolute request URI addresses this process as an origin server,
-      // which it never is.
+      // A non-absolute request URI addresses this process as an origin server.
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('this is a forward proxy; use an absolute request URI\n');
       return;
@@ -164,9 +162,9 @@ export function createForwardServer(opts: ForwardOptions): http.Server {
 
     const policy = opts.policy();
     if (opts.interceptPort() !== null && isInjectionHost(target.host, policy)) {
-      // A credential host reached in the clear would either leak the
-      // placeholder or, worse, invite injecting the real secret into
-      // plaintext. Both are refused; these hosts serve https anyway.
+      // A credential host reached in the clear would leak the placeholder, or
+      // invite injecting the real secret into plaintext. These hosts serve
+      // https anyway.
       const reason = 'a credential host may only be reached over https';
       opts.denied(reason);
       opts.log('denied http request', { host: target.host, reason });
@@ -290,9 +288,9 @@ export function createForwardServer(opts: ForwardOptions): http.Server {
 /**
  * Hands an intercepted CONNECT to the TLS engine on loopback.
  *
- * The CONNECT is replayed rather than the socket simply spliced, so the engine
- * learns the destination the same way it would as a proxy in its own right,
- * and picks the certificate for the host the client actually asked for.
+ * The CONNECT is replayed rather than the socket spliced, so the engine
+ * learns the destination and picks the certificate for the host the client
+ * asked for.
  */
 function connectToEngine(
   target: Target,

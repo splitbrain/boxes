@@ -36,9 +36,8 @@ function Meta({ label, value }: { label: string; value: string }) {
  * Back goes where the visitor came from, by going back: the entry this view
  * was opened from is still on the stack, whether it was the list or a thread
  * that opened it, so there is nothing to remember and nothing to get wrong.
- * The view used to be told which of the two had sent it and then push that
- * one — which is how a back control ends up pointing the same way as the
- * browser's own.
+ * Pushing the sender instead is how a back control ends up pointing the same
+ * way as the browser's own.
  *
  * The thread named in the entry's state is the fallback for the case where
  * there is nothing to pop: a pasted link, a notification, a shortcut on a

@@ -91,8 +91,8 @@ export function SessionThread() {
    * navigation is a prompt nobody agreed to.
    *
    * Taken from beside the router rather than out of the history entry's
-   * state, which the browser replays: back and then forward used to re-stage
-   * it, and a turn nobody typed would reappear in the composer.
+   * state, which the browser replays: back and then forward would otherwise
+   * re-stage it.
    */
   const [prefill, setPrefill] = useState<string | null>(null);
   const [session, setSession] = useState<SessionDetail | null>(null);
@@ -141,30 +141,29 @@ export function SessionThread() {
    * the two cannot both be true anyway — a thread waiting on an answer is not
    * running, which is the whole point of the request. Below those, a thread
    * that has stopped talking with work still running in it is its own state:
-   * it is your turn, and it is not over.
+   * the reader's turn, and not over.
    */
   const tabState: TabState =
     state.awaiting ??
     (state.isRunning ? 'running' : state.background.length > 0 ? 'waiting' : 'idle');
   useDocumentTitle(threadTitle(tabState, session?.name ?? id, threadLabel));
 
-  // The thread's viewport is the only scroller this route has; the document
-  // scrolling too is what used to take the header off the top of the screen.
+  // The thread's viewport is the only scroller this route has: a document
+  // that scrolled too would take the header off the top of the screen.
   useViewportLock();
 
-  // And now that the document cannot move it, reading down through the thread
-  // can: the header steps aside on a downward run and comes back on the first
-  // upward one. A turn's own output moves nothing, because the viewport stays
-  // against its bottom for the whole of one.
+  // Reading down through the thread is what moves the header instead: it
+  // steps aside on a downward run and comes back on the first upward one. A
+  // turn's own output moves nothing, because the viewport stays against its
+  // bottom for the whole of one.
   const { away, container } = useScrollAway('[data-slot="aui_thread-viewport"]');
 
   /**
    * Branches this conversation and reveals the result as a link.
    *
-   * A `window.open` after the await is the thing to reach for, and it is what
-   * popup blockers exist to stop. One extra tap is cheaper than an unreliable
-   * one — and this thread stays exactly where it is either way, because no
-   * connection is pinned to the session's default any more.
+   * A `window.open` after the await is what popup blockers stop, so the
+   * result is a link and one extra tap. This thread stays where it is either
+   * way, because no connection is pinned to the session's default.
    */
   const onFork = useCallback(() => {
     if (!thread || forking) return;

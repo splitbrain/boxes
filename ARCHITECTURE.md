@@ -94,8 +94,8 @@ it takes on disk — is read back off the daemon and reported in `/healthz`,
 because a deployment that follows `latest` moves when a watchtower says so
 rather than when a person does. The orchestrator's image
 and the proxy's are whatever their containers were created from; the session
-image is named by `SESSION_IMAGE` outright, which is just as well, because
-between sessions there is no container to read it off. The session list shows
+image is named by `SESSION_IMAGE` outright, so no container has to exist for
+it. The session list shows
 all three in a footer. `orchestrator/src/images.ts` caches the reading for a
 minute: the probe is polled by every open tab, and nothing here moves without
 a registry pull behind it.
@@ -217,9 +217,9 @@ A file attached to a prompt is uploaded into the session's own workspace, at
 `.boxes/attachments/`, and the prompt then says so. That is the whole design,
 and what makes it type-agnostic: a PDF, a CSV or a heap dump becomes a path
 the agent opens with the tools it already has, where anything carried inside
-the message could only ever be the handful of things a model reads directly.
-A workspace is a plain directory the orchestrator owns, so the upload is a
-file write — no container is involved, and a stopped session takes
+anything carried inside the message would be limited to what a model reads
+directly. A workspace is a plain directory the orchestrator owns, so the
+upload is a file write — no container is involved, and a stopped session takes
 attachments as a running one does.
 
 Nothing travels inside the message. What the prompt carries is one block of
@@ -299,9 +299,9 @@ gateway answers any ACP client, and an ACP prompt may carry an image inline.
 
 One React app, served at `/`. The session list is the thread list: a thread is
 `/sessions/:id/threads/:threadId`, and `/sessions/:id` is whichever thread the
-session has current — so every older link and bookmark still works. The ops
-that used to share that page — start, stop, delete, the details, the
-connection fields for an external ACP client — live at `/sessions/:id/info`.
+session has current — so every older link and bookmark still works. The ops —
+start, stop, delete, the details, the connection fields for an external ACP
+client — live at `/sessions/:id/info`.
 What the agent is configured with belongs to the deployment rather than to any
 one box, so it hangs off the list instead: `/agents` lists the sets and
 `/agents/:setId` edits one.
@@ -394,13 +394,13 @@ the clip. That last one has a cost worth knowing: below md the only way to the
 review's file tree is the button in its header, so switching files from deep
 in a file takes a flick up first.
 
-None of that is the browser's own hiding of its chrome, which is what the
-header used to be at the mercy of. A thread is one dynamic viewport tall with
-its own scroller inside, so the document has nothing to scroll — but `100dvh`
-is measured against chrome that slides in and out, and every mismatch (the URL
+None of that is the browser's own hiding of its chrome, which the header must
+not be at the mercy of. A thread is one dynamic viewport tall with its own
+scroller inside, so the document has nothing to scroll — but `100dvh` is
+measured against chrome that slides in and out, and every mismatch (the URL
 bar expanding, the keyboard opening under a focused composer, rounding on iOS)
-left the document taller than the screen. The browser scrolled the difference
-away to keep the focused thing in view, and what went off the top was the
+leaves the document taller than the screen. The browser scrolls the difference
+away to keep the focused thing in view, and what goes off the top is the
 header — stranded on a scroller no gesture reaches, because every touch lands
 in the thread's instead. So the full-viewport routes mark the document
 unscrollable for as long as they are mounted (`use-viewport-lock.ts`), and the
@@ -411,8 +411,8 @@ Where a turn is read from is the runtime's business, up to a point. A turn
 anchors the prompt that started it to the top of the viewport and writes the
 answer underneath, paying for the space an unwritten answer does not fill yet
 with a reserve element it shrinks as the answer arrives. That lasts one
-screenful. Past it the anchor has nothing left to give — and it only ever
-held a position, never followed one — so a long turn, which is a run of tool
+screenful. Past it the anchor has nothing left to give, and it holds a
+position rather than following one, so a long turn, which is a run of tool
 calls and reasoning and rarely anything else, went on writing below the fold
 and left it all there until it ended. `use-follow-output.ts` takes over at
 that handover and keeps the viewport against the bottom for the rest of the
@@ -447,9 +447,9 @@ the view to the end of what it printed, which is what the lock is for.
 
 The chat itself is [assistant-ui](https://www.assistant-ui.com/). Its
 components are installed into `src/components/assistant-ui/` by the official
-CLI, in the shadcn distribution model: the sources are committed and are ours
-to edit, and an upgrade is a CLI re-run reviewed as a diff rather than a
-version bump that changes the UI silently. The edits that are ours are marked
+CLI, in the shadcn distribution model: the sources are committed and Boxes
+edits them, and an upgrade is a CLI re-run reviewed as a diff rather than a
+version bump that changes the UI silently. Boxes' own edits are marked
 `Boxes edit` in the source, with the reason at the point of the change —
 `grep` is the list, because a count in prose here would rot. They are of three
 kinds: terminal habits the chat did not have (ArrowUp history on the composer,
@@ -465,7 +465,7 @@ Because those components are written in Tailwind utilities, Tailwind is a
 build dependency rather than a style choice, and it compiles from source on
 every build. `globals.css` is the whole design system: the tokens, and the
 `@theme inline` block bridging them into Tailwind colours. That bridge is a
-correctness requirement, not theming polish — Tailwind v4 emits a utility only
+correctness requirement, not theming polish — Tailwind emits a utility only
 for a colour its theme defines, so without it `bg-background` and every other
 token utility the installed components use would silently vanish.
 
@@ -525,14 +525,14 @@ update kind this build predates is kept and rendered as nothing, so a newer
 adapter cannot break an older dashboard.
 
 A replay is folded in silence and published once. The notifications are the
-same ones live streaming uses, so the store used to hand the view every
-intermediate state of a conversation it was in the middle of re-reading: on
-arrival at a box with any history, the thread assembled itself message by
-message, the viewport chased the bottom of it, and the reading position ended
-up wherever the last render left it. Now the model is built up with nothing
-emitted, and the snapshot that ends the replay is the whole conversation —
-which the runtime's autoscroll opens at its end, because that is where a
-thread is read from. `session/load` answering is what says the replay is over:
+same ones live streaming uses, so publishing each one would hand the view
+every intermediate state of a conversation it is in the middle of re-reading:
+on arrival at a box with any history the thread would assemble itself message
+by message, with the viewport chasing the bottom of it. Instead the model is
+built up with nothing emitted, and the snapshot that ends the replay is the
+whole conversation — which the runtime's autoscroll opens at its end, because
+that is where a thread is read from. `session/load` answering is what says the
+replay is over:
 the gateway forwards the adapter's notifications as they arrive and returns
 the result only afterwards, so the answer means "that was all of it". A replay
 that never answers publishes nothing at all: the connection is reconnecting,
@@ -566,27 +566,24 @@ alone: `allow_once` to `allow-once`, `optionId`/`name` to `id`/`label`.
 
 Boxes is driven from a phone, where back is *the* navigation control — and in
 an installed app on iOS it is the only one, since there is no browser chrome
-and no Escape key. It used to be the least predictable thing in the dashboard,
-for two reasons that compound.
+and no Escape key. Two things make it unpredictable, and they compound.
 
-Every back control was a `<Link>`. Leaving a view therefore pushed the view it
-left to, so sessions → thread → *back* left the stack as sessions, thread,
-sessions, and the device's own back button then went *forward* into the thread
-that had just been left. Two controls pointing the same way is what "back goes
-somewhere unexpected" actually was, and no amount of remembering where a
-visitor came from fixes it — the details view did remember, with a `from:
-'list'` in the history entry's state, and still pushed.
+A back control written as a `<Link>` pushes the view it leaves to, so sessions
+→ thread → *back* leaves the stack as sessions, thread, sessions, and the
+device's own back button then goes *forward* into the thread that was just
+left. Two controls pointing the same way is what "back goes somewhere
+unexpected" amounts to, and remembering where a visitor came from does not fix
+it: a `from: 'list'` in the history entry's state still pushes.
 
-And dialogs were component state, which the back gesture cannot see. The press
-went to the router, so the screen *behind* the dialog was torn down while the
-dialog was the thing meant to be dismissed. The review had both halves of it:
-a hunk sheet survived the press that closed the file underneath it and stayed
-up over the tree, showing lines of a file that was no longer open; the comment
-composer went *with* the file in a single press, taking whatever had been
-typed.
+And a dialog held in component state is invisible to the back gesture. The
+press goes to the router, so the screen *behind* the dialog is torn down while
+the dialog is the thing meant to be dismissed. The review has both halves of
+that to answer for: a hunk sheet must not survive the press that closed the
+file underneath it, and the comment composer must not go *with* the file in a
+single press, taking whatever had been typed.
 
-So every surface in the app is now one of three kinds, and the kind decides
-what a press does.
+So every surface in the app is one of three kinds, and the kind decides what a
+press does.
 
 **Places** are routes — the list, a thread, the review, the details, the
 forms. Only these push. Each has one structural parent, and leaving one pops
@@ -651,12 +648,12 @@ rather than leaving a form underneath that would make a second box. What sits
 browser's, not the app's — and the app already answers that with a page saying
 so rather than a composer over nothing.
 
-One thing that had to leave the router entirely: the review's "Hand to agent"
-stages a prompt in the thread's composer, and that used to travel in the
-history entry's state. The browser replays state, so back and then forward
-re-staged it and a turn nobody typed reappeared. History state describes an
-entry; this describes a handover, so it now lives beside the router in a
-consume-once module (`lib/staged-prompt.ts`).
+One thing sits outside the router entirely: the review's "Hand to agent"
+stages a prompt in the thread's composer. The browser replays history state,
+so carrying it there would let back and then forward re-stage it and bring
+back a turn nobody typed. History state describes an entry and this describes
+a handover, so it lives beside the router in a consume-once module
+(`lib/staged-prompt.ts`).
 
 `e2e/back.test.ts` drives all of it through `page.goBack()` against the real
 bundle — the stack index after each press, the sheet that closes while its
@@ -706,16 +703,15 @@ switch that fails is logged rather than failing the spawn.
 
 Both are on the thread's row (`threads.mode_id`, `threads.model_id`) because
 the adapter forgets them. A mode lives in that process and nothing else, so
-every respawn — an idle stop and a return, a deploy, an adapter that died —
-used to hand the conversation back in whatever mode the adapter starts in,
-which is how a thread left in `auto` came back on manual approvals half an
-hour later. `session/load` brings the conversation back and nothing else, and
-this is the other half of that: the row is read on every load, not only on
-the mint that used to be the one place a mode was ever set.
+without the row every respawn — an idle stop and a return, a deploy, an
+adapter that died — would hand the conversation back in whatever mode the
+adapter starts in, and a thread left in `auto` would return on manual
+approvals half an hour later. `session/load` brings the conversation back and
+nothing else, so the row is read on every load rather than only at the mint.
 
 The row is written wherever the answer changes. A `session/set_mode` the
 adapter accepts is recorded as it passes through the gateway, because that is
-the request the user actually made. `current_mode_update` and
+the request the user made. `current_mode_update` and
 `config_option_update` are recorded as they arrive, because the adapter also
 changes both on its own — leaving `plan` when a plan is accepted, falling back
 to another model under load — and a thread should come back where it ended up
@@ -780,8 +776,8 @@ rather than relying on the client to list it first.
 
 Which thread the connection is on is settled once, at attach, and needs the
 adapter first. Pinning is where a thread the spawn did not reach is brought
-up: the upstream tracks which conversations this adapter process has actually
-been made to hold, and a thread that is not among them is loaded here, on the
+up: the upstream tracks which conversations this adapter process has been
+made to hold, and a thread that is not among them is loaded here, on the
 same terms as at spawn — the same `_meta`, and the mode and model its row
 records put back afterwards. A stored ACP id says a thread had a conversation
 once, not that the process running now knows about it, so handing one back
@@ -931,7 +927,7 @@ at all costs the fork its history and nothing else.
 A running turn and a waiting permission request belong to the thread, not the
 session. `threads.turn_active` records the first, and the session's answer is
 derived as any of its threads — two sources of truth for whether a turn is
-running is precisely the thing that goes stale. A permission request records
+running is the thing that goes stale. A permission request records
 the thread that asked, goes to a browser watching *that* thread, and queues
 when only another thread's browser is attached, exactly as it does with none.
 
@@ -1047,18 +1043,18 @@ silence there is: the last answer stands until a reading settles it, because
 stopping a box late is recoverable and stopping one with a two-hour build in it
 is not.
 
-**An empty box is empty, whatever the reason.** A reading that finds nothing of
-ours — no adapter, no agent process — used to count as busy, on the reasoning
-that a shape this cannot understand is not evidence of an empty box. It is,
-and the reasoning cost more than it saved. Boxes spawns the adapter as an exec
-and keeps none there between connections, so a container that is up and has
-never been opened, or that has outlived the orchestrator process that opened
-it, runs the entrypoint and nothing else — and every one of them said "still
-running" on its card with no thread able to say what, *and* was never reaped,
-because the reaper asks this same question. A stopped session was the same
-answer from the other side: nothing to ask, read as nothing answering.
+**An empty box is empty, whatever the reason.** A reading that finds nothing
+of Boxes' own — no adapter, no agent process — counts as empty rather than as
+a shape this cannot understand. Boxes spawns the adapter as an exec and keeps
+none there between connections, so a container that is up and has never been
+opened, or that has outlived the orchestrator process that opened it, runs the
+entrypoint and nothing else. Counting that as busy would put "still running"
+on its card with no thread able to say what, *and* would keep it from ever
+being reaped, because the reaper asks this same question. A stopped session
+was the same answer from the other side: nothing to ask, read as nothing
+answering.
 
-What makes "empty" safe is the id. Work only ever sits under an adapter or
+What makes "empty" safe is the id. Work sits only under an adapter or
 under an agent process, an agent is recognised by the conversation on its
 command line wherever it sits, and an agent that outlived its adapter is still
 an agent — so a box that has lost its adapter still reports what its
@@ -1122,7 +1118,7 @@ construction the moment nothing arrives. This adapter does say it sideways,
 though — `claude-agent-acp` emits a `usage_update` at the end of every
 processing cycle, and that one carries a `cost` where the ones it sends while
 a message streams do not. `gateway/activity.ts` reads it, so a held turn and a
-cycle the harness woke on its own both end the instant they actually end.
+cycle the harness woke on its own both end the instant they end.
 
 That marker is the adapter's own rather than anything ACP promises, and it
 appears only when the backend reported usage, so silence is the fallback and
@@ -1137,8 +1133,8 @@ Which calls hold a prompt open is the adapter's rule, not a guess: it defers a
 turn's settlement for the **subagents** it spawned and for nothing else — a
 backgrounded command or a monitor never holds one. A prompt sent into a
 deferred turn is accepted and hands the held turn off, so the composer is safe
-to offer send there. Both were read out of `claude-agent-acp` 0.75.1, in
-`dist/acp-agent.js`, rather than inferred from behaviour.
+to offer send there. Both were read out of the adapter's own
+`dist/acp-agent.js` rather than inferred from behaviour.
 
 Two thresholds, because the two readers want opposite things. The screen flips
 at `AGENT_QUIET_SECONDS` and can afford to be wrong for a moment: an early
@@ -1150,15 +1146,16 @@ taking back.
 So `_boxes/turn_state` carries three facts rather than one — a prompt is open,
 the agent is speaking, and here is what is still running in the background —
 and every browser is told all three after its replay and on every transition.
-`TurnStateParams` is the shape. The dashboard shows `speaking` wherever it
-used to show the prompt bit — the composer's send-or-stop, the spinner,
-follow-output, the list badges — and the outstanding tasks in a bar above the
-composer, which is a standing fact about the box rather than something that
-happened, and so does not belong in the transcript. A tab title has to pick
+`TurnStateParams` is the shape. The dashboard shows `speaking` wherever a
+reader is told whether the agent is working — the composer's send-or-stop, the
+spinner, follow-output, the list badges — and the outstanding tasks in a bar
+above the composer, which is a standing fact about the box rather than
+something that happened, and so does not belong in the transcript. A tab title
+has to pick
 one word for all of it, and `lib/tab-title.ts` is where the four are named:
 `⚠` and `?` for a thread that has stopped and needs an answer, `⟳` for one
 that is talking, `◍` for one that is waiting for you with work still running,
-`○` for one that is simply waiting.
+`○` for one that is waiting with nothing running.
 
 ### Notifications
 
@@ -1314,14 +1311,13 @@ connection owning it.
 **A container that is gone is made again.** Everything a session container is
 comes from the row and the two directories it points at — image, network,
 mounts, environment — so a container is reproducible and losing one costs
-nothing durable. It used to cost the session anyway: `start` handed the
-missing id to the daemon, took the 404, and there was no other way in, with
-the workspace and the home sitting intact on the data volume and unreachable
-through Boxes. `restoreMissingContainer` rebuilds it instead, and makes the
-network too, since a prune that takes a stopped container takes the network
-that then has nothing on it. This is not an exotic case: `docker container
-prune` takes every stopped container, and an idle Boxes session *is* a stopped
-container.
+nothing durable. Without a rebuild, `start` would hand the missing id to the
+daemon and take the 404, leaving the workspace and the home intact on the data
+volume and unreachable through Boxes. `restoreMissingContainer` rebuilds it,
+and makes the network too, since a prune that takes a stopped container takes
+the network that then has nothing on it. This is not an exotic case: `docker
+container prune` takes every stopped container, and an idle Boxes session *is*
+a stopped container.
 
 Only for a container the daemon says is **not there**. `unknown` — an inspect
 that failed for any other reason — is left alone, because rebuilding on that
@@ -1336,16 +1332,17 @@ repair may have changed the container id the caller is about to use.
 
 A session's workspace is a directory under the orchestrator's own data
 directory — `${DATA_DIR}/workspaces/<id>` — bind-mounted at `/workspace` in
-the session container. It used to be the named volume `ws-<id>`, mounted only
-into that container, which left the orchestrator with no filesystem path to
-the agent's work at all: reaching a file meant a `docker exec`.
+the session container. A named volume, mounted only into that container,
+would leave the orchestrator with no filesystem path to the agent's work at
+all, and reaching a file would mean a `docker exec`.
 
-The change is what makes reviewing a session's code possible without an exec
-round trip per read, without booting a stopped container, and with git run as
-an ordinary child process. It grants the orchestrator no privilege it did not
-already have — it holds the Docker socket — but it does expose that process to
-hostile *content*, which is why the review layer keeps symlink containment and
-git hardening as maintained invariants, each in one file with a test.
+The directory is what makes reviewing a session's code possible without an
+exec round trip per read, without booting a stopped container, and with git
+run as an ordinary child process. It grants the orchestrator no privilege it
+did not already have — it holds the Docker socket — but it does expose that
+process to hostile *content*, which is why the review layer keeps symlink
+containment and git hardening as maintained invariants, each in one file with
+a test.
 
 **The home followed it**, for a plainer reason: everything a session is should
 be in one place, and the biggest thing a session owns was the one thing Boxes
@@ -1372,7 +1369,7 @@ is not root and cannot chown.
 **Sessions from before this** keep their `home_volume` and a null `home_dir`,
 and go on mounting the volume for as long as they live. Unlike the workspace
 there is no migration: `homeSource` is a directory for one and a volume name
-for the other, Docker takes either, and the two arrangements simply coexist
+for the other, Docker takes either, and the two arrangements coexist
 until the last old session is deleted.
 
 **Naming the bind source.** Bind sources are resolved by the Docker daemon,
@@ -1447,8 +1444,7 @@ legacy session is left alone and comes through at its next stop/start cycle.
 
 ## Reclaiming what a session leaves
 
-Two kinds of garbage accumulate on a Boxes host, and neither used to be
-collected.
+Two kinds of garbage accumulate on a Boxes host, and each has a collector.
 
 **Superseded session images.** A pull that moves `:latest` leaves the image it
 replaced on disk, untagged — a gigabyte or two of Node, browsers and language
@@ -1558,9 +1554,8 @@ The review surface browses a session's workspace, shows a file highlighted,
 takes a comment on a line, and writes all of it to `/workspace/REVIEW.md`. The
 format is the desktop [`review`](https://github.com/splitbrain/review) tool's —
 `orchestrator/src/review/fixtures/` holds files that tool wrote, and the tests
-assert the bytes — though byte compatibility is no longer a design constraint:
-the paths in it are workspace-relative, and the file sits above any repository
-rather than inside one.
+assert the bytes. The paths in it are workspace-relative, and the file sits
+above any repository rather than inside one.
 
 What it buys over running that tool separately is that the review lives where
 the agent works. `REVIEW.md` is a file of the workspace under review, so
@@ -1630,8 +1625,7 @@ repository and in some of them none, so it is derived.
 **`REVIEW.md` is at `/workspace`**, outside every repository, so it cannot be
 accidentally committed or show up in a repository's own status, and "address
 the comments in REVIEW.md" stays one line however many repositories there are.
-Its paths are workspace-relative (`repo-a/src/x.ts`). Byte compatibility with
-the desktop tool's format is kept but is no longer a design constraint.
+Its paths are workspace-relative (`repo-a/src/x.ts`).
 
 **Nothing here starts a container.** Reads and git both run in the
 orchestrator, so the natural moment to review — the agent is done, the box has
@@ -1647,12 +1641,11 @@ and the tab becoming visible again. The last of those is skipped while a
 composer is open or a write is in flight, which is the one piece of the poll's
 logic worth keeping.
 
-The poll it replaced was described here as three cheap local hashes; it was
-three git processes, and under a merged tree it would have been roughly
-`1 + 2N` for N repositories every five seconds per open review. More to the
-point, a poll keeps a view fresh *while the reviewer sits on it*, which is the
-desktop tool's situation — Boxes is driven from a phone and the reviewer is in
-the thread or in the review, not both. Idle cost is now zero.
+A poll would cost three git processes a round, roughly `1 + 2N` for N
+repositories every five seconds per open review. It would also keep a view
+fresh *while the reviewer sits on it*, which is the desktop tool's situation:
+Boxes is driven from a phone, where the reviewer is in the thread or in the
+review and not both. Fetching on arrival makes the idle cost zero.
 
 The residual is that a background task can be working while the review is open.
 Drift already covers the consequence: a comment whose code moved follows it, and
@@ -1730,9 +1723,8 @@ parallel UIs:
   step buttons for changes and comments.
 - **The code pane** is a CSS grid per line: a sticky line-number gutter, the
   code cell scrolling horizontally as one block, and a wrap toggle that starts
-  on — a phone is narrower than most source files, so the alternative default
-  puts the end of every long line off screen. Every line
-  being its own element is what makes it addressable at all.
+  on, because a phone is narrower than most source files. Every line being its
+  own element is what makes it addressable at all.
 
 Highlighting is client-side, with Shiki: the API ships plain text and the
 browser tokenizes it. Both themes are tokenized at once and travel as
@@ -1771,7 +1763,7 @@ The proxy itself (`proxy/src/`) runs three listeners:
 |---|---|---|
 | front door | `0.0.0.0:3128` | Faces the sessions: allowlist, vetting, and the choice between an opaque tunnel and interception |
 | interception engine | loopback, ephemeral | Terminates TLS for translated hosts and swaps the credential (`inject.ts`, on mockttp) |
-| upstream tunnel | loopback, ephemeral | The one place a connection actually leaves, so both routes out are vetted identically |
+| upstream tunnel | loopback, ephemeral | The one place a connection leaves, so both routes out are vetted identically |
 
 The front door (`forward.ts`) handles plain HTTP with an absolute request URI
 and CONNECT. Only ports 80 and 443 are allowed. Its critical rule is in
@@ -1804,7 +1796,7 @@ orchestrator's environment and in the proxy's memory.
 A host becomes a *translated host* when its credential is configured. Reaching
 one, the front door hands the CONNECT to the interception engine instead of
 tunnelling it — by replaying the CONNECT on loopback, so the engine picks the
-certificate for the host the client actually asked for. The engine terminates
+certificate for the host the client asked for. The engine terminates
 TLS under the deployment CA and `decideCredentials` rules on the request:
 
 | The request carries | What happens |
@@ -1821,8 +1813,8 @@ a rule per tool.
 Everything else stays an opaque tunnel that never reaches the engine, so
 interception is bounded by policy rather than by trust in the engine. And every
 request the engine forwards leaves through the upstream tunnel, so the vetting
-above governs the connection that actually happens: decrypting a host buys it
-no way around the checks.
+above governs the connection that leaves: decrypting a host buys no way
+around the checks.
 
 `api.anthropic.com`, `github.com`, `api.github.com` and
 `*.githubusercontent.com` are the translated hosts, fixed in `config.ts`
@@ -2113,11 +2105,11 @@ with the prompt staged unsent.
 The degraded shapes are there as well — no git, an empty workspace, and a
 session whose workspace is still a volume.
 The back button has a file of its own (`e2e/back.test.ts`), because it is the
-navigation control on the platform this is driven from and nothing in the suite
-used to press it: every assertion there is a `page.goBack()` or a control the
-app calls back, checked against where it landed *and* against the depth of the
-stack it left behind — a pop that lands on the right screen by pushing a copy
-of it looks identical on screen, and only the count gives it away.
+navigation control on the platform this is driven from. Every assertion there
+is a `page.goBack()` or a control the app calls back, checked against where it
+landed *and* against the depth of the stack it left behind — a pop that lands
+on the right screen by pushing a copy of it looks identical on screen, and
+only the count gives it away.
 That is what asserts the UX properties this frontend exists for, and it is
 where a component upgrade is reviewed: `/playground` renders every part kind over a
 canned store, so a registry re-run shows up on one page.

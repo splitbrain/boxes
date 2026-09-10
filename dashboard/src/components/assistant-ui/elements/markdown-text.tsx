@@ -148,9 +148,8 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   // Boxes edit: a link in chat output opens in a new tab, and cannot reach
-  // back into this one. A thread is a long-lived thing that survives the
-  // browser going away, and following a link out of it in place is how you
-  // lose the composer you were half way through typing into.
+  // back into this one. A thread survives the browser going away, and
+  // following a link out of it in place would take the composer with it.
   a: ({ className, target, rel, ...props }) => (
     <a
       className={cn(

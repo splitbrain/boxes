@@ -15,15 +15,11 @@ import { log } from './log.ts';
  *
  * A browser subscribes with a push service of its vendor's choosing and hands
  * back an endpoint plus two keys. Posting an encrypted payload to that
- * endpoint wakes the service worker even with no tab open, which is the whole
- * point — a phone in a pocket learns that a turn is waiting on it.
+ * endpoint wakes the service worker with no tab open.
  *
  * The crypto is RFC 8291 (`aes128gcm` payload encryption) over RFC 8188, and
  * the sender authenticates itself with RFC 8292 (VAPID). Both are implemented
- * here on `node:crypto` rather than pulled in as a dependency: it is around a
- * hundred lines, all of it is exercised against the published test vectors in
- * push.test.ts, and a push library is a large amount of trust for a small
- * amount of code.
+ * here on `node:crypto`, against the published test vectors.
  */
 
 /** One browser's subscription, as the Push API hands it to the page. */
@@ -53,11 +49,10 @@ const DEFAULT_TTL = 12 * 60 * 60;
 /**
  * How long one delivery attempt may take, in milliseconds.
  *
- * `fetch` has no timeout of its own, and the caller pushes to every subscribed
- * browser at once and awaits all of them — so one push service that accepts a
- * connection and then says nothing would leave that fan-out pending for the
- * life of the process. A push nobody is waiting on is better abandoned than
- * held: the next event pushes again.
+ * `fetch` has no timeout of its own, and the caller pushes to every
+ * subscribed browser at once and awaits all of them, so one push service that
+ * accepted a connection and went quiet would hold that fan-out open. The next
+ * event pushes again.
  */
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -67,10 +62,12 @@ const VAPID_LIFETIME_SECONDS = 12 * 60 * 60;
 /** Filename under DATA_DIR holding the generated keypair. */
 const KEY_FILE = 'vapid-keys.json';
 
+/** Base64url of raw bytes, which is how every key and salt here travels. */
 function b64url(buf: Buffer): string {
   return buf.toString('base64url');
 }
 
+/** The bytes behind a base64url string. */
 function unb64url(value: string): Buffer {
   return Buffer.from(value, 'base64url');
 }
@@ -101,9 +98,8 @@ function pad32(scalar: Buffer): Buffer {
 /**
  * The deployment's keypair, generated once and kept in the data volume.
  *
- * Same shape as the WebSocket token in secret.ts and for the same reason: a
- * shipped default would be a published identity, and a keypair regenerated on
- * every boot would silently invalidate every subscription anybody has made.
+ * A keypair regenerated on every boot would invalidate every subscription
+ * anybody has made.
  */
 export function loadVapidKeys(dataDir: string): VapidKeys {
   const path = join(dataDir, KEY_FILE);

@@ -1,7 +1,8 @@
 /**
  * Structured stderr logging with mandatory secret redaction.
  *
- * Every field logged passes through redact, so a token cannot reach the log.
+ * Every field logged passes through redact, so a token in a field cannot
+ * reach the log. The message itself is not redacted.
  */
 
 /** Field names whose value is replaced whatever it contains. */

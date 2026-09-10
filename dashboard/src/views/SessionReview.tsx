@@ -148,9 +148,8 @@ export function SessionReview() {
   // pasted link and a tree tap all go through the same path.
   //
   // The hunk sheet goes with the file it belongs to. It is the one surface
-  // here that is not the store's, and leaving it up over a file that has
-  // closed — or over the next file, showing the last one's lines — is what a
-  // back press used to do.
+  // here that is not the store's, and it must not be left up over a file that
+  // has closed, or over the next file showing the last one's lines.
   useEffect(() => {
     setHunk(null);
     if (path) void loadFile(path);
@@ -330,8 +329,8 @@ export function SessionReview() {
   // reading down a file puts the chrome away, a flick back up returns it.
   const { away, container } = useScrollAway('[data-slot="review-code-pane"]');
 
-  // No state symbol: a review is a thing you are doing, not a thing waiting
-  // on you. What it needs to say is which box, and which file of it.
+  // No state symbol: a review is something being done rather than something
+  // waiting. What it needs to say is which box, and which file of it.
   useDocumentTitle(
     [file ? shortPath(file.path) : null, 'Review', name].filter(Boolean).join(' · '),
   );

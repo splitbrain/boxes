@@ -21,23 +21,23 @@ export interface SessionRow {
   network_name: string;
   subnet: string;
   /**
-   * The named volume that used to hold the workspace, and still does for a
-   * session created before workspaces became directories. Empty on a session
-   * that is directory-backed, which every new one is.
+   * The named volume holding the workspace of a session created before
+   * workspaces became directories. Empty on a directory-backed session,
+   * which every new one is.
    */
   ws_volume: string;
   /**
-   * The named volume that used to hold the home directory, and still does for
-   * a session created before homes became directories. Empty on a session
-   * that is directory-backed, which every new one is.
+   * The named volume holding the home of a session created before homes
+   * became directories. Empty on a directory-backed session, which every new
+   * one is.
    */
   home_volume: string;
   /**
    * Where the session's files are, as this process saw them when the session
    * was created or migrated, and null while the session is still
-   * volume-backed. The path actually used is derived from the current
-   * DATA_DIR, so moving the data volume moves the workspaces with it; what
-   * this column decides is only whether the session has a directory at all.
+   * volume-backed. The path used is derived from the current DATA_DIR, so
+   * moving the data volume moves the workspaces with it; this column decides
+   * only whether the session has a directory.
    */
   workspace_dir: string | null;
   /**
@@ -95,8 +95,7 @@ export interface ThreadRow {
   /**
    * 1 while a prompt turn is running on this thread. The session's own
    * "a turn is running" is derived from its threads rather than stored
-   * beside them, because two sources of truth for that is precisely the
-   * thing that goes stale.
+   * beside them.
    */
   turn_active: number;
   /**
@@ -289,9 +288,9 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE sessions DROP COLUMN acp_session_id;
   `,
   // Threads run in parallel, so what was session-wide moves onto the thread
-  // it is actually about. Nothing needs moving with it: a turn cannot survive
-  // the restart that applies this, and pending_requests is cleared at every
-  // boot, so every thread starting at 0 is not a loss of state but the truth.
+  // it is about. Nothing needs moving with it: a turn cannot survive the
+  // restart that applies this, and pending_requests is cleared at every boot,
+  // so every thread correctly starts at 0.
   `
   ALTER TABLE threads ADD COLUMN turn_active INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE pending_requests ADD COLUMN acp_session_id TEXT;
@@ -300,10 +299,9 @@ export const MIGRATIONS: string[] = [
   // Browsers subscribed to Web Push. Keyed by the push service's endpoint,
   // which is the only stable identity a subscription has.
   //
-  // This one stays at this index. It shipped before the two below it were
-  // written, so a deployment that has already applied it is at user_version 6
-  // — put anything ahead of it and that deployment would skip this migration
-  // and mis-apply whatever took its place.
+  // This one stays at this index: a deployment that has already applied it
+  // sits at user_version 6, and anything inserted ahead of it would be
+  // skipped there.
   `
   CREATE TABLE push_subscriptions (
     endpoint     TEXT PRIMARY KEY,
@@ -334,9 +332,8 @@ export const MIGRATIONS: string[] = [
   `,
   // What the agent is configured with, managed from the dashboard: an
   // AGENTS.md, skills and slash commands, in named sets. The `global` row is
-  // seeded here rather than created on demand, so every deployment has exactly
-  // one always-applied set from its first boot and nothing has to decide
-  // later whether to make it.
+  // seeded here, so every deployment has exactly one always-applied set from
+  // its first boot.
   //
   // A session names at most one further set. Deleting that set is not blocked
   // — the session's files are already materialized — so the reference clears
@@ -366,26 +363,23 @@ export const MIGRATIONS: string[] = [
   `,
   // A fork carries its source's context, but the adapter writes it no
   // transcript until it is first prompted — so until then the thread it
-  // branched from stands in for one. See upstream.ts, replayInherited.
+  // branched from stands in for one.
   `
   ALTER TABLE threads ADD COLUMN inherits_from TEXT;
   `,
-  // Which mode and model a thread is meant to be in. Both used to live only
-  // in the adapter process, so every respawn — an idle stop and a return, a
-  // deploy, an adapter that died — put the thread back in whatever the
-  // adapter starts in. See upstream.ts, applyMode.
+  // Which mode and model a thread is meant to be in. The adapter holds both
+  // only for as long as its process lives, so a respawn — an idle stop and a
+  // return, a deploy, an adapter that died — needs them from here.
   //
-  // NULL is not "unknown": it means this deployment's default, which is what
-  // a thread nobody has changed is in. So the existing rows need no backfill.
+  // NULL means this deployment's default rather than "unknown", which is what
+  // a thread nobody has changed is in, so existing rows need no backfill.
   `
   ALTER TABLE threads ADD COLUMN mode_id TEXT;
   ALTER TABLE threads ADD COLUMN model_id TEXT;
   `,
-  // pending_requests.upstream_id dates from a gateway that correlated a queued
-  // request with the JSON-RPC id it arrived under. Nothing has read it since
-  // the resolver moved into memory — it was written as the empty string and
-  // never looked at — and the table is cleared at every boot, so there is
-  // nothing to preserve.
+  // pending_requests.upstream_id correlated a queued request with the
+  // JSON-RPC id it arrived under, and the in-memory resolver reads nothing
+  // from it. The table is cleared at every boot, so nothing is preserved.
   `
   ALTER TABLE pending_requests DROP COLUMN upstream_id;
   `,
@@ -396,8 +390,8 @@ export const MIGRATIONS: string[] = [
   // only the expression, which `review_base_rev` already is.
   //
   // Existing sessions are not migrated. An old REVIEW.md under a subdirectory
-  // stays where it is and is simply not the review any more; it remains a file
-  // of the tree, readable and deletable like any other.
+  // stays where it is and is no longer the review; it remains a file of the
+  // tree, readable and deletable like any other.
   `
   ALTER TABLE sessions DROP COLUMN review_root;
   ALTER TABLE sessions DROP COLUMN review_base_commit;
@@ -406,11 +400,9 @@ export const MIGRATIONS: string[] = [
   // on the data volume, so that everything a session is made of is in one
   // place and can be measured, backed up and read as ordinary files.
   //
-  // Nothing is moved, and unlike the workspace nothing ever will be: an
-  // existing session keeps its home_volume and a null home_dir, and goes on
-  // mounting the volume for as long as it lives. There is no migration to
-  // half-finish, and a session that wants a directory home is a session
-  // created after this.
+  // Nothing is moved, here or later: an existing session keeps its
+  // home_volume and a null home_dir, and goes on mounting the volume for as
+  // long as it lives. Only a session created after this gets a directory.
   `
   ALTER TABLE sessions ADD COLUMN home_dir TEXT;
   `,
@@ -725,8 +717,7 @@ export function touchThread(db: Db, threadId: string): void {
  * `acpSessionId`, and marks both it and its session active.
  *
  * Addressed by the adapter's own id because that is what a prompt's params
- * carry: the row is found by which conversation the turn is on, never by
- * which one happens to be the session's default.
+ * carry, so the row is found by which conversation the turn is on.
  */
 export function setThreadTurnActive(
   db: Db,
@@ -746,8 +737,8 @@ export function setThreadTurnActive(
 /**
  * Clears the running-turn flag on every thread of a session.
  *
- * What the callers have in common is that none of them leaves a turn running:
- * a deliberate stop, an adapter exit, a cancel, and boot reconciliation.
+ * None of the callers leaves a turn running: a deliberate stop, an adapter
+ * exit, a cancel, boot reconciliation.
  */
 export function clearSessionTurns(db: Db, sessionId: string): void {
   db.prepare('UPDATE threads SET turn_active = 0 WHERE session_id = ?').run(sessionId);

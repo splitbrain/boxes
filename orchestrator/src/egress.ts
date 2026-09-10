@@ -55,10 +55,9 @@ function generatePlaceholder(prefix: string): string {
  * Loads the deployment's egress material, generating and storing whatever is
  * missing.
  *
- * Regenerating the CA on every boot would be wrong: a running session holds
- * the old certificate in the trust file its tools were pointed at, and would
- * start failing TLS against every intercepted host. Rotating it is deleting
- * this file.
+ * A running session holds this CA's certificate in the trust file its tools
+ * were pointed at, so a CA regenerated on every boot would break TLS against
+ * every intercepted host. Rotating it means deleting this file.
  */
 export async function resolveEgressMaterial(
   dataDir: string,
@@ -89,11 +88,8 @@ export async function resolveEgressMaterial(
     log.info('generated an egress CA for this deployment', { path });
   }
 
-  // Placeholders are per deployment rather than per session. With one set of
-  // configured credentials a per-session placeholder buys almost nothing — it
-  // only works from inside a session network, through this proxy, and a
-  // sibling session maps to the same real secret anyway — while making the
-  // policy churn on every session lifecycle.
+  // Placeholders are per deployment rather than per session, so the policy
+  // does not change as sessions come and go.
   const placeholders: Record<string, string> = { ...stored.placeholders };
   for (const { id, placeholderPrefix } of credentials) {
     if (placeholders[id]) continue;
@@ -208,9 +204,9 @@ async function controlCall(
 /**
  * Owns the composed policy and keeps the proxy holding it.
  *
- * The proxy has nothing at rest, so a restart leaves it with no policy at all.
- * Re-pushing on every reconcile tick is what closes that window, and is why
- * the push has to be cheap and idempotent.
+ * The proxy has nothing at rest, so a restart leaves it with no policy at
+ * all. Re-pushing on every reconcile tick closes that window, so the push is
+ * cheap and idempotent.
  */
 export class EgressManager {
   private material: EgressMaterial | null = null;
@@ -234,10 +230,9 @@ export class EgressManager {
   /**
    * The prepared state, or a refusal.
    *
-   * Every caller here decides what a session container will hold, and the
-   * failure that matters is the quiet one: an unprepared manager falling back
-   * to the real credential would put it inside the sandbox, which is the exact
-   * thing this file exists to prevent. Refusing is the safe direction.
+   * Every caller here decides what a session container will hold. An
+   * unprepared manager that fell back to the real credential would put it
+   * inside the sandbox, so this refuses instead.
    */
   private prepared(): { material: EgressMaterial; composed: EgressPolicy } {
     if (!this.material || !this.composed) {
@@ -262,7 +257,7 @@ export class EgressManager {
     return credential?.secret === real ? credential.placeholder : real;
   }
 
-  /** The last thing the proxy told us, for /healthz. */
+  /** The last thing the proxy reported, for /healthz. */
   status(): EgressHealth | null {
     return this.health;
   }

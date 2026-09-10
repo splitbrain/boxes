@@ -15,9 +15,9 @@ import { inWorkspace, type RepoMap } from './repos.ts';
  * function here that touches the filesystem, and it walks only the space no
  * repository claims.
  *
- * The tree is over the *workspace*, not over a repository in it, so it is
- * merged from as many sources as the workspace has repositories, plus one walk
- * of what is left over. See `repos.ts` for why.
+ * The tree is over the workspace rather than over one repository in it, so it
+ * is merged from as many sources as the workspace has repositories, plus one
+ * walk of what is left over.
  */
 
 /** The annotation file, written at the workspace root. Not part of the review. */
@@ -59,9 +59,8 @@ const IGNORED_EXTS = new Set([
 /**
  * How many entries a tree may hold before it is cut short.
  *
- * A truncated tree is still usable — the paths that made it in are browsable,
- * and the response says it was cut — where an unbounded one on a workspace the
- * agent filled would be a response no phone can render and no link can carry.
+ * A truncated tree is still usable: the paths that made it in are browsable,
+ * and the response says it was cut.
  */
 export const MAX_ENTRIES = 20_000;
 
@@ -71,12 +70,9 @@ export interface TreeEntry {
   /** Path relative to the workspace, slash-separated. */
   path: string;
   isDir: boolean;
-  /** Absent for files, which are the bulk of a tree. */
+  /** Absent for files. */
   children?: TreeEntry[];
-  /**
-   * True on the directory a repository is rooted at, so the boundaries are
-   * visible while scrolling across them. Absent everywhere else.
-   */
+  /** True on the directory a repository is rooted at. Absent everywhere else. */
   repo?: boolean;
 }
 
@@ -241,12 +237,11 @@ export function walkPaths(
  *
  * The merge runs one filter over all of it: an entry contributed by repository
  * `P` for path `p` is dropped when the closest repository to `P/p` is not `P`.
- * That single rule is what kills the nameless `inner/` row an outer
- * repository's `ls-files --others` reports for a work tree inside it, *and*
- * the duplicate that would otherwise appear once the inner repository
- * contributes its own files under the same prefix. It is also what makes the
- * repositories a partition of the workspace rather than overlapping views of
- * it.
+ * That single rule drops both the nameless `inner/` row an outer repository's
+ * `ls-files --others` reports for a work tree inside it, and the duplicate
+ * that the inner repository contributes under the same prefix. It is what
+ * makes the repositories a partition of the workspace rather than overlapping
+ * views of it.
  *
  * The merged list is sorted before the cap is applied, so a truncated tree is
  * deterministic rather than "whichever repository was read first".

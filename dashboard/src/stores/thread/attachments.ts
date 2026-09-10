@@ -6,10 +6,9 @@ import { api } from '../../api.ts';
  * dropped on the thread and being part of a prompt.
  *
  * Everything is uploaded into the session's workspace, whatever it is, and
- * nothing travels inside the message. That is the whole reason this is
- * type-agnostic — a PDF, a CSV and a core dump all become a path the agent
- * opens with the tools it already has, where carrying a file in the prompt
- * could only ever work for the handful of things a model reads directly.
+ * nothing travels inside the message. That is what makes this type-agnostic:
+ * a PDF, a CSV and a core dump all become a path the agent opens with the
+ * tools it already has.
  *
  * What the thread shows is fetched back from the workspace rather than kept
  * from the composer, so an image the user attached looks the same on the

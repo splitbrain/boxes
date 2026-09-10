@@ -43,9 +43,9 @@ import type { TurnStateParams } from '../../../shared/types.ts';
  * A session owns several threads, and this one connection carries all of the
  * ones anybody is watching. Each browser connection is pinned to a single
  * thread, chosen at the handshake, so two tabs can watch two conversations of
- * one box at once. The session's `current_thread_id` survives as the default
- * a connection that names no thread gets — not as the truth about what is
- * loaded.
+ * one box at once. The session's `current_thread_id` is the default a
+ * connection that names no thread gets rather than the truth about what any
+ * browser has loaded.
  */
 
 /** The modes an adapter advertises for a thread, and the one it is in. */
@@ -70,10 +70,8 @@ interface SessionConfigOption {
  * A JSON.stringify replacer that keeps base64 media out of the debug log.
  *
  * An image or audio block carries its whole payload inline, and a screenshot
- * is a megabyte of base64 — which the log truncates at 64,000 characters
- * anyway, so what would be stored is a useless prefix of one, thousands of
- * rows deep in a ring that then holds nothing else. The mime type and the
- * size are what a tapped log is read for; the bytes never were.
+ * is a megabyte of base64 against a log that truncates at 64,000 characters.
+ * The mime type and the size are what a tapped log is read for.
  *
  * Keyed on the holder rather than the key name, which is why this is a
  * `function` and not an arrow: `data` is also where a terminal's output
@@ -150,19 +148,16 @@ const DEFAULT_MODEL_ID = 'opus';
  * What the adapter is asked for on the thinking side, on every conversation
  * this orchestrator creates or brings back.
  *
- * `display` is the whole point. Current models default it to `omitted`, which
- * streams thinking blocks carrying a signature and no text — so the adapter
- * has nothing to put in an `agent_thought_chunk` and the dashboard's
- * reasoning disclosure never appears. Asking for `summarized` is what makes
- * the agent's reasoning something you can read, which on a phone, watching a
- * long turn go by, is most of what there is to watch.
+ * `display` carries it. Current models default it to `omitted`, which streams
+ * thinking blocks carrying a signature and no text, so the adapter has
+ * nothing to put in an `agent_thought_chunk` and the dashboard's reasoning
+ * disclosure never appears. `summarized` is what makes the agent's reasoning
+ * readable.
  *
- * `enabled` with a budget rather than `adaptive`, deliberately. The two are
- * the same thing on a current model — the budget is read as on/off and the
- * model decides how much to think — but `adaptive` is also a flag a model
- * that predates it can reject, and which model a thread runs is the user's
- * choice from the header while this is fixed at the thread's creation. The
- * conservative spelling costs nothing and cannot be wrong.
+ * `enabled` with a budget rather than `adaptive`: the two behave the same on
+ * a current model, and a model that predates `adaptive` can reject it. Which
+ * model a thread runs is the user's choice from the header, while this is
+ * fixed at the thread's creation.
  *
  * It travels in `_meta`, which is where ACP puts an agent's own extensions:
  * the adapter reads `_meta.claudeCode.options` and lays it over the options
@@ -245,11 +240,11 @@ export class UpstreamSession {
   private conn: ClientConnection | null = null;
   private initializeResponse: unknown = null;
   private starting: Promise<void> | null = null;
-  /** Who each adapter update goes to; see broadcast.ts. */
+  /** Who each adapter update goes to. */
   private readonly downstreams: Broadcast;
-  /** Whether this session still has work running in it; see background.ts. */
+  /** Whether this session still has work running in it. */
   private readonly background: BackgroundProbe;
-  /** Whether the agent is talking on each thread; see activity.ts. */
+  /** Whether the agent is talking on each thread. */
   private readonly activity: Activity;
   private readonly slog: Logger;
   /** Threads being brought up, so concurrent pins share one; see below. */
@@ -313,8 +308,7 @@ export class UpstreamSession {
           : this.slog.info('reading what is running in the box again'),
       // Nothing reports a build finishing, so a reading is the only news
       // there is: a bar above a composer appears and goes away because this
-      // said so, and without it the one that appeared stayed for as long as
-      // the thread was open.
+      // said so.
       onChange: (threads) => {
         for (const thread of threads) this.downstreams.threadState(thread);
       },
@@ -376,12 +370,11 @@ export class UpstreamSession {
    * A reading answers two questions on two clocks. The reaper's is answered
    * by asking when it sweeps, which is where the lazy refresh behind `active`
    * is enough. A person looking at a thread is the other: nothing reports a
-   * build finishing, so the bar above their composer can only go away when a
-   * reading notices, and a reading only happens when somebody asks. Nobody
-   * asked, so the bar stayed.
+   * build finishing, so the bar above their composer goes away only when a
+   * reading notices.
    *
-   * Only while watched, because that is who this clock is for — an unwatched
-   * box is read once a minute by the reaper and that is plenty.
+   * Only while watched, because an unwatched box is read once a minute by the
+   * reaper.
    */
   private pollWhileWatched(): void {
     if (this.polling || this.downstreams.size === 0) return;
@@ -410,14 +403,13 @@ export class UpstreamSession {
    * button sends and it is right for a turn — the adapter interrupts the
    * query and tears down the subagents it was holding open for. It does
    * nothing to a shell, which is the whole point of a background command: it
-   * is a child of the CLI process that outlives the turn that started it, by
-   * design, and no interrupt is going to reach it. The bar borrowed cancel
-   * anyway, and so had a stop button that could not stop anything.
+   * is a child of the CLI process that outlives the turn that started it, so
+   * no interrupt reaches it.
    *
    * The pids are read from inside the container at this moment and used
    * immediately, because they are the box's own numbering and because a
-   * process that has ended in the meantime should simply not be found. TERM
-   * first, and whatever is still there after a moment is sent KILL — the
+   * process that ended in between should not be found. TERM first, and
+   * whatever is still there after a moment is sent KILL — the
    * escalation is not waited for, so the answer here is about what was
    * signalled rather than what has already died.
    *
@@ -457,8 +449,8 @@ export class UpstreamSession {
    *
    * Detached from the request, which has been answered: a stop is judged by
    * the next reading, not by this. What it re-reads is the same question
-   * rather than the same pids — a pid that has gone is not this thread's work
-   * any more, and one that has not is still exactly what was asked to stop.
+   * rather than the same pids: a pid that has gone is no longer this thread's
+   * work, and one that has not is what was asked to stop.
    */
   private escalate(containerId: string, acpThreadId: string, id?: string): void {
     const timer = setTimeout(() => {
@@ -553,8 +545,8 @@ export class UpstreamSession {
    * answers with the adapter's own id for it.
    *
    * `threadId` names one of the session's threads, or is null for a
-   * connection that named none — an external ACP client, or a link from
-   * before per-thread routes existed — which gets the session's current one.
+   * connection that named none, as an external ACP client does, which gets
+   * the session's current one.
    *
    * The adapter has to be up first: a thread minted and never prompted has no
    * adapter-side conversation until one is made, and pinning a connection to
@@ -574,20 +566,17 @@ export class UpstreamSession {
    *
    * The spawn path brings back the session's current thread and the ones
    * browsers were already watching, which is every thread it can know about.
-   * Opening any other one lands here, and handing back its stored id would
-   * pin the connection to a conversation the adapter has never heard of —
-   * whose first `session/load` then rebuilds it from the transcript alone, in
-   * the adapter's own mode and without this deployment's thinking options.
-   * So the thread is loaded here instead, on the same terms as at spawn.
+   * Opening any other one lands here, and is loaded on the same terms as at
+   * spawn, so the connection is never pinned to a conversation the adapter
+   * has never heard of.
    */
   private async resolveThread(threadId: string | null): Promise<string> {
     const row = threadId ? getThread(this.db, threadId) : this.current;
     if (!row || row.session_id !== this.sessionId) throw new Error('Thread not found');
     if (row.acp_session_id && this.live.has(row.acp_session_id)) return row.acp_session_id;
-    // Two tabs opening the same thread at once share one bring-up. Without
-    // this the second would replay it twice, and on the mint path overwrite
-    // the first's id in the row, leaving that connection pinned to a
-    // conversation nothing else knows about.
+    // Two tabs opening the same thread at once share one bring-up, so the
+    // second neither replays it twice nor overwrites the first's id in the
+    // row.
     const inFlight = this.resolving.get(row.id);
     if (inFlight) return inFlight;
     const attempt = this.bringUp(row.id).finally(() => this.resolving.delete(row.id));
@@ -700,17 +689,17 @@ export class UpstreamSession {
    * session active.
    *
    * The thread comes from the prompt's own params, so a turn is recorded
-   * against the conversation it is actually on rather than against whichever
-   * one happens to be the session's default.
+   * against the conversation it is on rather than against the session's
+   * default.
    */
   private setTurnActive(acpThreadId: string, active: boolean): void {
     setThreadTurnActive(this.db, this.sessionId, acpThreadId, active);
   }
 
   /**
-   * Forgets everything this session was in the middle of. What the callers
-   * have in common is that none of them leaves anything running: a deliberate
-   * stop, an adapter exit, and the session being closed.
+   * Forgets everything this session was in the middle of. None of the
+   * callers leaves anything running: a deliberate stop, an adapter exit, the
+   * session being closed.
    *
    * Both facts together, and the browsers told afterwards rather than
    * between, so a state published halfway through cannot claim a turn on a
@@ -831,11 +820,10 @@ export class UpstreamSession {
    * Brings back every conversation this connection has to carry: the
    * session's current thread, and each thread a browser is watching.
    *
-   * Loading only the current one was enough while every browser was on it.
-   * With two tabs on two threads, a respawn that loaded one would leave the
-   * other browser's next prompt naming a thread the adapter has never heard
-   * of. The set is derived from the attached handles, so it needs no storage
-   * and shrinks as tabs close.
+   * With two tabs on two threads, a respawn that loaded only the current one
+   * would leave the other browser's next prompt naming a thread the adapter
+   * has never heard of. The set is derived from the attached handles, so it
+   * needs no storage and shrinks as tabs close.
    */
   private async loadThreads(conn: ClientConnection): Promise<void> {
     // The current thread first, because it is the one a session with no
@@ -1044,7 +1032,7 @@ export class UpstreamSession {
     const acpSessionId = await this.mintAcpThread(conn, source.acp_session_id, FORK_MODE_ID);
     // The source is recorded, not just used: until the fork is prompted the
     // adapter writes it no transcript, and the row is where its replay has to
-    // come from meanwhile. See replayInherited.
+    // come from meanwhile.
     const thread = insertThread(this.db, this.sessionId, acpSessionId, source.id);
     // Recorded, unlike a fresh thread's mode: a fresh thread is in the
     // deployment's default, which is what an empty column already means,
@@ -1059,8 +1047,7 @@ export class UpstreamSession {
    * naming no thread gets.
    *
    * An ordinary write, and nothing more. No live connection is pinned to the
-   * default, so nobody is dropped and nothing reconnects — which is what
-   * makes opening a thread a plain navigation rather than a call.
+   * default, so nobody is dropped and nothing reconnects.
    */
   switchThread(threadId: string): ThreadRow {
     const thread = getThread(this.db, threadId);
@@ -1079,9 +1066,8 @@ export class UpstreamSession {
    * reconnects from scratch and pins whatever that thread is now.
    *
    * The only caller is the respawn path, for a thread whose adapter id did
-   * not survive. Nothing else drops a browser any more: a connection is
-   * pinned to its own thread, so neither switching the session's default nor
-   * adding a thread disturbs anyone.
+   * not survive. A connection is pinned to its own thread, so neither
+   * switching the session's default nor adding a thread drops a browser.
    */
   private dropWatchers(acpThreadId: string): void {
     for (const handle of this.downstreams.byRecency(acpThreadId)) {
@@ -1130,10 +1116,8 @@ export class UpstreamSession {
    * Puts a thread on the model it is meant to be on, on the same terms as
    * {@link applyMode}: the one recorded for it, or this deployment's default.
    *
-   * A recorded model the adapter no longer offers falls back to the default
-   * rather than being insisted on — model ids come and go, and a thread on
-   * the deployment's current default is a better answer than one whose model
-   * request the adapter rejects.
+   * A recorded model the adapter no longer offers falls back to the default,
+   * since model ids come and go.
    */
   private async applyModel(
     conn: ClientConnection,
@@ -1178,11 +1162,10 @@ export class UpstreamSession {
   /** Taps an adapter update and delivers it to the browsers it is meant for. */
   private onSessionUpdate(params: unknown): void {
     this.touch();
-    // Only what is happening now. A replay re-sends everything the thread ever
-    // said, and a transcript arriving in a burst is not the agent talking —
-    // reading one as activity would show a spinner for a conversation that
-    // ended hours ago. The cost is that a turn starting during somebody else's
-    // replay goes unobserved, which is a window of milliseconds.
+    // Only what is happening now. A replay re-sends everything the thread
+    // ever said, and a transcript arriving in a burst is not the agent
+    // talking. The cost is that a turn starting during somebody else's replay
+    // goes unobserved, which is a window of milliseconds.
     const thread = threadOf(params);
     if (this.replaying === 0 && thread) {
       const update = (params as { update?: unknown })?.update;
@@ -1201,12 +1184,12 @@ export class UpstreamSession {
    * The mode and model are here as well as on the request that set them
    * because the adapter changes them on its own too — leaving plan mode when
    * a plan is accepted, falling back to another model under load — and a
-   * thread should come back in the mode it was actually in, not the last one
+   * thread should come back in the mode it was in rather than the last one
    * somebody asked for.
    *
-   * The row is found by the update's own ACP id rather than by which thread is
-   * current, so an update that arrives while a switch is in flight lands on
-   * the thread it is actually about.
+   * The row is found by the update's own ACP id rather than by which thread
+   * is current, so an update that arrives while a switch is in flight lands
+   * on the thread it is about.
    */
   private recordThreadInfo(params: unknown): void {
     const acpSessionId = (params as { sessionId?: string })?.sessionId;
@@ -1336,8 +1319,8 @@ export class UpstreamSession {
    * rather than only the box: with two threads live, "your session needs you"
    * is not enough to act on from a lock screen.
    *
-   * Fire and forget by construction — see notify.ts. A turn already waiting
-   * on a human must not also wait on a push service.
+   * Fire and forget: a turn already waiting on a human must not also wait on
+   * a push service.
    */
   private announce(kind: NotifyKind, acpThreadId: string | null): void {
     const thread = acpThreadId
@@ -1359,10 +1342,9 @@ export class UpstreamSession {
       // The same name the dashboard shows, so a notification and the list
       // agree about which conversation this is.
       threadName: thread ? thread.title?.trim() || `Thread ${thread.ordinal}` : null,
-      // What is still going on in that conversation, which is what makes the
-      // difference between a thread you can come back to later and one that
-      // is about to say something on its own. Another thread's work is not
-      // news about this one.
+      // What is still going on in that conversation, which separates a thread
+      // to come back to later from one that is about to say something on its
+      // own. Another thread's work is not news about this one.
       background: acpThreadId ? this.background.work(acpThreadId).length > 0 : false,
     });
   }
@@ -1457,7 +1439,7 @@ export class UpstreamSession {
       // across the restarts that lose the adapter's copy of it. Recorded here
       // as well as from the adapter's own current_mode_update, because that
       // notification is the adapter's courtesy and this is the answer to the
-      // request the user actually made.
+      // request the user made.
       if (method === 'session/set_mode' && thread !== undefined) {
         const modeId = (params as { modeId?: unknown })?.modeId;
         const row = threadByAcpId(this.db, this.sessionId, thread);
@@ -1563,8 +1545,7 @@ export class UpstreamSession {
     if (!conn) throw new Error('Upstream not connected');
     this.tap('down', method, params);
     // Only the cancelled thread's turn ends. Another thread of the same
-    // session may still be mid-turn, and saying otherwise would be the stale
-    // second source of truth this moved onto the thread to avoid.
+    // session may still be mid-turn.
     const thread = threadOf(params);
     if (method === 'session/cancel' && thread) {
       this.setTurnActive(thread, false);
