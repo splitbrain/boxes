@@ -698,9 +698,16 @@ egress proxy added — that part is only known at runtime. A project's own
   *not* the Playwright library's default, where it is already false. The
   container is the sandbox instead: non-root, no capabilities, read-only
   rootfs, no route out but the proxy.
-- **`--disable-dev-shm-usage`.** `/dev/shm` is Docker's default 64 MB, which
-  Chromium exhausts on a substantial page and reports as a closed target. This
-  moves that traffic to `/tmp`, already a 512 MB tmpfs.
+- **`ignoreDefaultArgs: ['--disable-dev-shm-usage']`.** `/dev/shm` is Docker's
+  default 64 MB, which Chromium exhausts on a substantial page and reports as
+  a closed target. Playwright's answer, which it passes on every Chromium it
+  launches, is that flag — and all the flag does is move the traffic to
+  `TMPDIR`, which here is the home volume and so a disk. The orchestrator
+  gives the container a 512 MB `/dev/shm` instead, and this hands the browser
+  back to it. It takes `ignoreDefaultArgs` rather than an `args` list because
+  the flag is Playwright's default rather than anything this config adds. A
+  deployment running this image under something other than this orchestrator
+  wants the flag, which means dropping this key.
 
 The proxy entry carries `NO_PROXY` as its bypass list, so a dev server started
 in the session is reachable while everything external still goes through the
@@ -711,19 +718,31 @@ the rest of the image is pointed at, so the entrypoint imports the deployment
 CA into `~/.pki/nssdb` with `certutil`. Without it the hosts the proxy
 intercepts fail TLS in the browser and nowhere else.
 
-Two smaller things. `PLAYWRIGHT_BROWSERS_PATH` is `/opt/playwright`, on the
-image and so read-only at runtime. A project pinning its own Playwright has
-two ways out of that. Either download the build its version wants, once, into
-the session's home:
+Two smaller things. `PLAYWRIGHT_BROWSERS_PATH` is `~/.cache/ms-playwright`, in
+the session's home and so writable, while the browsers themselves stay on the
+image at `/opt/playwright`, which is not. The entrypoint links the second into
+the first at every start, which is what lets a session both find the Chromium
+that is already here and install one that is not. So a project pinning its own
+Playwright just downloads the build its version wants, beside the links:
 
 ```sh
-export PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright
-npx playwright install chromium
+playwright install chromium
 ```
 
-Or use the browser that is already here, at **`/usr/local/bin/chromium`** — a
-stable link to whatever revision the image installed, which is what a test
-suite can hardcode:
+Use `playwright`, the image's own CLI on PATH, rather than `npx playwright`:
+npx never consults PATH, so it fetches a second copy of the tool first. On the
+revision the image already carries, that command finds the link and returns
+without downloading at all.
+
+The links are rewritten each start rather than baked into the home, because a
+home is copied out of the image once when its session is created and never
+refreshed — a baked link would name whichever revision that image carried and
+dangle as soon as the image was rebuilt onto a newer Playwright. A session that
+has downloaded a browser of its own keeps it: only links are swept.
+
+The alternative is to use the browser that is already here by name, at
+**`/usr/local/bin/chromium`** — a stable link to whatever revision the image
+installed, which is what a test suite can hardcode:
 
 ```js
 chromium.launch({ executablePath: '/usr/local/bin/chromium' });
@@ -733,9 +752,12 @@ That needs no download and no egress, at the price of a Chromium a couple of
 Chrome majors from the one the library pins, which Playwright tolerates until
 it does not. Naming it with `executablePath` is what skips the revision check;
 `channel: 'chromium'` would go looking under `PLAYWRIGHT_BROWSERS_PATH` again.
-Either way, pass `--disable-dev-shm-usage`: `/dev/shm` here is Docker's
-default 64 MB, which Chromium exhausts on any substantial page and reports as
-a closed target. The browser CLI's own config already carries it.
+Either way, consider `ignoreDefaultArgs: ['--disable-dev-shm-usage']`.
+Playwright passes that flag on every Chromium launch, and it sends the
+browser's shared memory to `TMPDIR` — the home volume here, and so a disk.
+`/dev/shm` in a session is 512 MB rather than Docker's 64 MB default, which is
+the size the flag exists to work around, so turning it off puts that traffic
+back in memory. The browser CLI's own config already does this.
 
 And the CLI writes snapshots and screenshots to `.playwright-cli/` in the
 working directory, which in a session is the workspace — convenient, since the
@@ -754,8 +776,7 @@ sessions never open — but their system libraries are, which is the half a
 session cannot install for itself:
 
 ```sh
-export PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright
-npx playwright install firefox webkit
+playwright install firefox webkit
 ```
 
 That is the same route as the Chromium one above and it now ends in a browser
@@ -773,14 +794,30 @@ project pinning its own resolves a different one and downloads it regardless —
 the same reason `/usr/local/bin/chromium` exists. Library names carry no such
 revision.
 
-There is still no display, so `--headed` cannot work in any of the three.
+There is no display, so `--headed` does not work on its own — but Xvfb is
+here, pulled in by Playwright's own dependency list for Chromium rather than
+by anything this file asks for, and under it a headed run does work:
+
+```sh
+xvfb-run -a npx playwright test --headed
+```
+
+That matters for the one obvious way to make the image smaller.
 `playwright-cli install-browser chromium --only-shell` in a derived image
-drops the full browser and keeps just the headless shell if image size matters
-more than the option of a headed run later. A deployment that only ever drives
-Chromium drops the Firefox and WebKit libraries by deleting that block from
-its own copy of the Dockerfile — a derived image cannot take them back out,
-since an `apt-get purge` in a later layer removes the files without
-recovering the bytes.
+drops the full browser and keeps just the headless shell, which is around 390
+MB of the roughly 660 MB the browsers occupy — and it is what `playwright-cli`
+actually launches, so nothing in the default path notices. What it costs is
+the headed run above, and it costs it quietly: `chrome-headless-shell` accepts
+`headless: false` without complaint and stays headless anyway, so a suite that
+asked for a head gets a screenshot that looks plausible and is not what it
+asked for. Worth taking if this deployment never wants a head, worth knowing
+about either way.
+
+A deployment that only ever drives Chromium drops the Firefox and WebKit
+libraries by deleting that block from its own copy of the Dockerfile — a
+derived image cannot take them back out, since an `apt-get purge` in a later
+layer removes the files without recovering the bytes. Note that Xvfb comes in
+with Chromium's dependencies, so it survives that deletion.
 
 ### The agent installs it itself
 

@@ -16,20 +16,33 @@ const NAMED_CHROMIUM = process.env['CHROMIUM_PATH'];
 /**
  * Where a Boxes session image keeps the browser it ships.
  *
- * Playwright's own copy cannot be used in a session: the image points
- * PLAYWRIGHT_BROWSERS_PATH at itself, so the revision this suite's Playwright
- * resolves is a path on a read-only filesystem that nothing can download
- * into. The image links what it installed to this name for exactly this.
+ * A session's PLAYWRIGHT_BROWSERS_PATH holds links to the browsers the image
+ * carries, so this suite's Playwright resolves a real browser there whenever
+ * it pins the revision the image has. When it pins a different one, that path
+ * is writable and the build can be downloaded — but this name is the one that
+ * needs no download at all, which is why it is worth trying first.
  */
 const IMAGE_CHROMIUM = '/usr/local/bin/chromium';
 
 /**
- * `/dev/shm` is Docker's default 64 MB in a session container, which Chromium
- * exhausts on any substantial page and reports as a closed target. Harmless
- * everywhere else, and the same reason the browser CLI's own config carries
- * it — see session-image/playwright-cli.config.json.
+ * Playwright's own `--disable-dev-shm-usage`, taken back off.
+ *
+ * The flag answers a 64 MB `/dev/shm`, which Chromium exhausts on any
+ * substantial page and reports as a closed target, and it answers it by
+ * moving that traffic to `TMPDIR`. In a session `TMPDIR` is the home volume,
+ * so the flag puts a browser's shared memory on a disk; the orchestrator
+ * gives the container a 512 MB `/dev/shm` instead, which is the better half
+ * of that trade. CI and a developer's machine both have half of RAM there,
+ * neither being a container, so it is the better half everywhere this runs.
+ *
+ * Suppressed rather than simply not passed: Playwright adds it to every
+ * Chromium launch as one of its own defaults, so an `args` list without it
+ * still produces a command line with it.
+ *
+ * Somewhere with a small `/dev/shm` and no way to raise it would want it back,
+ * which means dropping this rather than adding anything.
  */
-const LAUNCH_ARGS = ['--disable-dev-shm-usage'];
+const IGNORED_DEFAULT_ARGS = ['--disable-dev-shm-usage'];
 
 /**
  * Which Chromium to launch.
@@ -38,7 +51,7 @@ const LAUNCH_ARGS = ['--disable-dev-shm-usage'];
  * exists: an explicit path that is wrong should say which path, not be
  * quietly ignored. Then the build this suite's own Playwright pins, when it
  * has been installed — the exactly matching one, which is what CI installs
- * and what the README's two lines put in a session's home volume. Then the
+ * and what a session's browsers path already links or can download. Then the
  * session image's, which is a couple of Chrome majors off and used because it
  * is there and needs no download.
  *
@@ -63,7 +76,10 @@ function chromiumToLaunch(): LaunchOptions {
 /** Launches Chromium once and reuses it for the whole run. */
 export async function getBrowser(): Promise<Browser> {
   if (!browser) {
-    browser = await chromium.launch({ args: LAUNCH_ARGS, ...chromiumToLaunch() });
+    browser = await chromium.launch({
+      ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,
+      ...chromiumToLaunch(),
+    });
   }
   return browser;
 }
@@ -87,7 +103,7 @@ export async function launchProfile(): Promise<{
 }> {
   const profile = mkdtempSync(resolve(tmpdir(), 'boxes-profile-'));
   const context = await chromium.launchPersistentContext(profile, {
-    args: LAUNCH_ARGS,
+    ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,
     viewport: VIEWPORTS.phone,
     colorScheme: 'dark',
     ...chromiumToLaunch(),

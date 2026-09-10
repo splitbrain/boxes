@@ -6,6 +6,28 @@ set -uo pipefail
 
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
 
+# --- scratch space ----------------------------------------------------------
+# TMPDIR is a directory in the home rather than /tmp, because /tmp here is a
+# tmpfs and so RAM charged to the container's memory limit -- see the Dockerfile
+# for why that is worth avoiding for anything large.
+#
+# Created because a home filled from an image older than this variable does not
+# have the directory, and a missing TMPDIR fails oddly and far from its cause.
+# Emptied because the tmpfs it replaces was discarded on every restart for free,
+# and a directory on a persistent volume would instead keep every temporary file
+# the session ever made.
+#
+# The contents go rather than the directory itself, so nothing has to re-create
+# it, and so a bad TMPDIR can never turn this into a recursive delete of a path
+# that means something else.
+if [ -n "${TMPDIR:-}" ]; then
+  if mkdir -p "$TMPDIR"; then
+    find "$TMPDIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+  else
+    log "WARNING: could not create $TMPDIR; tools reading TMPDIR will fail"
+  fi
+fi
+
 # --- egress proxy CA --------------------------------------------------------
 # The proxy terminates TLS for the hosts whose credentials it translates, so
 # this container has to trust the deployment's CA for those hosts to work. The
@@ -119,8 +141,62 @@ if [ -n "${BOXES_PROXY_CA:-}" ] && command -v certutil >/dev/null 2>&1; then
 fi
 
 # --- the browser CLI ---------------------------------------------------------
-# Two things the CLI cannot work out for itself.
+# Three things the CLI cannot work out for itself.
 #
+# First, where the browsers are. The image keeps them at BOXES_IMAGE_BROWSERS,
+# which is read-only in a session; PLAYWRIGHT_BROWSERS_PATH points instead at a
+# directory in the home, which is writable and which Playwright therefore
+# treats as somewhere it may install. Linking the image's builds into it is
+# what lets both be true at once: the browser the image already carries
+# resolves without being copied, and a project downloading a revision of its
+# own lands beside the links.
+#
+# Every start, rather than once when the home was filled. A home is copied out
+# of the image at session creation and never refreshed, so links written then
+# would name whichever revision that image carried, and an image rebuilt onto a
+# newer Playwright would leave every one of them dangling. Relinking against
+# the image actually running is what keeps a long-lived session working across
+# an upgrade, and the sweep below is what clears out what the upgrade orphaned.
+#
+# Only links are swept. A real directory here is a browser some project
+# downloaded, which is not ours to remove.
+link_image_browsers() {
+  browsers="${PLAYWRIGHT_BROWSERS_PATH:-}"
+  image="${BOXES_IMAGE_BROWSERS:-}"
+  if [ -z "$browsers" ] || [ -z "$image" ] || [ ! -d "$image" ]; then
+    return 0
+  fi
+  if ! mkdir -p "$browsers"; then
+    log "WARNING: could not create $browsers; the image's browsers will not resolve"
+    return 0
+  fi
+  for link in "$browsers"/*; do
+    if [ -L "$link" ] && [ ! -e "$link" ]; then
+      rm -f "$link"
+      log "dropped a browser link the image no longer carries: $(basename "$link")"
+    fi
+  done
+  linked=0
+  for build in "$image"/*/; do
+    if [ ! -d "$build" ]; then
+      continue
+    fi
+    target="$browsers/$(basename "$build")"
+    if [ -e "$target" ]; then
+      continue
+    fi
+    if ln -s "${build%/}" "$target"; then
+      linked=$((linked + 1))
+    else
+      log "WARNING: could not link $(basename "$build") into $browsers"
+    fi
+  done
+  if [ "$linked" -gt 0 ]; then
+    log "linked $linked browser build(s) from the image into $browsers"
+  fi
+}
+link_image_browsers
+
 # Its global config, at ~/.playwright/cli.config.json, carries which browser to
 # use and the launch options a session container needs; the image ships that
 # much, and the only piece missing at build time is the egress proxy, which is
@@ -144,6 +220,65 @@ if [ -r "$cli_base" ] && mkdir -p /home/agent/.playwright; then
   fi
 fi
 
+# What the CLI's own skill cannot say, because it is written for Playwright
+# anywhere rather than for this image: which browsers are already here, which
+# are a download away, and which command to reach for.
+#
+# Not left to the README because the README is read by whoever runs the
+# deployment and this is read by whoever is in the session. An agent that does
+# not know Chromium is already linked reaches for `npx playwright install`,
+# which is the one form that still costs something: npx never consults PATH, so
+# it downloads a second copy of the tool before discovering there is nothing to
+# do.
+#
+# Appended rather than shipped as a skill of our own: this is a paragraph about
+# an existing skill's subject, and a second skill covering the same ground is
+# how an agent ends up reading only one of them. Appended only in the branch
+# that installed the image's copy, so a box that supplies its own
+# playwright-cli skill keeps exactly what the dashboard showed. The marker
+# keeps it to one copy if the install ever preserves the file instead of
+# rewriting it.
+append_browser_notes() {
+  skill=/home/agent/.claude/skills/playwright-cli/SKILL.md
+  [ -f "$skill" ] || return 0
+  grep -qF '## Browsers in this container' "$skill" 2>/dev/null && return 0
+  cat >> "$skill" <<'SKILL_NOTES'
+
+## Browsers in this container
+
+Chromium is already installed, at the revision this image's Playwright wants,
+and it is already linked into `PLAYWRIGHT_BROWSERS_PATH`. `playwright-cli` uses
+it with no setup, and so does a project's own Playwright on that revision.
+
+**There is no need to run `playwright install chromium`.** Nothing is missing,
+so it finds the link and returns without downloading anything.
+
+To drive the browser, use `playwright-cli`, described above.
+
+Firefox and WebKit are not in the image, but their system libraries are, so one
+download makes either work — into the same path, beside the Chromium link:
+
+```sh
+playwright install firefox webkit
+```
+
+Use `playwright`, the CLI already on PATH here. Avoid `npx playwright`, which
+ignores PATH and downloads a second copy of the tool before running it.
+
+A project pinning a Playwright that wants some other Chromium revision can
+download that too, the same way. If you would rather not download at all, name
+the browser the image carries instead:
+
+```js
+chromium.launch({ executablePath: '/usr/local/bin/chromium' });
+```
+
+That is a stable link to whatever revision the image has. Naming it this way is
+what skips Playwright's revision check, which `channel: 'chromium'` would fail.
+SKILL_NOTES
+  log "appended this image's browser notes to the playwright-cli skill"
+}
+
 # And its skill, which the CLI installs itself. --global puts it in
 # ~/.claude/skills rather than in the workspace, which is a git checkout that
 # is none of our business. Re-run every start so the copy in the session's home
@@ -164,6 +299,7 @@ if [ -f "$AGENT_SRC/manifest" ] \
 elif command -v playwright-cli >/dev/null 2>&1; then
   if playwright-cli install --skills --global >/dev/null 2>&1; then
     log "installed the image's playwright-cli skill"
+    append_browser_notes
   else
     log "WARNING: could not install the playwright-cli skill"
   fi

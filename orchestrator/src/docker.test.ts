@@ -237,6 +237,17 @@ describe('the container template', () => {
     assert.equal(host['Privileged'], false);
     assert.deepEqual(host['SecurityOpt'], ['no-new-privileges:true']);
   }, 30_000);
+
+  // The session image suppresses Playwright's --disable-dev-shm-usage on the
+  // strength of this number, so removing it would not fail anywhere near
+  // itself: Chromium would be left on Docker's 64 MB /dev/shm and report the
+  // exhaustion as a closed target, in a session, on whichever page first
+  // happened to be large enough.
+  it('gives the browser enough shared memory to not need the flag', async () => {
+    const opts = await capture();
+    const host = opts['HostConfig'] as Record<string, unknown>;
+    assert.equal(host['ShmSize'], 512 * 1024 * 1024);
+  }, 30_000);
 });
 
 /**
