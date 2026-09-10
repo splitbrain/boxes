@@ -18,6 +18,7 @@ import {
   nextSubnetIndex,
   sessionTurnActive,
   sessionsWithActiveTurns,
+  setThreadDone,
   touchSession,
   type Db,
   type SessionRow,
@@ -1141,6 +1142,21 @@ export class SessionManager {
   }
 
   /**
+   * Marks one of a session's conversations done, or takes the mark off again.
+   *
+   * The reader's own note about which threads they are finished with. Nothing
+   * else changes: the thread keeps its adapter conversation, whatever it is
+   * running goes on running, and a prompt sent to it is answered as always.
+   */
+  setThreadDone(id: string, threadId: string, done: boolean): ThreadSummary {
+    this.mustGet(id);
+    const row = getThread(this.db, threadId);
+    if (!row || row.session_id !== id) throw new HttpError(404, 'Thread not found');
+    setThreadDone(this.db, threadId, done);
+    return toThreadSummary({ ...row, done: done ? 1 : 0 }, this.pending.countsByThread(id));
+  }
+
+  /**
    * Stops one thing that conversation left running, or all of it.
    *
    * A thread the adapter has no conversation for cannot have left anything in
@@ -1245,6 +1261,7 @@ function toThreadSummary(
     speaking: acp ? speaking.has(acp) : false,
     backgroundBusy: acp ? working.has(acp) : false,
     pendingCount: acp ? (pendingByThread.get(acp) ?? 0) : 0,
+    done: row.done === 1,
     createdAt: row.created_at,
     lastActiveAt: row.last_active_at,
   };

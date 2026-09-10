@@ -116,6 +116,12 @@ export interface ThreadRow {
   mode_id: string | null;
   /** The model it is meant to be on, on the same terms. */
   model_id: string | null;
+  /**
+   * 1 once the reader has marked this conversation finished with. Read by the
+   * dashboard and by nothing else: it changes what a row looks like, never
+   * what the thread can do.
+   */
+  done: number;
   created_at: number;
   last_active_at: number;
 }
@@ -416,6 +422,12 @@ export const MIGRATIONS: string[] = [
   DELETE FROM exec_log;
   ALTER TABLE exec_log ADD COLUMN thread_id TEXT;
   `,
+  // Whether the reader is finished with a conversation. Theirs to set and
+  // theirs alone to read: every existing thread starts at 0, which is what a
+  // thread nobody has marked is.
+  `
+  ALTER TABLE threads ADD COLUMN done INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 /** An open database handle. */
@@ -628,16 +640,17 @@ export function insertThread(
     inherits_from: inheritsFrom,
     mode_id: null,
     model_id: null,
+    done: 0,
     created_at: now,
     last_active_at: now,
   };
   db.transaction(() => {
     db.prepare(
       `INSERT INTO threads (id, session_id, acp_session_id, title, ordinal,
-         turn_active, inherits_from, mode_id, model_id, created_at,
+         turn_active, inherits_from, mode_id, model_id, done, created_at,
          last_active_at)
        VALUES (@id, @session_id, @acp_session_id, @title, @ordinal,
-         @turn_active, @inherits_from, @mode_id, @model_id, @created_at,
+         @turn_active, @inherits_from, @mode_id, @model_id, @done, @created_at,
          @last_active_at)`,
     ).run(row);
     db.prepare('UPDATE sessions SET current_thread_id = ? WHERE id = ?').run(id, sessionId);
@@ -689,6 +702,17 @@ export function setThreadMode(db: Db, threadId: string, modeId: string | null): 
 /** Records the model a thread is meant to be on, on the same terms. */
 export function setThreadModel(db: Db, threadId: string, modelId: string | null): void {
   db.prepare('UPDATE threads SET model_id = ? WHERE id = ?').run(modelId, threadId);
+}
+
+/**
+ * Marks a thread finished with, or takes the mark off again.
+ *
+ * `last_active_at` is left alone: marking a conversation done is the reader's
+ * bookkeeping rather than anything happening in it, and moving the age would
+ * send a thread nobody has touched back to the freshest one in the box.
+ */
+export function setThreadDone(db: Db, threadId: string, done: boolean): void {
+  db.prepare('UPDATE threads SET done = ? WHERE id = ?').run(done ? 1 : 0, threadId);
 }
 
 /** Marks a thread active now, alongside its session. */
