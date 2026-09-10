@@ -155,7 +155,12 @@ export function SessionCard({ session }: { session: SessionSummary }) {
                 title={dot.label}
                 className={cn('size-1.5 shrink-0 rounded-full', DOT[dot.kind])}
               />
-              <span className="min-w-0 flex-1 truncate">{threadName(thread)}</span>
+              {/* A conversation the reader has marked finished with is struck
+                  through, and that is the whole of the difference: it is
+                  still here, still opens, still runs. */}
+              <span className={cn('min-w-0 flex-1 truncate', thread.done && 'line-through')}>
+                {threadName(thread)}
+              </span>
               {/* How long since this conversation last did anything, which is
                   what picks the one you were in out of a box with six. Rough,
                   and rounded down: the question is this morning or last week,

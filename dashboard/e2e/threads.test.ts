@@ -17,6 +17,11 @@ import { startStubOrchestrator, stubSession, type StubOrchestrator } from './stu
 const DIST = resolve(import.meta.dirname, '../dist');
 const ID = 'a1b2c3d4';
 
+/** The `text-decoration-line` the browser computed for one element. */
+function decoration(target: import('playwright').Locator): Promise<string> {
+  return target.evaluate((el) => getComputedStyle(el).textDecorationLine);
+}
+
 /** A streamed assistant reply, in the chunks an adapter would send it. */
 function reply(...texts: string[]): SessionUpdate[] {
   return texts.map(
@@ -240,6 +245,38 @@ test('a bang command is run against the thread it was typed in', async () => {
     await expect.poll(() => stub.execCalls.length).toBe(1);
     expect(stub.execCalls[0]).toEqual({ sessionId: ID, threadId: 'th1', command: 'echo hi' });
     await expect.poll(() => page.getByText('ran: echo hi').isVisible()).toBe(true);
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
+test('marking a thread done crosses it out on the list, and the mark comes off again', async () => {
+  const { page, errors, close } = await openPage(stub.url, `/sessions/${ID}/threads/th1`);
+  try {
+    await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
+
+    await page.getByLabel('Mark this thread done').click();
+    // The same button, now saying what it would undo.
+    await expect.poll(() => page.getByLabel('Mark this thread not done').isVisible()).toBe(true);
+
+    await page.getByLabel('Back to sessions').click();
+    const name = page.getByRole('link', { name: 'Thread 1' }).getByText('Thread 1');
+    await expect.poll(() => name.isVisible()).toBe(true);
+    await expect.poll(() => decoration(name)).toBe('line-through');
+
+    // Struck through and nothing else: the row is still a link into the
+    // conversation, which still connects.
+    await name.click();
+    await page.waitForURL(`**/sessions/${ID}/threads/th1`);
+    await expect.poll(() => page.getByText('connected').isVisible()).toBe(true);
+
+    await page.getByLabel('Mark this thread not done').click();
+    await expect.poll(() => page.getByLabel('Mark this thread done').isVisible()).toBe(true);
+
+    await page.getByLabel('Back to sessions').click();
+    await expect.poll(() => name.isVisible()).toBe(true);
+    await expect.poll(() => decoration(name)).toBe('none');
     expect(errors).toEqual([]);
   } finally {
     await close();

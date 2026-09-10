@@ -87,6 +87,14 @@ export interface ThreadSummary {
   speaking: boolean;
   /** Permission requests from this thread waiting for a browser to answer. */
   pendingCount: number;
+  /**
+   * Whether the reader has marked this conversation finished with.
+   *
+   * A note to whoever reads the list, and nothing else: a thread marked done
+   * still runs, still takes prompts, still forks, and can be marked undone
+   * again. Nothing in the orchestrator reads it.
+   */
+  done: boolean;
   createdAt: number;
   lastActiveAt: number;
 }
@@ -220,6 +228,11 @@ export interface CreateThreadBody {
    * fresh, empty thread on the same workspace.
    */
   from?: string;
+}
+
+/** Body of a request to mark a thread done, or to take the mark off again. */
+export interface ThreadDoneBody {
+  done: boolean;
 }
 
 /** Body of a create-session request. */

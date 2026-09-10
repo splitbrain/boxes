@@ -937,3 +937,59 @@ test('stopping background work names a thread, and 404s for one that is not ther
   assert.equal(unminted.statusCode, 200);
   assert.deepEqual(unminted.json(), { stopped: 0 });
 });
+
+test('marking a thread done is remembered, reversible, and 404s for a thread that is not there', async () => {
+  insertSession('abc123');
+  const before = db.prepare("SELECT last_active_at FROM threads WHERE id = 'abc123-t1'").get() as {
+    last_active_at: number;
+  };
+
+  const missing = await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/nope/done',
+    payload: { done: true },
+  });
+  assert.equal(missing.statusCode, 404);
+
+  // A mark is a boolean or it is nothing: a body that says neither would
+  // otherwise unmark whatever it was sent about.
+  const empty = await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/abc123-t1/done',
+    payload: {},
+  });
+  assert.equal(empty.statusCode, 400);
+
+  const marked = await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/abc123-t1/done',
+    payload: { done: true },
+  });
+  assert.equal(marked.statusCode, 200);
+  assert.equal((marked.json() as { done: boolean }).done, true);
+
+  // Read back over the list route, which is where the dashboard sees it.
+  const threads = await orchestrator.app.inject({
+    method: 'GET',
+    url: '/api/sessions/abc123/threads',
+  });
+  assert.deepEqual(
+    (threads.json() as Array<{ id: string; done: boolean }>).map((t) => [t.id, t.done]),
+    [['abc123-t1', true]],
+  );
+
+  // And the mark comes off the same way it went on.
+  const unmarked = await orchestrator.app.inject({
+    method: 'POST',
+    url: '/api/sessions/abc123/threads/abc123-t1/done',
+    payload: { done: false },
+  });
+  assert.equal((unmarked.json() as { done: boolean }).done, false);
+
+  // Nothing else moved: marking a conversation done is bookkeeping about it,
+  // not something that happened in it.
+  const after = db.prepare("SELECT last_active_at FROM threads WHERE id = 'abc123-t1'").get() as {
+    last_active_at: number;
+  };
+  assert.equal(after.last_active_at, before.last_active_at);
+});

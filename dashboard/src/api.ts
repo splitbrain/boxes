@@ -80,6 +80,18 @@ export const api = {
       method: 'POST',
     }),
   /**
+   * Marks a conversation done, or takes the mark off again.
+   *
+   * The reader's own note about being finished with a thread. It changes how
+   * the thread is drawn and nothing else, so nothing here waits on it beyond
+   * reading the row back.
+   */
+  setThreadDone: (id: string, threadId: string, done: boolean) =>
+    request<ThreadSummary>(`/api/sessions/${id}/threads/${threadId}/done`, {
+      method: 'POST',
+      body: JSON.stringify({ done }),
+    }),
+  /**
    * Kills what a conversation left running in its box: one process, or all of
    * them.
    *

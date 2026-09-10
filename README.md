@@ -289,6 +289,12 @@ its own way from there. A fork starts in `plan` mode, because it shares the orig
 checkout and two agents editing the same files at once is a mess neither can
 see; flip it to `auto` under the header's sliders when that is what you want.
 
+**Mark a thread done.** The check in a thread's header says you are finished
+with that conversation, and the list draws it struck through — so a box that
+has gathered six of them shows at a glance which ones are still live. It is a
+note to you and nothing else: a thread marked done still opens, still runs,
+still answers, and the same button takes the mark off again.
+
 **Read the list at a glance.** Every thread row ends with how long ago that
 conversation last did anything — `12s`, `5h`, `14d` — so the one you were in
 is findable in a box that holds six, and a session nobody has touched in a

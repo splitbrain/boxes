@@ -333,3 +333,36 @@ test('the exec log gains a thread, and its session-wide rows are dropped', () =>
     upgraded.close();
   }
 });
+
+test('threads from before the done column read as not done', () => {
+  const db = new Database(join(dir, 'boxes.db'));
+  for (const sql of MIGRATIONS.slice(0, 15)) db.exec(sql);
+  db.pragma('user_version = 15');
+  db.prepare(
+    `INSERT INTO sessions (id, name, profile, image, agent_cmd, container_id,
+       network_name, subnet, ws_volume, home_volume, status, current_thread_id,
+       created_at, last_active_at)
+     VALUES ('live', 'from before threads were marked', 'DEFAULT', 'img', '[]', 'c1',
+       'sn-live', '10.200.0.0/24', '', 'home-live', 'running', 't1', 1000, 2000)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO threads (id, session_id, acp_session_id, title, ordinal,
+       created_at, last_active_at)
+     VALUES ('t1', 'live', 'acp-1', NULL, 1, 1000, 2000)`,
+  ).run();
+  db.close();
+
+  const upgraded = openDb(dir);
+  try {
+    assert.ok(columns(upgraded, 'threads').includes('done'));
+
+    // No backfill and nothing to guess: a mark is the reader's, and one they
+    // have never had the chance to set is not set.
+    const row = upgraded.prepare("SELECT done FROM threads WHERE id = 't1'").get() as {
+      done: number;
+    };
+    assert.equal(row.done, 0);
+  } finally {
+    upgraded.close();
+  }
+});

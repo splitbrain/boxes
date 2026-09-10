@@ -19,6 +19,7 @@ import type {
   ReviewAnnotationsResponse,
   ReviewBaseBody,
   StoredAttachment,
+  ThreadDoneBody,
   UpdateAgentSetBody,
 } from '../../shared/types.ts';
 import { AgentStore } from './agents.ts';
@@ -208,6 +209,21 @@ export function buildApp(
   app.post('/api/sessions/:id/threads/:threadId/select', async (req) => {
     const { id, threadId } = req.params as { id: string; threadId: string };
     return manager.selectThread(id, threadId);
+  });
+
+  /**
+   * Marks a conversation done, or takes the mark off again.
+   *
+   * A note the reader keeps about which of a box's conversations they are
+   * finished with. It changes how the thread is drawn in a list and nothing
+   * about the thread: it still runs, still answers, and is marked undone the
+   * same way it was marked.
+   */
+  app.post('/api/sessions/:id/threads/:threadId/done', async (req) => {
+    const { id, threadId } = req.params as { id: string; threadId: string };
+    const done = (req.body as ThreadDoneBody | undefined)?.done;
+    if (typeof done !== 'boolean') throw new HttpError(400, 'done must be true or false');
+    return manager.setThreadDone(id, threadId, done);
   });
 
   /**

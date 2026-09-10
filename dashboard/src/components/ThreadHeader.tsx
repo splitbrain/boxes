@@ -1,4 +1,11 @@
-import { ArrowLeft, FileSearch, GitBranch, Info, SlidersHorizontal } from 'lucide-react';
+import {
+  ArrowLeft,
+  CircleCheck,
+  FileSearch,
+  GitBranch,
+  Info,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { Link } from 'react-router';
 import type { SessionConfigOption, SessionModeState } from '../stores/thread/acp-types.ts';
 import type { ConnectionState } from '../stores/thread/acp-client.ts';
@@ -85,8 +92,9 @@ function Setting({
 
 /**
  * The thread's own chrome: where it goes back to, which of the session's
- * conversations it is, what it is connected to, how to branch it — and one
- * button holding everything the adapter lets a client set.
+ * conversations it is, what it is connected to, whether the reader is done
+ * with it, how to branch it — and one button holding everything the adapter
+ * lets a client set.
  */
 export function ThreadHeader({
   sessionId,
@@ -97,9 +105,11 @@ export function ThreadHeader({
   connection,
   modes,
   configOptions,
+  done,
   canFork,
   forking,
   onFork,
+  onSetDone,
   onSetMode,
   onSetConfigOption,
 }: {
@@ -114,11 +124,15 @@ export function ThreadHeader({
   connection: ConnectionState;
   modes: SessionModeState | null;
   configOptions: readonly SessionConfigOption[];
+  /** Whether the reader has marked this conversation finished with. */
+  done: boolean;
   /** Whether the adapter advertised the fork capability; see SessionSummary. */
   canFork: boolean;
   /** Held while a fork is in flight, so a double tap cannot branch twice. */
   forking: boolean;
   onFork: () => void;
+  /** Sets the mark, or takes it off. Absent while there is no thread to mark. */
+  onSetDone?: (done: boolean) => void;
   onSetMode: (modeId: string) => void;
   onSetConfigOption: (configId: string, value: string) => void;
 }) {
@@ -242,6 +256,25 @@ export function ThreadHeader({
             </div>
           </PopoverContent>
         </Popover>
+      ) : null}
+
+      {/* Being finished with a conversation is something you know while you
+          are in it, so the mark is set from here — and it is read on the
+          list, where the thread is drawn struck through. A note to the reader
+          and nothing else: the thread goes on running, and the same button
+          takes the mark off. */}
+      {onSetDone ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="shrink-0"
+          aria-pressed={done}
+          onClick={() => onSetDone(!done)}
+          aria-label={done ? 'Mark this thread not done' : 'Mark this thread done'}
+          title={done ? 'Mark this thread not done' : 'Mark this thread done'}
+        >
+          <CircleCheck className={done ? 'text-ok' : undefined} />
+        </Button>
       ) : null}
 
       {/* Branching belongs here rather than only on the list, because this is

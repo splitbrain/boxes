@@ -17,6 +17,7 @@ import type {
   SessionDetail,
   SessionSummary,
   StoredAttachment,
+  ThreadDoneBody,
   ThreadSummary,
 } from '../../shared/types.ts';
 import { attachStubGateway, type GatewayScript, type StubGateway } from './stub-gateway.ts';
@@ -56,6 +57,7 @@ export function stubThread(over: Partial<ThreadSummary> = {}): ThreadSummary {
     speaking: false,
     backgroundBusy: false,
     pendingCount: 0,
+    done: false,
     createdAt: Date.parse('2026-08-01T10:00:00Z'),
     // Relative to now, unlike everything else here: the row shows how long ago
     // this was as a rough age, so a fixed date would make the list's screenshot
@@ -404,6 +406,23 @@ export async function startStubOrchestrator(
       found.acpSessionId = thread.acpSessionId;
       if (thread.acpSessionId) gateway.select(thread.acpSessionId);
       return json(res, 200, thread);
+    }
+    const markDone = /^\/api\/sessions\/([^/]+)\/threads\/([^/]+)\/done$/.exec(url);
+    if (markDone && req.method === 'POST') {
+      const found = state.sessions.find((s) => s.id === markDone[1]);
+      const thread = found?.threads.find((t) => t.id === markDone[2]);
+      if (!found || !thread) return json(res, 404, { error: 'Not found' });
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      req.on('end', () => {
+        const { done } = JSON.parse(body || '{}') as ThreadDoneBody;
+        // Stored on the stub's own session, so the next list read draws the
+        // row struck through exactly as the orchestrator's would.
+        const marked = { ...thread, done };
+        found.threads = found.threads.map((t) => (t.id === marked.id ? marked : t));
+        json(res, 200, marked);
+      });
+      return undefined;
     }
     const stopBackground = /^\/api\/sessions\/([^/]+)\/threads\/([^/]+)\/background\/stop$/.exec(
       url,

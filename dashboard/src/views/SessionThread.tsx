@@ -181,6 +181,38 @@ export function SessionThread() {
   }, [id, thread, forking]);
 
   /**
+   * Marks this conversation done, or takes the mark off again.
+   *
+   * The answer is the row as the orchestrator now has it, and only the mark
+   * is taken from it: the rest of the summary was read once on arrival and
+   * whatever it says about a running turn is older than this browser's own
+   * view of one.
+   */
+  const onSetDone = useCallback(
+    (next: boolean) => {
+      if (!thread) return;
+      api
+        .setThreadDone(id, thread.id, next)
+        .then((updated) =>
+          setSession((current) =>
+            current === null
+              ? current
+              : {
+                  ...current,
+                  threads: current.threads.map((t) =>
+                    t.id === updated.id ? { ...t, done: updated.done } : t,
+                  ),
+                },
+          ),
+        )
+        // Nothing was marked, so nothing is drawn as marked. It goes where the
+        // rest of this thread's trouble goes.
+        .catch((err: Error) => store?.reportError(err.message));
+    },
+    [id, thread, store],
+  );
+
+  /**
    * Kills what this conversation left running: one command, or all of them.
    *
    * Nothing is done here with the answer, and the bar is not touched. What it
@@ -293,9 +325,14 @@ export function SessionThread() {
                 connection={loadError ? 'closed' : state.connection}
                 modes={state.modes}
                 configOptions={state.configOptions}
+                done={thread?.done === true}
                 canFork={session?.canFork === true && thread !== undefined}
                 forking={forking}
                 onFork={onFork}
+                // Nothing to mark until the session has been read and said
+                // which of its threads this is; the header drops the button
+                // rather than offering one that marks nothing.
+                onSetDone={thread ? onSetDone : undefined}
                 onSetMode={(modeId) => void store?.setMode(modeId)}
                 onSetConfigOption={(configId, value) =>
                   void store?.setConfigOption(configId, value)

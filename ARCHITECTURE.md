@@ -144,6 +144,7 @@ orchestrator handlers and the dashboard's `api.ts` import.
 | `GET /api/sessions/:id/threads` | Every conversation the session owns |
 | `POST /api/sessions/:id/threads` | Adds one and makes it the session's default; `{"from":"<threadId>"}` forks that one instead of starting empty |
 | `POST /api/sessions/:id/threads/:threadId/select` | Makes one the session's default |
+| `POST /api/sessions/:id/threads/:threadId/done` | Marks a conversation done, or takes the mark off: `{"done":true}` |
 | `GET /api/sessions/:id/log?after=&limit=` | A page of tapped ACP messages |
 | `POST /api/sessions/:id/attachments?name=` | Stores one file, raw bytes, in the session's workspace |
 | `GET /api/sessions/:id/attachments/:name` | Serves one back; images and PDFs as themselves, everything else as a download |
@@ -933,6 +934,16 @@ derived as any of its threads — two sources of truth for whether a turn is
 running is precisely the thing that goes stale. A permission request records
 the thread that asked, goes to a browser watching *that* thread, and queues
 when only another thread's browser is attached, exactly as it does with none.
+
+**A thread can be marked done, and that is a note to the reader.** A box
+gathers finished conversations, and the row that says which one you were last
+in says nothing about which ones you are through with. So the thread view
+carries a toggle, `threads.done` records it, and the list draws a marked
+thread struck through. Nothing else reads the column: a thread marked done
+keeps its adapter conversation, goes on running whatever it was running,
+answers a prompt as it always did, and is marked undone with the same button.
+It is not a delete and not an archive — both of those change what the thread
+can do, and this changes what a row looks like.
 
 Deleting a thread is not implemented, though the adapter supports
 `session/delete`. The debug log stays session-scoped: it taps one adapter
@@ -1852,7 +1863,7 @@ applies migrations tracked by `user_version`.
 | Table | Holds |
 |---|---|
 | `sessions` | One row per session: names, Docker object names, where its workspace and home are, status, which thread is the default, timestamps |
-| `threads` | One row per conversation: which session owns it, the adapter's id for it, the agent's title, its ordinal, whether a turn is running on it |
+| `threads` | One row per conversation: which session owns it, the adapter's id for it, the agent's title, its ordinal, whether a turn is running on it, whether the reader has marked it done |
 | `pending_requests` | Permission requests waiting for a browser, each recording the thread that asked |
 | `acp_log` | A debug tap of forwarded messages, ring-pruned to 5000 rows per session. An image or audio block's base64 payload is replaced by its size on the way in — a screenshot is a megabyte of it, the row is truncated at 64,000 characters anyway, and the bytes were never what the log is read for |
 | `exec_log` | Local commands and their output, each recording the thread it was typed in, ring-pruned to 200 rows per session across all of its threads |
