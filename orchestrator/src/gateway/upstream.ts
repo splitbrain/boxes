@@ -203,6 +203,42 @@ function isResourceNotFound(err: unknown): boolean {
   return (err as { code?: number } | null)?.code === RESOURCE_NOT_FOUND;
 }
 
+/**
+ * The block of text a prompt's attachments are named in. The dashboard writes
+ * it for the model rather than the user typing it, so it is not something to
+ * name a thread after.
+ */
+const ATTACHMENTS_OPEN = '<attachments>';
+
+/**
+ * How much of a prompt a name may be taken from. Long enough for a sentence,
+ * and short enough to stay a name rather than the message it came out of.
+ */
+const MAX_PROMPT_NAME_LENGTH = 120;
+
+/**
+ * What to call a thread from a prompt sent on it, or null when the prompt has
+ * nothing to take a name from.
+ *
+ * The first line of what the user typed, which is where a person puts what
+ * they want. The attachments block is passed over: it is the same text in
+ * every prompt carrying a file, and would name every such thread alike.
+ */
+function nameFromPrompt(params: unknown): string | null {
+  const blocks = (params as { prompt?: unknown } | null)?.prompt;
+  if (!Array.isArray(blocks)) return null;
+  for (const block of blocks as Array<{ type?: unknown; text?: unknown } | null>) {
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+    if (block.text.startsWith(ATTACHMENTS_OPEN)) continue;
+    const line = block.text.split('\n').find((candidate) => candidate.trim() !== '');
+    if (line === undefined) continue;
+    const name = line.trim().replace(/\s+/g, ' ');
+    if (name.length <= MAX_PROMPT_NAME_LENGTH) return name;
+    return `${name.slice(0, MAX_PROMPT_NAME_LENGTH - 1)}…`;
+  }
+  return null;
+}
+
 /** The orchestrator's own ACP connection to one session's adapter. */
 export class UpstreamSession {
   private exec: dk.AdapterExec | null = null;
@@ -1352,6 +1388,15 @@ export class UpstreamSession {
       // it twice.
       const row = threadByAcpId(this.db, this.sessionId, thread);
       if (row?.inherits_from) clearThreadInheritance(this.db, row.id);
+      // A thread nobody has named yet is called after the prompt going out,
+      // so it is recognisable from the moment it is sent rather than from the
+      // end of the turn the agent's own title arrives with. Every prompt
+      // until then rather than only the first, so a thread the adapter put
+      // back on its ordinal is named again by whatever is asked next.
+      if (row && !row.title) {
+        const name = nameFromPrompt(params);
+        if (name) setThreadTitle(this.db, row.id, name);
+      }
       this.setTurnActive(thread, true);
       // Before the echo, so the state that goes with it already says the
       // agent is working: the browser that sent the prompt gets its spinner

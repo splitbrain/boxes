@@ -3,10 +3,11 @@ import type { ThreadSummary } from '../../../shared/types.ts';
 /**
  * What a thread is called.
  *
- * The agent generates a title at the end of a turn, so a thread that has
- * never been prompted has none. Until then it goes by its ordinal, which is
- * per session and never reused, so the name a thread is given first is the
- * name it keeps.
+ * The agent generates a title at the end of a turn. Until it has, the thread
+ * goes by the first line of the last prompt sent on it, which is there from
+ * the moment it is sent — so a long first turn is not spent nameless. A
+ * thread nobody has prompted has neither, and goes by its ordinal, which is
+ * per session and never reused.
  */
 export function threadName(thread: ThreadSummary): string {
   return thread.title?.trim() || `Thread ${thread.ordinal}`;

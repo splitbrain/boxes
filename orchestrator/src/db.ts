@@ -84,7 +84,11 @@ export interface ThreadRow {
   id: string;
   session_id: string;
   acp_session_id: string | null;
-  /** The title the agent SDK generates, once a turn has produced one. */
+  /**
+   * What the thread is called: the title the agent generates at the end of a
+   * turn, or the first line of a prompt sent on it while it has none. Null on
+   * a thread that has never been prompted.
+   */
   title: string | null;
   /** Per session and never reused; what an untitled thread is called. */
   ordinal: number;
@@ -641,7 +645,7 @@ export function clearThreadInheritance(db: Db, threadId: string): void {
   db.prepare('UPDATE threads SET inherits_from = NULL WHERE id = ?').run(threadId);
 }
 
-/** Records the title the agent generated for a thread, or clears it. */
+/** Records what a thread is called, or clears it back to its ordinal. */
 export function setThreadTitle(db: Db, threadId: string, title: string | null): void {
   db.prepare('UPDATE threads SET title = ?, last_active_at = ? WHERE id = ?').run(
     title,
