@@ -686,10 +686,11 @@ Starting it, in `ensureStarted`:
    none or the adapter no longer holds it, mint one with `session/new` and
    store its id. Then re-issue `session/load` for every other thread an
    attached browser is watching, so a respawn brings back every conversation
-   this connection has to carry rather than only one of them. A watched thread
+   somebody is already reading rather than only one of them. A watched thread
    the adapter cannot bring back has its browsers' sockets closed, because the
    id they hold is one the adapter would now reject; each reconnects and pins
-   whatever that thread is next.
+   whatever that thread is next. The session's remaining threads are brought
+   up when somebody opens one; see the pinning below.
 
 Every thread is then put in the mode and on the model it is meant to have:
 what its row records, or this deployment's default — `auto` and `opus` — when
@@ -777,11 +778,20 @@ against `WS_AUTH_TOKEN` in constant time and selects `acp.v1` explicitly,
 rather than relying on the client to list it first.
 
 Which thread the connection is on is settled once, at attach, and needs the
-adapter first: a thread minted and never prompted has no adapter-side
-conversation until one is made, and pinning to an id the adapter has forgotten
-would leave every prompt on it failing. The handle counts as attached from the
-moment the socket opens — that is what the reaper counts — and nothing is
-routed to it until its thread is settled.
+adapter first. Pinning is where a thread the spawn did not reach is brought
+up: the upstream tracks which conversations this adapter process has actually
+been made to hold, and a thread that is not among them is loaded here, on the
+same terms as at spawn — the same `_meta`, and the mode and model its row
+records put back afterwards. A stored ACP id says a thread had a conversation
+once, not that the process running now knows about it, so handing one back
+unchecked left the browser's own `session/load` to rebuild the thread instead,
+and the adapter rebuilds one in the mode it starts in: a thread left in `auto`
+came back on manual approvals, without this deployment's thinking options
+either. A thread minted and never prompted has no conversation to load, and
+gets a freshly minted one in the mode and model its row records. Concurrent
+tabs opening the same thread share one bring-up. The handle counts as attached
+from the moment the socket opens — that is what the reaper counts — and
+nothing is routed to it until its thread is settled.
 
 Three methods are answered or reshaped rather than forwarded:
 
