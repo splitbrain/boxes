@@ -873,8 +873,17 @@ returns only threads that have a transcript on disk, and a thread minted but
 never prompted has none, so Boxes keeps its own record in the `threads` table.
 A thread goes by the title the agent generates — the adapter pushes it as a
 `session_info_update` at the end of a turn, and it is written to the row the
-update's own ACP id names — and until then by its ordinal, which is per
-session and never reused.
+update's own ACP id names. Until it has one, a thread goes by the first line
+of the prompt last sent on it, which the gateway writes to the same column on
+the way past. The agent's title cannot arrive before the turn ends, and a
+first turn that runs for ten minutes would otherwise be ten minutes of a
+thread called nothing but a number. The name is taken from every prompt until
+a title lands, rather than from the first one only, so a thread the adapter
+puts back on its ordinal — an explicit null clears the column — is named
+again by whatever is asked next. The attachments envelope is passed over: it
+is the dashboard's own words rather than the user's. A thread nobody has
+prompted has neither name, and goes by its ordinal, which is per session and
+never reused.
 
 Forking is offered only when the adapter advertised
 `sessionCapabilities.fork` in its `initialize` answer, which the orchestrator
@@ -1107,7 +1116,7 @@ Which calls hold a prompt open is the adapter's rule, not a guess: it defers a
 turn's settlement for the **subagents** it spawned and for nothing else — a
 backgrounded command or a monitor never holds one. A prompt sent into a
 deferred turn is accepted and hands the held turn off, so the composer is safe
-to offer send there. Both were read out of `claude-agent-acp` 0.70.0, in
+to offer send there. Both were read out of `claude-agent-acp` 0.75.1, in
 `dist/acp-agent.js`, rather than inferred from behaviour.
 
 Two thresholds, because the two readers want opposite things. The screen flips

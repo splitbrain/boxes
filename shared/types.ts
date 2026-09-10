@@ -49,7 +49,10 @@ export interface ThreadSummary {
    * adapter restarting.
    */
   acpSessionId: string | null;
-  /** The title the agent generated, or null until a turn has produced one. */
+  /**
+   * What the thread is called: the agent's own title, or the first line of a
+   * prompt sent on it while it has none. Null until it has been prompted.
+   */
   title: string | null;
   /** Per session and never reused; what an untitled thread is called. */
   ordinal: number;

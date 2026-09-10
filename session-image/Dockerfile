@@ -172,7 +172,7 @@ RUN PIPX_HOME=/usr/local/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv \
 # asserts the adapter resolves to.
 RUN npm install -g --prefix /usr/local \
       @anthropic-ai/claude-code \
-      @agentclientprotocol/claude-agent-acp@0.70.0 \
+      @agentclientprotocol/claude-agent-acp@0.75.1 \
  && npm cache clean --force
 
 # The browser an agent drives, and the tool it drives it with.

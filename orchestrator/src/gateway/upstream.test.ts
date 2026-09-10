@@ -436,6 +436,44 @@ test('a title the adapter reports lands on the thread it is about', async () => 
   assert.equal(thread('t1')['title'], null);
 });
 
+test('a thread with no title is named after the prompt sent on it', async () => {
+  fakeDocker(plainAdapter());
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+
+  await up.forwardRequest('session/prompt', {
+    sessionId: 'acp-gone',
+    prompt: [
+      // The dashboard's own words about an attached file, passed over for
+      // what the user typed under them.
+      { type: 'text', text: '<attachments>\nThe user attached these files\n</attachments>' },
+      { type: 'text', text: '  Make the proxy stop\nlogging bodies  ' },
+    ],
+  });
+  assert.equal(thread('t1')['title'], 'Make the proxy stop');
+  assert.equal(thread('t2')['title'], null, 'only the thread prompted is named');
+
+  // What comes next says nothing about what the thread is called: a name it
+  // already has is the agent's to replace, not the next prompt's.
+  await up.forwardRequest('session/prompt', {
+    sessionId: 'acp-gone',
+    prompt: [{ type: 'text', text: 'and the headers' }],
+  });
+  assert.equal(thread('t1')['title'], 'Make the proxy stop');
+});
+
+test('a prompt with nothing to name a thread after leaves it on its ordinal', async () => {
+  fakeDocker(plainAdapter());
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+
+  await up.forwardRequest('session/prompt', {
+    sessionId: 'acp-gone',
+    prompt: [{ type: 'image', data: 'x', mimeType: 'image/png' }],
+  });
+  assert.equal(thread('t1')['title'], null);
+});
+
 test('a new thread is minted, recorded and made current', async () => {
   const adapter = new FakeAdapter((msg) => {
     if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
@@ -1085,9 +1123,10 @@ test('a turn that finishes with nobody watching is announced, naming the thread'
       // The dashboard's own id, so the notification can link straight at the
       // conversation rather than at the box.
       threadId: 't1',
-      // Untitled until a turn produces one, so it goes by its ordinal — the
-      // same name the session list shows.
-      threadName: 'Thread 1',
+      // The agent's own title lands at the end of the turn, so what names
+      // the thread here is the prompt that started it — the same name the
+      // session list shows.
+      threadName: 'go',
       // Nothing was left running, which is what makes this a turn somebody
       // can come back to at their leisure.
       background: false,
