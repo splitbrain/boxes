@@ -1097,7 +1097,7 @@ Which calls hold a prompt open is the adapter's rule, not a guess: it defers a
 turn's settlement for the **subagents** it spawned and for nothing else — a
 backgrounded command or a monitor never holds one. A prompt sent into a
 deferred turn is accepted and hands the held turn off, so the composer is safe
-to offer send there. Both were read out of `claude-agent-acp` 0.70.0, in
+to offer send there. Both were read out of `claude-agent-acp` 0.75.1, in
 `dist/acp-agent.js`, rather than inferred from behaviour.
 
 Two thresholds, because the two readers want opposite things. The screen flips

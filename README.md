@@ -887,7 +887,7 @@ Known residual risks, accepted deliberately:
 - Sibling sessions share a deployment's placeholders, so they map to the same
   real credentials. Per-session placeholders arrive with per-session
   credentials.
-- Protocol behaviour is pinned to `claude-agent-acp` 0.70.0. Re-check
+- Protocol behaviour is pinned to `claude-agent-acp` 0.75.1. Re-check
   capabilities and WebSocket framing on upgrade.
 
 ## Development
