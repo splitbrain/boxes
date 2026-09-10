@@ -931,6 +931,98 @@ test('a respawn puts a loaded thread back on the model it was left on', async ()
   assert.deepEqual(asked, ['mode auto']);
 });
 
+/**
+ * A forgetful adapter that answers for both of the session's threads, naming
+ * which one each request was about.
+ *
+ * Every spawn starts each thread in `default` on `sonnet`, so what a test
+ * reads back is where the orchestrator put a thread rather than where the
+ * adapter happened to be. `gone` lists the conversations it has no transcript
+ * for, which is what it reports as a missing resource.
+ */
+function twoThreadAdapter(asked: string[], gone: Set<string> = new Set()): () => FakeAdapter {
+  const state = () => ({
+    modes: {
+      currentModeId: 'default',
+      availableModes: [{ id: 'default' }, { id: 'auto' }, { id: 'plan' }],
+    },
+    configOptions: [
+      {
+        id: 'model',
+        category: 'model',
+        currentValue: 'sonnet',
+        options: [{ value: 'sonnet' }, { value: 'opus' }],
+      },
+    ],
+  });
+  return () =>
+    new FakeAdapter((msg) => {
+      const session = String(msg.params?.['sessionId'] ?? '');
+      if (msg.method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+      if (msg.method === 'session/new') return { sessionId: 'acp-minted', ...state() };
+      if (msg.method === 'session/load') {
+        if (gone.has(session)) return new Error('no transcript for that session');
+        asked.push(`load ${session}`);
+        return state();
+      }
+      if (msg.method === 'session/set_mode') {
+        asked.push(`mode ${session} ${String(msg.params?.['modeId'])}`);
+        return {};
+      }
+      if (msg.method === 'session/set_config_option') {
+        asked.push(`model ${session} ${String(msg.params?.['value'])}`);
+        return {};
+      }
+      return {};
+    });
+}
+
+test('opening a thread the spawn did not load brings it up in its own mode', async () => {
+  // t2 was left in auto half an hour ago, and the adapter holding that answer
+  // has been and gone.
+  db.prepare("UPDATE threads SET mode_id = 'auto' WHERE id = ?").run('t2');
+  const asked: string[] = [];
+  fakeDocker(twoThreadAdapter(asked));
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+
+  // The spawn reaches the session's current thread and the ones browsers were
+  // already watching. t2 is neither, so nothing has touched it yet.
+  assert.deepEqual(asked, ['load acp-gone', 'mode acp-gone auto', 'model acp-gone opus']);
+
+  asked.length = 0;
+  const handle = fakeHandle(1, null);
+  up.attach(handle);
+  assert.equal(await up.pin(handle, 't2'), 'acp-kept');
+
+  // Opening it is what brings it up. Handing back the stored id instead left
+  // the browser's own session/load to rebuild the thread, which the adapter
+  // does in its own mode — manual approvals on a thread left in auto.
+  assert.deepEqual(asked, ['load acp-kept', 'mode acp-kept auto', 'model acp-kept opus']);
+
+  // A second tab on the same thread joins the one the adapter is holding.
+  asked.length = 0;
+  const second = fakeHandle(2, null);
+  up.attach(second);
+  assert.equal(await up.pin(second, 't2'), 'acp-kept');
+  assert.deepEqual(asked, []);
+});
+
+test('re-minting the current thread keeps the mode and model its row remembers', async () => {
+  // A thread minted and never prompted: the row remembers what it was put
+  // into, and the adapter has no transcript to bring back.
+  db.prepare("UPDATE threads SET mode_id = 'plan', model_id = 'opus' WHERE id = ?").run('t1');
+  const asked: string[] = [];
+  fakeDocker(twoThreadAdapter(asked, new Set(['acp-gone'])));
+  const up = manager.upstream('s1');
+  await up.ensureStarted();
+
+  // A fresh conversation in that row, but not a fresh thread: `plan`, not the
+  // `auto` a thread nobody has chosen for starts in.
+  assert.equal(thread('t1')['acp_session_id'], 'acp-minted');
+  assert.deepEqual(asked, ['mode acp-minted plan', 'model acp-minted opus']);
+});
+
 /** The threads each session/fork named as its source, in order. */
 let forkedFrom: unknown[] = [];
 /** The threads each session/load asked for, in order. */

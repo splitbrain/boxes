@@ -252,8 +252,18 @@ export class UpstreamSession {
   /** Whether the agent is talking on each thread; see activity.ts. */
   private readonly activity: Activity;
   private readonly slog: Logger;
-  /** Threads with a mint in flight, so concurrent pins share one; see below. */
-  private readonly minting = new Map<string, Promise<string>>();
+  /** Threads being brought up, so concurrent pins share one; see below. */
+  private readonly resolving = new Map<string, Promise<string>>();
+  /**
+   * The conversations this adapter process has been made to hold: every one
+   * it has minted, and every one it has loaded back.
+   *
+   * A stored ACP id says a thread had a conversation once, not that the
+   * adapter running now knows about it. Only this says that, which is what
+   * lets a pin tell a thread it has to bring up from one that is already up.
+   * Emptied with the connection, because a fresh adapter holds nothing.
+   */
+  private readonly live = new Set<string>();
   private closed = false;
   /** Guards against reconnect storms after a deliberate stop. */
   private stopping = false;
@@ -559,26 +569,49 @@ export class UpstreamSession {
   }
 
   /**
-   * The live adapter id for one of the session's threads, minting one when
-   * the row has none.
+   * The live adapter id for one of the session's threads, bringing the thread
+   * up first when this adapter is not already holding it.
    *
-   * The spawn path already re-mints the *current* thread, so this is what
-   * covers the rest: a thread minted, never prompted, and left behind by an
-   * adapter restart has no transcript to lose, so a fresh conversation in its
-   * row is the whole repair.
+   * The spawn path brings back the session's current thread and the ones
+   * browsers were already watching, which is every thread it can know about.
+   * Opening any other one lands here, and handing back its stored id would
+   * pin the connection to a conversation the adapter has never heard of —
+   * whose first `session/load` then rebuilds it from the transcript alone, in
+   * the adapter's own mode and without this deployment's thinking options.
+   * So the thread is loaded here instead, on the same terms as at spawn.
    */
   private async resolveThread(threadId: string | null): Promise<string> {
     const row = threadId ? getThread(this.db, threadId) : this.current;
     if (!row || row.session_id !== this.sessionId) throw new Error('Thread not found');
-    if (row.acp_session_id) return row.acp_session_id;
-    // Two tabs opening the same never-prompted thread at once share one mint.
-    // Without this the second would overwrite the first's id in the row and
-    // leave that connection pinned to a conversation nothing else knows about.
-    const inFlight = this.minting.get(row.id);
+    if (row.acp_session_id && this.live.has(row.acp_session_id)) return row.acp_session_id;
+    // Two tabs opening the same thread at once share one bring-up. Without
+    // this the second would replay it twice, and on the mint path overwrite
+    // the first's id in the row, leaving that connection pinned to a
+    // conversation nothing else knows about.
+    const inFlight = this.resolving.get(row.id);
     if (inFlight) return inFlight;
-    const attempt = this.mintInto(row.id).finally(() => this.minting.delete(row.id));
-    this.minting.set(row.id, attempt);
+    const attempt = this.bringUp(row.id).finally(() => this.resolving.delete(row.id));
+    this.resolving.set(row.id, attempt);
     return attempt;
+  }
+
+  /**
+   * Makes this adapter hold one of the session's threads: its stored
+   * conversation when the adapter still has the transcript for it, a fresh
+   * one when it does not.
+   *
+   * A thread minted, never prompted, and left behind by an adapter restart is
+   * the second case — the agent SDK writes no transcript until a prompt has
+   * run — and it has nothing to lose, so a fresh conversation in its row is
+   * the whole repair.
+   */
+  private async bringUp(threadId: string): Promise<string> {
+    const conn = this.conn;
+    if (!conn) throw new Error('Upstream not connected');
+    const row = getThread(this.db, threadId);
+    if (!row) throw new Error('Thread not found');
+    if (row.acp_session_id && (await this.loadSession(conn, row))) return row.acp_session_id;
+    return this.mintInto(threadId);
   }
 
   /**
@@ -865,6 +898,7 @@ export class UpstreamSession {
         modes?: SessionModeState | null;
         configOptions?: SessionConfigOption[] | null;
       } | null;
+      this.live.add(acpSessionId);
       this.slog.info('acp session loaded', { threadId: thread.id, acpSessionId });
       // A load brings the conversation back and nothing else: the mode and the
       // model were the old process's, and this one starts in its own. Both are
@@ -879,6 +913,7 @@ export class UpstreamSession {
       return true;
     } catch (err) {
       if (!isResourceNotFound(err)) throw err;
+      this.live.delete(acpSessionId);
       this.slog.warn('stored thread is gone; starting a fresh one', {
         threadId: thread.id,
         acpSessionId,
@@ -918,6 +953,7 @@ export class UpstreamSession {
       configOptions?: SessionConfigOption[] | null;
     };
     if (!res?.sessionId) throw new Error(`${method} returned no sessionId`);
+    this.live.add(res.sessionId);
     this.slog.info('acp session created', { method, acpSessionId: res.sessionId, from });
     await this.applyMode(conn, res.sessionId, res.modes ?? null, modeId);
     await this.applyModel(conn, res.sessionId, res.configOptions ?? null, modelId);
@@ -928,13 +964,19 @@ export class UpstreamSession {
    * Mints a fresh ACP thread for the session's current conversation: into the
    * existing row when the adapter has forgotten its thread, into a new row
    * when the session has no thread at all.
+   *
+   * An existing row goes through {@link mintInto}, so it keeps the mode and
+   * model it remembers and, if it is a fork nobody has prompted, is branched
+   * from its source again. Only a session with no thread at all starts from
+   * the deployment's defaults, which is all a row that does not exist yet
+   * could be given.
    */
   private async mintCurrent(conn: ClientConnection, thread: ThreadRow | null): Promise<void> {
-    const acpSessionId = await this.mintAcpThread(conn, null);
     if (thread) {
-      setThreadAcpId(this.db, thread.id, acpSessionId);
+      await this.mintInto(thread.id);
       return;
     }
+    const acpSessionId = await this.mintAcpThread(conn, null);
     const created = insertThread(this.db, this.sessionId, acpSessionId);
     this.slog.info('first thread recorded', { threadId: created.id });
   }
@@ -1567,6 +1609,9 @@ export class UpstreamSession {
       // already closed
     }
     this.conn = null;
+    // A fresh adapter holds none of them, so the next pin brings its thread
+    // back up rather than trusting an id this process never heard.
+    this.live.clear();
     try {
       this.exec?.kill();
     } catch {
