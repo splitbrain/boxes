@@ -57,7 +57,7 @@ import { EgressManager } from './egress.ts';
 import { HARNESSES } from './harness.ts';
 import { HttpError } from './http-error.ts';
 import { deploymentImages } from './images.ts';
-import { dockerLoginRuntime, LoginManager } from './login.ts';
+import { dockerLoginRuntime, kubernetesLoginRuntime, LoginManager } from './login.ts';
 import { log } from './log.ts';
 import { Notifier } from './notify.ts';
 import { MAX_FILE_BYTES, resolveInRoot } from './review/fs.ts';
@@ -259,10 +259,12 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
       });
     });
   }
-  // A login runs the harness's own CLI in a throwaway container built from
-  // the box image, so the one thing it needs from the deployment is which
-  // image that is.
-  const logins = new LoginManager(credentials, dockerLoginRuntime(cfg.BOX_IMAGE));
+  // A login runs the harness's own CLI in a throwaway container, or pod,
+  // built from the box image.
+  const logins = new LoginManager(
+    credentials,
+    cfg.RUNTIME === 'kubernetes' ? kubernetesLoginRuntime(cfg) : dockerLoginRuntime(cfg.BOX_IMAGE),
+  );
   const agents = new AgentStore(db, cfg.DATA_DIR);
   // The closure lets the reconciler be built before the manager it reads.
   const tunnels = new TunnelReconciler(

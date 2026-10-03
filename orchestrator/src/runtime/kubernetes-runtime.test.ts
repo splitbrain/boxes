@@ -101,9 +101,25 @@ describe('kubernetesRuntime', () => {
     assert.equal(await runtime.images.removeImage('img'), false);
   });
 
-  it('lists box networks as the NetworkPolicies they now are, and no login containers, a Docker-only concept', async () => {
+  it('lists box networks as the NetworkPolicies they now are, and login containers as login pods', async () => {
+    let selector: string | undefined;
     setKubernetesForTests({
-      core: {},
+      core: {
+        listNamespacedPod: async (req: { labelSelector: string }) => {
+          selector = req.labelSelector;
+          return {
+            items: [
+              {
+                metadata: {
+                  name: 'boxes-login-ab12',
+                  labels: { 'boxes.login': 'claude' },
+                  creationTimestamp: new Date(1_000_000),
+                },
+              },
+            ],
+          };
+        },
+      },
       networking: {
         listNamespacedNetworkPolicy: async () => ({
           items: [{ metadata: { name: 'boxes-netpol-s1', labels: { 'boxes.box': 's1' } } }],
@@ -115,7 +131,10 @@ describe('kubernetesRuntime', () => {
     assert.deepEqual(await runtime.boxes.listBoxNetworks(), [
       { name: 'boxes-netpol-s1', boxId: 's1' },
     ]);
-    assert.deepEqual(await runtime.boxes.listLoginContainers(), []);
+    assert.deepEqual(await runtime.boxes.listLoginContainers(), [
+      { id: 'boxes-login-ab12', credentialId: 'claude', createdAt: 1_000_000 },
+    ]);
+    assert.equal(selector, 'boxes.login');
   });
 
   it('removeNetwork deletes the policy listBoxNetworks actually named', async () => {

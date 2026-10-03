@@ -9,8 +9,10 @@ import {
   type CredentialStore,
   type TokenPost,
 } from './credentials.ts';
+import type { Config } from './config.ts';
 import * as dk from './docker.ts';
 import { HttpError } from './http-error.ts';
+import * as k8s from './kubernetes.ts';
 import { Screen } from './screen.ts';
 import { log } from './log.ts';
 
@@ -170,6 +172,33 @@ export function dockerLoginRuntime(image: string): LoginRuntime {
       } catch (err) {
         log.warn('could not remove a login container', {
           container: containerId,
+          error: (err as Error).message,
+        });
+      }
+    },
+  };
+}
+
+/** The same, as a pod: what a deployment on the Kubernetes runtime logs in with. */
+export function kubernetesLoginRuntime(cfg: Config): LoginRuntime {
+  return {
+    start: (credentialId) => k8s.createLoginPod({ image: cfg.BOX_IMAGE, credentialId }, cfg),
+    exec: (podId, spec) =>
+      k8s.spawnLoginPodExec(
+        podId,
+        spec.cmd,
+        {
+          ...(spec.env ? { env: spec.env } : {}),
+          ...(spec.tty ? { tty: true } : {}),
+        },
+        cfg,
+      ),
+    async remove(podId) {
+      try {
+        await k8s.deleteLoginPod(podId, cfg);
+      } catch (err) {
+        log.warn('could not remove a login pod', {
+          pod: podId,
           error: (err as Error).message,
         });
       }

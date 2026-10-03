@@ -19,9 +19,10 @@ import type {
   ContainerProcess,
   ExecOptions,
   ExecOutput,
+  LoginExec,
   TerminalExec,
 } from './docker.ts';
-import { AGENT_CONFIG_DIR, HOME_DIR, NIX_DIR, WORKSPACE_DIR } from './docker.ts';
+import { AGENT_CONFIG_DIR, HOME_DIR, LOGIN_LABEL, NIX_DIR, WORKSPACE_DIR } from './docker.ts';
 import type { Config } from './config.ts';
 import { log } from './log.ts';
 import type { ProvisionedVolumes, VolumeRef } from './runtime/types.ts';
@@ -1055,4 +1056,198 @@ export async function openTerminalExec(
       }
     },
   };
+}
+
+// --- login pods ---------------------------------------------------------------
+
+/**
+ * Creates the throwaway pod one login runs in, waits until it runs, and
+ * returns its name — see docker.ts's createLoginContainer for what it leaves
+ * out and why.
+ *
+ * It carries the login label and no box label, so no box NetworkPolicy
+ * selects it: like Docker's default bridge, it reaches the internet directly.
+ * It holds no deployment secret. Its home is a memory emptyDir, because the
+ * root filesystem is read-only and both CLIs write their state under `$HOME`;
+ * the credential material goes with the pod.
+ */
+export async function createLoginPod(
+  spec: { image: string; credentialId: string },
+  cfg: Config,
+): Promise<string> {
+  const name = `boxes-login-${randomBytes(4).toString('hex')}`;
+  const pod: V1Pod = {
+    metadata: { name, labels: { [LOGIN_LABEL]: spec.credentialId } },
+    spec: {
+      restartPolicy: 'Never',
+      // Nothing in the pod is worth a grace period: the entrypoint ends in a
+      // `sleep` that ignores SIGTERM, and the login's state is thrown away.
+      terminationGracePeriodSeconds: 0,
+      automountServiceAccountToken: false,
+      ...(cfg.K8S_IMAGE_PULL_SECRET ? { imagePullSecrets: [{ name: cfg.K8S_IMAGE_PULL_SECRET }] } : {}),
+      volumes: [
+        { name: 'home', emptyDir: { medium: 'Memory', sizeLimit: '256Mi' } },
+        { name: 'tmp', emptyDir: { medium: 'Memory', sizeLimit: '64Mi' } },
+      ],
+      containers: [
+        {
+          name: CONTAINER_NAME,
+          image: spec.image,
+          workingDir: HOME_DIR,
+          imagePullPolicy: cfg.K8S_IMAGE_PULL_POLICY,
+          volumeMounts: [
+            { name: 'home', mountPath: HOME_DIR },
+            { name: 'tmp', mountPath: '/tmp' },
+          ],
+          securityContext: {
+            runAsUser: cfg.BOX_UID,
+            runAsGroup: cfg.BOX_GID,
+            runAsNonRoot: true,
+            allowPrivilegeEscalation: false,
+            readOnlyRootFilesystem: true,
+            capabilities: { drop: ['ALL'] },
+            seccompProfile: { type: 'RuntimeDefault' },
+            privileged: false,
+          },
+        },
+      ],
+    },
+  };
+  await clientsFor(cfg).core.createNamespacedPod({ namespace: cfg.K8S_NAMESPACE, body: pod });
+  try {
+    await podRunning(name, cfg);
+  } catch (err) {
+    await deleteLoginPod(name, cfg).catch(() => {});
+    throw err;
+  }
+  return name;
+}
+
+/**
+ * How long a login pod may take to run. Generous, because a node that has
+ * not run the box image yet pulls it first; the login's own timeout still
+ * bounds the whole flow.
+ */
+const LOGIN_POD_START_MS = 5 * 60_000;
+
+let podRunningPollMs = 500;
+
+/** Test seam: how often podRunning looks. */
+export function setPodRunningPollForTests(ms: number): void {
+  podRunningPollMs = ms;
+}
+
+/**
+ * Waits until a pod runs. A Docker container runs once started, but a pod is
+ * Pending until it is scheduled and its image pulled, and an exec into a
+ * Pending pod fails.
+ */
+async function podRunning(name: string, cfg: Config): Promise<void> {
+  const deadline = Date.now() + LOGIN_POD_START_MS;
+  while (Date.now() < deadline) {
+    const pod = await clientsFor(cfg).core.readNamespacedPod({ name, namespace: cfg.K8S_NAMESPACE });
+    const phase = pod.status?.phase;
+    if (phase === 'Running') return;
+    if (phase === 'Succeeded' || phase === 'Failed') {
+      throw new Error(`login pod ${name} ended before the login could run`);
+    }
+    const waiting = pod.status?.containerStatuses?.[0]?.state?.waiting;
+    if (waiting?.reason && /ErrImagePull|ImagePullBackOff|InvalidImageName|CreateContainerConfigError/.test(waiting.reason)) {
+      throw new Error(`login pod ${name} cannot start: ${waiting.reason}${waiting.message ? ` (${waiting.message})` : ''}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, podRunningPollMs));
+  }
+  throw new Error(`login pod ${name} did not start within ${LOGIN_POD_START_MS / 1000}s`);
+}
+
+/** Deletes a login pod without waiting for it to go: its name is never reused. */
+export async function deleteLoginPod(name: string, cfg: Config): Promise<void> {
+  try {
+    await clientsFor(cfg).core.deleteNamespacedPod({
+      name,
+      namespace: cfg.K8S_NAMESPACE,
+      gracePeriodSeconds: 0,
+    });
+  } catch (err) {
+    if (statusCode(err) !== 404) throw err;
+  }
+}
+
+/**
+ * Runs one command in a login pod, on the same terms as docker.ts's
+ * spawnLoginExec: stdout and stderr merged, and under `tty` one raw stream
+ * with a writable stdin.
+ */
+export async function spawnLoginPodExec(
+  podId: string,
+  cmd: readonly string[],
+  opts: { env?: Record<string, string>; tty?: boolean },
+  cfg: Config,
+): Promise<LoginExec> {
+  const tty = opts.tty === true;
+  // A login URL is longer than the default 80 columns, and a wrapped URL
+  // reads as two lines. The client library sizes the pty from these.
+  const output = Object.assign(new PassThrough(), { columns: 400, rows: 50 });
+  const stdin = tty ? new PassThrough() : null;
+  let exitCode: number | null = null;
+  let settle: (code: number | null) => void = () => {};
+  const exited = new Promise<number | null>((resolve) => {
+    settle = resolve;
+  });
+
+  const socket = await clientsFor(cfg).exec.exec(
+    cfg.K8S_NAMESPACE,
+    podId,
+    CONTAINER_NAME,
+    wrapExec(cmd, { workingDir: HOME_DIR, ...(opts.env ? { env: opts.env } : {}) }),
+    output,
+    output,
+    stdin,
+    tty,
+    (status) => {
+      exitCode = exitCodeOf(status);
+    },
+  );
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    output.end();
+    settle(exitCode);
+  };
+  socket.on('close', finish);
+  socket.on('error', (err: Error) => {
+    log.warn('login exec stream error', { error: err.message });
+    finish();
+  });
+
+  return {
+    output,
+    stdin,
+    exited,
+    kill: () => {
+      try {
+        socket.close();
+      } catch {
+        // already gone
+      }
+    },
+  };
+}
+
+/** Every login pod still there, with its creation time in epoch milliseconds. The orphan sweep reads it. */
+export async function listLoginPods(
+  cfg: Config,
+): Promise<Array<{ id: string; credentialId: string; createdAt: number }>> {
+  const list = await clientsFor(cfg).core.listNamespacedPod({
+    namespace: cfg.K8S_NAMESPACE,
+    labelSelector: LOGIN_LABEL,
+  });
+  return list.items.flatMap((pod) => {
+    const credentialId = pod.metadata?.labels?.[LOGIN_LABEL];
+    const name = pod.metadata?.name;
+    if (!credentialId || !name) return [];
+    const created = pod.metadata?.creationTimestamp;
+    return [{ id: name, credentialId, createdAt: created ? new Date(created).getTime() : 0 }];
+  });
 }

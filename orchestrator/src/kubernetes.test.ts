@@ -5,6 +5,7 @@ import { afterEach, describe, it } from 'vitest';
 import { loadConfig, type Config } from './config.ts';
 import {
   createClaim,
+  createLoginPod,
   createPod,
   createBoxNetworkPolicy,
   deleteClaim,
@@ -25,6 +26,8 @@ import {
   podState,
   setKubernetesForTests,
   setPodGonePollForTests,
+  setPodRunningPollForTests,
+  spawnLoginPodExec,
   startPod,
   boxClaimName,
   type PodSpec,
@@ -692,5 +695,104 @@ describe('openTerminalExec', () => {
     );
     stdout.write('hello');
     assert.equal(await printed, 'hello');
+  });
+});
+
+describe('login pods', () => {
+  it('creates a hardened pod with only a login label, and waits until it runs', async () => {
+    setPodRunningPollForTests(1);
+    let sent: { body: { metadata: { name: string; labels: Record<string, string> }; spec: Record<string, unknown> } } | undefined;
+    const phases = ['Pending', 'Running'];
+    setKubernetesForTests({
+      core: {
+        createNamespacedPod: async (params: never) => {
+          sent = params;
+          return {};
+        },
+        readNamespacedPod: async () => ({ status: { phase: phases.shift() } }),
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
+
+    const name = await createLoginPod({ image: 'box:latest', credentialId: 'claude' }, cfg());
+
+    assert.match(name, /^boxes-login-[0-9a-f]{8}$/);
+    assert.equal(phases.length, 0, 'waited for Running');
+    assert.deepEqual(sent!.body.metadata.labels, { 'boxes.login': 'claude' });
+    const spec = sent!.body.spec as {
+      automountServiceAccountToken: boolean;
+      containers: Array<{ image: string; securityContext: { readOnlyRootFilesystem: boolean; runAsNonRoot: boolean }; volumeMounts: Array<{ mountPath: string }> }>;
+    };
+    assert.equal(spec.automountServiceAccountToken, false);
+    const container = spec.containers[0]!;
+    assert.equal(container.image, 'box:latest');
+    assert.equal(container.securityContext.readOnlyRootFilesystem, true);
+    assert.equal(container.securityContext.runAsNonRoot, true);
+    assert.deepEqual(container.volumeMounts.map((m) => m.mountPath), ['/home/agent', '/tmp']);
+  });
+
+  it('deletes a login pod that cannot pull its image, and says why', async () => {
+    setPodRunningPollForTests(1);
+    const deleted: string[] = [];
+    setKubernetesForTests({
+      core: {
+        createNamespacedPod: async () => ({}),
+        readNamespacedPod: async () => ({
+          status: {
+            phase: 'Pending',
+            containerStatuses: [{ state: { waiting: { reason: 'ImagePullBackOff', message: 'nope' } } }],
+          },
+        }),
+        deleteNamespacedPod: async (params: { name: string }) => {
+          deleted.push(params.name);
+          return {};
+        },
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
+
+    await assert.rejects(
+      createLoginPod({ image: 'box:latest', credentialId: 'claude' }, cfg()),
+      /ImagePullBackOff \(nope\)/,
+    );
+    assert.equal(deleted.length, 1);
+    assert.match(deleted[0]!, /^boxes-login-/);
+  });
+
+  it('runs a login command in the home, under a wide tty, and reports its exit', async () => {
+    const socket = new EventEmitter() as EventEmitter & { close(): void };
+    socket.close = () => socket.emit('close');
+    let call: unknown[] = [];
+    setKubernetesForTests({
+      core: {},
+      exec: {
+        exec: async (...args: unknown[]) => {
+          call = args;
+          return socket;
+        },
+      },
+    } as never);
+
+    const exec = await spawnLoginPodExec('boxes-login-1', ['claude', 'setup-token'], { tty: true, env: { A: 'b' } }, cfg());
+
+    const [, pod, , command, stdout, stderr, stdin, tty, onStatus] = call as [
+      string, string, string, string[], PassThrough & { columns: number }, PassThrough, PassThrough | null, boolean,
+      (s: { status: string }) => void,
+    ];
+    assert.equal(pod, 'boxes-login-1');
+    assert.deepEqual(command, ['sh', '-c', 'cd "$1" && shift && exec "$@"', '_', '/home/agent', 'env', 'A=b', 'claude', 'setup-token']);
+    assert.equal(tty, true);
+    assert.equal(stdout, stderr);
+    assert.equal(stdout.columns, 400);
+    assert.equal(stdin, exec.stdin);
+    assert.notEqual(stdin, null);
+
+    stdout.write('hello');
+    onStatus({ status: 'Success' });
+    socket.emit('close');
+    assert.equal(await exec.exited, 0);
+    let text = '';
+    for await (const chunk of exec.output) text += String(chunk);
+    assert.equal(text, 'hello');
   });
 });

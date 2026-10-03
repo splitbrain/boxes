@@ -98,8 +98,7 @@ export function kubernetesRuntime(cfg: Config): Runtime {
       listBoxContainers: () => k8s.listBoxPods(cfg),
       listBoxNetworks: () => k8s.listBoxNetworkPolicies(cfg),
       listBoxVolumes: () => k8s.listBoxClaims(cfg),
-      // The login flow stays Docker-only; see login.ts's own LoginRuntime.
-      listLoginContainers: () => Promise.resolve([]),
+      listLoginContainers: () => k8s.listLoginPods(cfg),
       removeVolume: (name) => k8s.deleteClaim(name, cfg),
 
       seedHomeFromImage: () =>
