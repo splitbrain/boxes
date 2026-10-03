@@ -120,9 +120,10 @@ than a suggestion.
 ## Kubernetes (experimental)
 
 Boxes can run a box as a pod instead of a Docker container. This is newer
-and far less exercised than the Docker deployment above: it has not been run
-against a real cluster, only verified with unit tests against a faked
-Kubernetes API. Treat it as something to try, not something to depend on yet.
+and far less exercised than the Docker deployment above: it has been run on a
+local kind cluster with Calico, through `tests/smoke-test-k8s.sh` and by hand
+(review, terminal, Nix, a thread's adapter), but not on a production cluster.
+Treat it as something to try, not something to depend on yet.
 
 It needs a cluster whose CNI enforces `NetworkPolicy` — Calico or Cilium, for
 example. **Flannel's default configuration, which is what kind, minikube and a
@@ -174,8 +175,9 @@ default is `docker`). The rest are optional, in `orchestrator/src/config.ts`:
 - **Attachment uploads fail** with a generic server error rather than a
   useful one — cleanly, nothing is written to the wrong place, but the upload
   does not work.
-- **A terminal opens at a fixed size.** Resizing it is not wired up yet, so it
-  stays whatever size the shell started at.
+- **A box's size reads empty for a while after it is created or started.**
+  It is measured over the pod, and a measurement taken before the pod runs
+  is retried only after 15 minutes.
 - **A box's process count is unlimited.** Docker's `pids_limit` (a fork
   bomb containment) has no Kubernetes equivalent at the pod level; only a
   cluster-wide kubelet setting comes close, and this deployment does not set

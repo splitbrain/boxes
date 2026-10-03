@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { PassThrough } from 'node:stream';
-import type { Duplex, Readable } from 'node:stream';
+import { Duplex, PassThrough } from 'node:stream';
+import type { Readable } from 'node:stream';
 import {
   CoreV1Api,
   Exec,
@@ -198,6 +198,62 @@ function podVolume(name: string, ref: VolumeRef): V1Volume {
   throw new Error(`a ${ref.kind} volume ref cannot back a Kubernetes pod`);
 }
 
+/** Where the setup init container mounts each PVC it prepares. */
+const SETUP_MOUNTS = { workspace: '/mnt/workspace', home: '/mnt/home', nix: '/mnt/nix' } as const;
+
+/**
+ * Marks a home the seed has filled, so a later pod leaves the agent's own
+ * dotfiles alone. Docker seeds a home once, at creation; a pod is created at
+ * every start.
+ */
+const HOME_SEEDED = '.boxes/home-seeded';
+
+/**
+ * The init container that prepares a box's PVCs before the box runs, or null
+ * when none of them is a PVC.
+ *
+ * A fresh PVC is empty and owned by whoever the provisioner says, so this
+ * does what docker.ts's seedHomeFromImage and workspaces.ts's
+ * createWorkspace/createNix do for a directory: gives each root to the agent,
+ * and fills a new home from the image's /home/agent. The home is mounted
+ * beside /home/agent rather than over it, so the image's own content is what
+ * cp reads.
+ *
+ * It runs as root with only the capabilities that needs, the same ones the
+ * root helper docker.ts's oneShot keeps: CHOWN and FOWNER for `cp -a` and the
+ * chown, DAC_OVERRIDE to read the agent's 0700 home in the image.
+ */
+function volumeSetup(volumes: ProvisionedVolumes, cfg: Config): Omit<V1Container, 'image'> | null {
+  const owner = `${cfg.BOX_UID}:${cfg.BOX_GID}`;
+  const steps: string[] = [];
+  const mounts: Array<{ name: string; mountPath: string }> = [];
+  for (const name of ['workspace', 'home', 'nix'] as const) {
+    if (volumes[name].kind !== 'k8s-pvc') continue;
+    const dir = SETUP_MOUNTS[name];
+    mounts.push({ name, mountPath: dir });
+    if (name === 'home') {
+      steps.push(
+        `if [ ! -e ${dir}/${HOME_SEEDED} ]; then ` +
+          `cp -a ${HOME_DIR}/. ${dir}/ && mkdir -p ${dir}/.boxes && touch ${dir}/${HOME_SEEDED} ` +
+          `&& chown ${owner} ${dir}/.boxes ${dir}/${HOME_SEEDED}; fi`,
+      );
+    }
+    steps.push(`chown ${owner} ${dir}`);
+  }
+  if (mounts.length === 0) return null;
+  return {
+    name: 'volume-setup',
+    command: ['sh', '-c', `set -e; ${steps.join('; ')}`],
+    securityContext: {
+      runAsUser: 0,
+      runAsNonRoot: false,
+      allowPrivilegeEscalation: false,
+      capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'] },
+    },
+    volumeMounts: mounts,
+  };
+}
+
 /** Everything createPod needs to know about one box. */
 export interface PodSpec {
   boxId: string;
@@ -216,35 +272,14 @@ export async function createPod(spec: PodSpec, cfg: Config): Promise<string> {
   const name = podName(spec.boxId);
 
   const initContainers: V1Container[] = [];
-  if (spec.volumes.home.kind === 'k8s-pvc') {
-    // The directory-seeding equivalent of docker.ts's seedHomeFromImage: a
-    // fresh PVC starts out empty, same as a fresh bind mount does, so
-    // whatever the image put in /home/agent has to be copied in once. A
-    // separate mount path rather than /home/agent itself, so the image's own
-    // content already at that path in this container is what cp reads from
-    // rather than what the empty target would otherwise shadow it with.
-    initContainers.push({
-      name: 'home-seed',
-      image: spec.image,
-      command: [
-        'sh',
-        '-c',
-        `cp -a ${HOME_DIR}/. /mnt/home/ && chown ${cfg.BOX_UID}:${cfg.BOX_GID} /mnt/home`,
-      ],
-      securityContext: {
-        runAsUser: 0,
-        runAsNonRoot: false,
-        allowPrivilegeEscalation: false,
-        capabilities: { drop: ['ALL'] },
-      },
-      volumeMounts: [{ name: 'home', mountPath: '/mnt/home' }],
-    });
-  }
+  const setup = volumeSetup(spec.volumes, cfg);
+  if (setup) initContainers.push({ ...setup, image: spec.image });
 
   const pod: V1Pod = {
     metadata: { name, labels: { [LABEL]: spec.boxId } },
     spec: {
       restartPolicy: 'Never',
+      terminationGracePeriodSeconds: TERMINATION_GRACE_SECONDS,
       ...(cfg.K8S_IMAGE_PULL_SECRET ? { imagePullSecrets: [{ name: cfg.K8S_IMAGE_PULL_SECRET }] } : {}),
       ...(initContainers.length > 0 ? { initContainers } : {}),
       volumes: [
@@ -321,8 +356,48 @@ export async function deletePod(name: string, cfg: Config): Promise<void> {
   try {
     await clientsFor(cfg).core.deleteNamespacedPod({ name, namespace: cfg.K8S_NAMESPACE });
   } catch (err) {
-    if (statusCode(err) !== 404) throw err;
+    if (statusCode(err) === 404) return;
+    throw err;
   }
+  await podGone(name, cfg);
+}
+
+/**
+ * The pod's grace period, the same 10 seconds docker.ts's stopContainer
+ * gives. The entrypoint is PID 1 here with no init to forward SIGTERM, so a
+ * stop takes all of it.
+ */
+const TERMINATION_GRACE_SECONDS = 10;
+
+/**
+ * Waits until a deleted pod is gone, the way a Docker stop returns only once
+ * the container has stopped.
+ *
+ * A terminating pod still reads as Running, and its name stays taken. A start
+ * that came right after a stop would otherwise find the old pod, start
+ * nothing, and be left with no pod at all once it went.
+ */
+async function podGone(name: string, cfg: Config): Promise<void> {
+  const deadline = Date.now() + (TERMINATION_GRACE_SECONDS + 30) * 1000;
+  while (Date.now() < deadline) {
+    try {
+      await clientsFor(cfg).core.readNamespacedPod({ name, namespace: cfg.K8S_NAMESPACE });
+    } catch (err) {
+      if (statusCode(err) !== 404) {
+        log.warn('could not confirm a deleted pod is gone', { pod: name, error: (err as Error).message });
+      }
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, podGonePollMs));
+  }
+  log.warn('a deleted pod is still terminating', { pod: name });
+}
+
+let podGonePollMs = 500;
+
+/** Test seam: how often podGone looks. */
+export function setPodGonePollForTests(ms: number): void {
+  podGonePollMs = ms;
 }
 
 /** Resolves a pod's live state, mapping every lookup failure onto a state. */
@@ -851,20 +926,36 @@ function terminalShell(client: string): string {
  * docker.ts's openTerminalExec for the isolation this runs inside of, which
  * is unchanged here.
  *
- * `resize` is best-effort and, unlike Docker's own exec resize, currently a
- * no-op: the client library resizes automatically only when the stdout
- * stream it is given exposes the terminal-size protocol its
- * `TerminalSizeQueue` looks for, which a plain PassThrough does not. A
- * reader's terminal draws at whatever size the shell started at until this is
- * revisited against a real cluster.
+ * Input and output are two streams joined into one Duplex: the exec writes
+ * the pty's output to one and reads the reader's keys from the other, and one
+ * stream for both would feed the shell its own output.
+ *
+ * The client library sizes the pty from the output stream's `columns` and
+ * `rows` and resizes it on that stream's `resize` event, the protocol a
+ * process.stdout speaks, so `resize` sets those and emits it.
  */
 export async function openTerminalExec(
   podId: string,
   workingDir: string,
+  cols: number,
+  rows: number,
   cfg: Config,
 ): Promise<TerminalExec> {
   const client = `web-${randomBytes(4).toString('hex')}`;
-  const stream = new PassThrough();
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: cols, rows });
+  const stream = new Duplex({
+    read() {},
+    write(chunk, encoding, callback) {
+      input.write(chunk, encoding, callback);
+    },
+    final(callback) {
+      input.end();
+      callback();
+    },
+  });
+  output.on('data', (chunk: Buffer) => stream.push(chunk));
+  output.on('end', () => stream.push(null));
   let settle: (code: number | null) => void = () => {};
   const exited = new Promise<number | null>((resolve) => {
     settle = resolve;
@@ -874,22 +965,32 @@ export async function openTerminalExec(
     cfg.K8S_NAMESPACE,
     podId,
     CONTAINER_NAME,
-    wrapExec(['bash', '-lc', terminalShell(client)], { workingDir }),
-    stream,
-    stream,
-    stream,
+    // The box's own TERM is dumb, for the agent's tools; a reader's terminal
+    // is a real one, as docker.ts's exec says too.
+    wrapExec(['bash', '-lc', terminalShell(client)], {
+      workingDir,
+      env: { TERM: 'xterm-256color' },
+    }),
+    output,
+    output,
+    input,
     true,
   );
-  socket.on('close', () => settle(null));
+  socket.on('close', () => {
+    settle(null);
+    output.end();
+  });
   socket.on('error', (err: Error) => {
     log.warn('terminal exec stream error', { error: err.message });
     settle(null);
   });
 
   return {
-    stream: stream as unknown as Duplex,
-    resize: async () => {
-      log.debug('terminal resize is not wired up for the kubernetes runtime yet');
+    stream,
+    resize: async (newCols, newRows) => {
+      output.columns = newCols;
+      output.rows = newRows;
+      output.emit('resize');
     },
     exited,
     close: async () => {

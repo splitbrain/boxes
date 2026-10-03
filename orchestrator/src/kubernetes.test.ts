@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import type { PassThrough } from 'node:stream';
 import { afterEach, describe, it } from 'vitest';
 import { loadConfig, type Config } from './config.ts';
 import {
@@ -11,6 +13,7 @@ import {
   ensureBoxNetworkPolicy,
   execInPod,
   missingMounts,
+  openTerminalExec,
   nixClaimName,
   hasBoxNetworkPolicy,
   healthCheck,
@@ -23,6 +26,7 @@ import {
   podName,
   podState,
   setKubernetesForTests,
+  setPodGonePollForTests,
   startPod,
   workspaceClaimName,
   type PodSpec,
@@ -104,16 +108,34 @@ describe('createPod', () => {
     assert.ok(mounts.some((m) => m.name === 'home' && m.mountPath === '/home/agent'));
     assert.ok(mounts.some((m) => m.name === 'agent-config' && m.mountPath === '/boxes/agent' && m.readOnly));
 
-    // The home PVC starts empty, so it needs the image's own seed; the
-    // agent-config emptyDir needs nothing copied into it.
+    assert.ok(mounts.some((m) => m.name === 'nix' && m.mountPath === '/nix'));
+
+    // Every PVC starts empty and owned by the provisioner, so one init
+    // container gives each root to the agent and seeds the home; the
+    // agent-config emptyDir needs nothing.
     assert.equal(body.spec.initContainers.length, 1);
-    assert.equal(body.spec.initContainers[0].securityContext.runAsUser, 0);
-    assert.deepEqual(body.spec.initContainers[0].volumeMounts, [
+    const setup = body.spec.initContainers[0];
+    assert.equal(setup.securityContext.runAsUser, 0);
+    // Root, but with only what cp -a and chown need: reading the agent's
+    // 0700 home in the image takes DAC_OVERRIDE.
+    assert.deepEqual(setup.securityContext.capabilities, {
+      drop: ['ALL'],
+      add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'],
+    });
+    assert.deepEqual(setup.volumeMounts, [
+      { name: 'workspace', mountPath: '/mnt/workspace' },
       { name: 'home', mountPath: '/mnt/home' },
+      { name: 'nix', mountPath: '/mnt/nix' },
     ]);
+    const script = setup.command[2] as string;
+    assert.match(script, /chown 1020:1020 \/mnt\/workspace/);
+    assert.match(script, /chown 1020:1020 \/mnt\/nix/);
+    // A pod is created at every start, so the seed runs only into a home it
+    // has not filled before, and leaves the agent's own dotfiles alone.
+    assert.match(script, /if \[ ! -e \/mnt\/home\/\.boxes\/home-seeded \]; then cp -a \/home\/agent\/\. \/mnt\/home\//);
   });
 
-  it('skips the home-seed init container when the home volume is not a PVC', async () => {
+  it('runs no init container when no volume is a PVC', async () => {
     let sent: { body: Record<string, unknown> } | undefined;
     setKubernetesForTests({
       core: {
@@ -129,7 +151,12 @@ describe('createPod', () => {
       {
         boxId: 's1',
         image: 'img',
-        volumes: { ...VOLUMES, home: { kind: 'k8s-emptydir' } },
+        volumes: {
+          workspace: { kind: 'k8s-emptydir' },
+          home: { kind: 'k8s-emptydir' },
+          nix: { kind: 'k8s-emptydir' },
+          agentConfig: { kind: 'k8s-emptydir' },
+        },
         env: {},
         caCertificate: '',
       },
@@ -223,6 +250,40 @@ describe('deletePod', () => {
     } as never);
     await deletePod('p1', cfg());
     assert.ok(called);
+  });
+
+  it('returns only once the pod is gone, since a terminating one still reads as running', async () => {
+    setPodGonePollForTests(1);
+    let reads = 0;
+    setKubernetesForTests({
+      core: {
+        deleteNamespacedPod: async () => ({}),
+        readNamespacedPod: async () => {
+          reads++;
+          if (reads < 3) return { status: { phase: 'Running' } };
+          throw apiError(404);
+        },
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
+    await deletePod('p1', cfg());
+    assert.equal(reads, 3);
+    setPodGonePollForTests(500);
+  });
+
+  it('gives the pod the same 10 second grace a Docker stop does', async () => {
+    let sent: { body: Record<string, unknown> } | undefined;
+    setKubernetesForTests({
+      core: {
+        createNamespacedPod: async (params: { body: Record<string, unknown> }) => {
+          sent = params;
+          return params.body;
+        },
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
+    await createPod({ boxId: 's1', image: 'img', volumes: VOLUMES, env: {}, caCertificate: '' }, cfg());
+    assert.equal((sent!.body as any).spec.terminationGracePeriodSeconds, 10);
   });
 
   it('rethrows anything else', async () => {
@@ -572,5 +633,54 @@ describe('execInPod', () => {
       'git',
       'status',
     ]);
+  });
+});
+
+describe('openTerminalExec', () => {
+  it('keeps the pty output apart from the reader input, and sizes the pty', async () => {
+    let args: unknown[] = [];
+    const sockets = new EventEmitter();
+    setKubernetesForTests({
+      core: {},
+      exec: {
+        exec: async (...a: unknown[]) => {
+          args = a;
+          return Object.assign(sockets, { close: () => {} });
+        },
+      },
+    } as never);
+
+    const terminal = await openTerminalExec('p1', '/workspace', 120, 40, cfg());
+    const [, , , command, stdout, stderr, stdin, tty] = args as [
+      string, string, string, string[], PassThrough & { columns: number; rows: number }, unknown, PassThrough, boolean,
+    ];
+    assert.equal(tty, true);
+    // One stream for both would feed the shell its own output.
+    assert.notEqual(stdout, stdin);
+    assert.equal(stderr, stdout);
+    assert.ok(command.includes('TERM=xterm-256color'));
+
+    // The library sizes the pty from the output stream, and follows its resize.
+    assert.equal(stdout.columns, 120);
+    assert.equal(stdout.rows, 40);
+    let resized = false;
+    stdout.on('resize', () => {
+      resized = true;
+    });
+    await terminal.resize(90, 20);
+    assert.ok(resized);
+    assert.equal(stdout.columns, 90);
+    assert.equal(stdout.rows, 20);
+
+    // What the reader types reaches stdin and nothing else ...
+    const typed = new Promise<string>((resolve) => stdin.once('data', (d: Buffer) => resolve(d.toString())));
+    terminal.stream.write('ls\r');
+    assert.equal(await typed, 'ls\r');
+    // ... and what the pty prints reaches the reader.
+    const printed = new Promise<string>((resolve) =>
+      terminal.stream.once('data', (d: Buffer) => resolve(d.toString())),
+    );
+    stdout.write('hello');
+    assert.equal(await printed, 'hello');
   });
 });

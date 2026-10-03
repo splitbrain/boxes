@@ -43,6 +43,18 @@ describe('kubernetesRuntime', () => {
       exec: { exec: async () => { throw new Error('not used'); } },
     } as never);
     assert.equal(await runtime.boxes.isProxyAttached(networkName), true);
+    // A policy that is already there is an attached box, not a missing one.
+    assert.equal(await runtime.boxes.ensureProxyAttached(networkName), true);
+
+    setKubernetesForTests({
+      core: {},
+      networking: {
+        readNamespacedNetworkPolicy: async () => { throw Object.assign(new Error('404'), { code: 404 }); },
+        createNamespacedNetworkPolicy: async () => { throw Object.assign(new Error('forbidden'), { code: 403 }); },
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
+    assert.equal(await runtime.boxes.ensureProxyAttached(networkName), false);
   });
 
   it('volumeRefs names PVCs from the box id alone, ignoring the Docker-only arguments', () => {

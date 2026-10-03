@@ -27,7 +27,9 @@ function rootDir(root: FileRoot): string {
 
 function checkPath(relPath: string): void {
   if (!validRelativePath(relPath)) {
-    throw new Error(`not a valid relative path: ${relPath}`);
+    // A refusal like any other, so a caller answers it with the same 404 as
+    // docker-fileaccess.ts's resolveInRoot refusal.
+    throw new Error('refused: not a valid relative path');
   }
 }
 
@@ -115,7 +117,8 @@ export function kubernetesFileAccess(cfg: Config): FileAccess {
     },
 
     async isDirectory(boxId, root, relPath): Promise<boolean> {
-      checkPath(relPath);
+      // Not one, as docker-fileaccess.ts answers for a path it refuses.
+      if (!validRelativePath(relPath)) return false;
       const { stdout, code } = await run(boxId, ['stat', rootDir(root), relPath]);
       if (code !== 0) return false;
       return (JSON.parse(stdout) as { isDirectory: boolean }).isDirectory;

@@ -59,9 +59,22 @@ export function kubernetesRuntime(cfg: Config): Runtime {
       removeNetwork: (networkName) =>
         k8s.deleteBoxNetworkPolicy(k8s.boxIdFromNetworkPolicyName(networkName), cfg),
       // The one NetworkPolicy already grants egress to the proxy; there is no
-      // separate "attach" step the way a Docker network connect is one.
-      ensureProxyAttached: (networkName) =>
-        k8s.ensureBoxNetworkPolicy(k8s.boxIdFromNetworkPolicyName(networkName), cfg),
+      // separate "attach" step the way a Docker network connect is one. So the
+      // box is attached once its policy is there, whether it was already or
+      // has just been made, and not attached when that fails, as docker.ts
+      // answers.
+      ensureProxyAttached: async (networkName) => {
+        try {
+          await k8s.ensureBoxNetworkPolicy(k8s.boxIdFromNetworkPolicyName(networkName), cfg);
+          return true;
+        } catch (err) {
+          log.warn('could not make the NetworkPolicy that lets a box reach the proxy', {
+            networkPolicy: networkName,
+            error: (err as Error).message,
+          });
+          return false;
+        }
+      },
       isProxyAttached: (networkName) =>
         k8s.hasBoxNetworkPolicy(k8s.boxIdFromNetworkPolicyName(networkName), cfg),
 
@@ -145,7 +158,8 @@ export function kubernetesRuntime(cfg: Config): Runtime {
     exec: {
       execInContainer: (id, cmd, opts) => k8s.execInPod(id, cmd, cfg, opts),
       spawnAdapterExec: (id, cmd, workingDir) => k8s.spawnAdapterExec(id, cmd, workingDir, cfg),
-      openTerminalExec: (id, workingDir) => k8s.openTerminalExec(id, workingDir, cfg),
+      openTerminalExec: (id, workingDir, cols, rows) =>
+        k8s.openTerminalExec(id, workingDir, cols, rows, cfg),
       // There is no `docker top` equivalent to ask the API for this instead,
       // so both readings come from the same in-pod `ps`.
       containerProcesses: (id) => k8s.listProcesses(id, cfg),

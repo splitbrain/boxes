@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 # Security smoke test, the Kubernetes-specific half.
 #
-# This does NOT replace tests/smoke-test.sh. Credential translation, TLS
-# interception, the egress allowlist and /healthz are exercised entirely over
-# the orchestrator's HTTP API and are backend-independent — run the original
-# script against this deployment too, with API_BASE pointed at it:
-#
-#   API_BASE=http://boxes-orchestrator.boxes-sessions.svc.cluster.local:3000 \
-#     ./tests/smoke-test.sh
-#
-# (or through a port-forward, from outside the cluster). What is here instead
-# is everything that only exists, or only differs, because a box is a pod
-# rather than a Docker container: whether NetworkPolicy is enforced at all,
-# the pod's own security context, PVC persistence across a stop/start, and the
-# egress proxy's control-channel isolation.
+# tests/smoke-test.sh covers credential translation, TLS interception and the
+# egress allowlist, but drives a box with `docker exec` and `docker inspect`,
+# so it runs against a Docker deployment only. What is here is everything
+# that only exists, or only differs, because a box is a pod rather than a
+# Docker container: whether NetworkPolicy is enforced at all, the pod's own
+# security context, PVC persistence (workspace and Nix store) across a
+# stop/start, and the egress proxy's control-channel isolation.
 #
 # Run with a kubectl context already pointed at the right cluster:
 #
@@ -35,7 +29,8 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 grey()  { printf '\033[90m%s\033[0m\n' "$*"; }
 
-api() { curl -sS "${CURL_AUTH[@]}" "$@"; }
+# The +-form, because bash 3.2 (macOS) treats an empty array as unset under -u.
+api() { curl -sS ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "$@"; }
 
 kexec() { kubectl exec -n "$NAMESPACE" "$@"; }
 
