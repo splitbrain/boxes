@@ -6,7 +6,7 @@ import type { ProvisionedVolumes, Runtime } from './types.ts';
 
 /**
  * The Kubernetes runtime: every box is a pod in `cfg.K8S_NAMESPACE`, its
- * workspace, home and Nix store are PVCs, and its agent configuration is an empty dir —
+ * workspace, home and Nix store are subPaths of one PVC, and its agent configuration is an empty dir —
  * see kubernetes.ts for the pod template itself.
  *
  * Network isolation is a `NetworkPolicy` per box, replacing Docker's
@@ -115,43 +115,32 @@ export function kubernetesRuntime(cfg: Config): Runtime {
       resolveHostMountSource: () => Promise.resolve(null),
 
       // Neither hostDataDir nor a legacy home volume means anything here: a
-      // Kubernetes box's mounts are PVCs named from its id alone.
-      volumeRefs: (boxId): ProvisionedVolumes => ({
-        workspace: { kind: 'k8s-pvc', claimName: k8s.workspaceClaimName(boxId) },
-        home: { kind: 'k8s-pvc', claimName: k8s.homeClaimName(boxId) },
-        nix: { kind: 'k8s-pvc', claimName: k8s.nixClaimName(boxId) },
-        agentConfig: { kind: 'k8s-emptydir' },
-      }),
+      // Kubernetes box's mounts are subPaths of one PVC named from its id
+      // alone — one block volume to attach per box, not three.
+      volumeRefs: (boxId): ProvisionedVolumes => {
+        const claimName = k8s.boxClaimName(boxId);
+        return {
+          workspace: { kind: 'k8s-pvc', claimName, subPath: 'workspace' },
+          home: { kind: 'k8s-pvc', claimName, subPath: 'home' },
+          nix: { kind: 'k8s-pvc', claimName, subPath: 'nix' },
+          agentConfig: { kind: 'k8s-emptydir' },
+        };
+      },
       provisionVolumes: async (boxId, _image, volumes) => {
-        if (volumes.workspace.kind === 'k8s-pvc') {
-          await k8s.createClaim(volumes.workspace.claimName, boxId, cfg.K8S_WORKSPACE_SIZE, cfg);
+        for (const claimName of claimNames(volumes)) {
+          await k8s.createClaim(claimName, boxId, cfg.K8S_VOLUME_SIZE, cfg);
         }
-        if (volumes.home.kind === 'k8s-pvc') {
-          await k8s.createClaim(volumes.home.claimName, boxId, cfg.K8S_HOME_SIZE, cfg);
-        }
-        if (volumes.nix.kind === 'k8s-pvc') {
-          await k8s.createClaim(volumes.nix.claimName, boxId, cfg.K8S_NIX_SIZE, cfg);
-        }
-        // The home's own content is seeded by createPod's init container, not
-        // here: the PVC has to exist first, but nothing can run against it
-        // until a pod mounts it.
+        // The subPaths and the home's own content are made by createPod's
+        // init container, not here: the PVC has to exist first, but nothing
+        // can run against it until a pod mounts it.
       },
-      // A box from before Nix stores existed has no claim for one, and a pod
-      // naming a missing claim never schedules.
-      ensureAddedVolumes: async (boxId, volumes) => {
-        if (volumes.nix.kind === 'k8s-pvc') {
-          await k8s.ensureClaim(volumes.nix.claimName, boxId, cfg.K8S_NIX_SIZE, cfg);
-        }
-      },
+      // Every Kubernetes box has had all three mounts on its claim since it
+      // was created. A claim that has gone is lost data, which an empty
+      // replacement would only hide.
+      ensureAddedVolumes: () => Promise.resolve(),
       removeVolumes: async (_boxId, volumes) => {
-        if (volumes.workspace.kind === 'k8s-pvc') {
-          await k8s.deleteClaim(volumes.workspace.claimName, cfg);
-        }
-        if (volumes.home.kind === 'k8s-pvc') {
-          await k8s.deleteClaim(volumes.home.claimName, cfg);
-        }
-        if (volumes.nix.kind === 'k8s-pvc') {
-          await k8s.deleteClaim(volumes.nix.claimName, cfg);
+        for (const claimName of claimNames(volumes)) {
+          await k8s.deleteClaim(claimName, cfg);
         }
       },
     },
@@ -186,4 +175,12 @@ export function kubernetesRuntime(cfg: Config): Runtime {
       selfContainerId: () => null,
     },
   };
+}
+
+/** The distinct PVCs a box's mounts name. */
+function claimNames(volumes: ProvisionedVolumes): string[] {
+  const names = [volumes.workspace, volumes.home, volumes.nix, volumes.agentConfig].flatMap((ref) =>
+    ref.kind === 'k8s-pvc' ? [ref.claimName] : [],
+  );
+  return [...new Set(names)];
 }

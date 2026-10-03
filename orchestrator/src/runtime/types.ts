@@ -21,7 +21,7 @@ export type { AdapterExec, ContainerProcess, ExecOptions, ExecOutput, TerminalEx
 export type VolumeRef =
   | { kind: 'docker-path'; path: string }
   | { kind: 'docker-volume'; volumeName: string }
-  | { kind: 'k8s-pvc'; claimName: string }
+  | { kind: 'k8s-pvc'; claimName: string; subPath?: string }
   | { kind: 'k8s-emptydir' };
 
 /** The four mounts every box container has, whatever backs them. */

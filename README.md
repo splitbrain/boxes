@@ -151,16 +151,21 @@ default is `docker`). The rest are optional, in `orchestrator/src/config.ts`:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `K8S_NAMESPACE` | `boxes-sessions` | Namespace every box's pod, PVCs and NetworkPolicy are created in |
+| `K8S_NAMESPACE` | `boxes-sessions` | Namespace every box's pod, PVC and NetworkPolicy are created in |
 | `K8S_KUBECONFIG` | *(empty)* | Path to a kubeconfig, for an orchestrator running outside the cluster |
 | `K8S_IN_CLUSTER` | `false` | Whether the orchestrator is itself a pod, using its own ServiceAccount |
-| `K8S_STORAGE_CLASS` | *(empty, cluster default)* | StorageClass a box's PVCs are provisioned with |
-| `K8S_WORKSPACE_SIZE` | `10Gi` | Size of a box's workspace PVC |
-| `K8S_HOME_SIZE` | `5Gi` | Size of a box's home PVC |
-| `K8S_NIX_SIZE` | `20Gi` | Size of a box's Nix store PVC, mounted at `/nix` |
+| `K8S_STORAGE_CLASS` | *(empty, cluster default)* | StorageClass a box's PVC is provisioned with |
+| `K8S_VOLUME_SIZE` | `35Gi` | Size of a box's one PVC, which holds its workspace, home and Nix store (`/nix`) |
 | `K8S_IMAGE_PULL_POLICY` | `IfNotPresent` | `imagePullPolicy` on a box pod |
 | `K8S_IMAGE_PULL_SECRET` | *(empty)* | An `imagePullSecrets` entry, for a box image on a private registry |
 | `K8S_EGRESS_PROXY_SERVICE` | `boxes-egress-proxy` | Name of the egress proxy's cluster Service |
+
+A box keeps its workspace, home and Nix store on one PVC, in the subPaths
+`workspace`, `home` and `nix`, so a running box attaches one block volume to
+its node rather than three. That matters where the provider caps attachments
+per node: Hetzner attaches at most 16 volumes to a server. The three no longer
+have separate sizes; together they share `K8S_VOLUME_SIZE`, and a volume that
+fills up can be grown in place if the StorageClass allows expansion.
 
 ### Known limitations
 

@@ -129,9 +129,7 @@ function insertBox(id: string, status = 'stopped'): void {
 /** The Kubernetes objects one box owns — no local directories, unlike a Docker box. */
 function insertObjects(id: string): void {
   fake.pods.set(k8s.podName(id), { boxId: id, running: false });
-  fake.claims.set(k8s.workspaceClaimName(id), id);
-  fake.claims.set(k8s.homeClaimName(id), id);
-  fake.claims.set(k8s.nixClaimName(id), id);
+  fake.claims.set(k8s.boxClaimName(id), id);
   fake.policies.set(k8s.networkPolicyName(id), id);
 }
 
@@ -157,7 +155,7 @@ afterEach(async () => {
 });
 
 describe('sweeping objects no box owns', () => {
-  it('takes the pod, every PVC and the NetworkPolicy, under their real names', async () => {
+  it('takes the pod, the PVC and the NetworkPolicy, under their real names', async () => {
     insertBox('live');
     insertObjects('live');
     // A box that was deleted, and whose teardown did not finish.
@@ -174,18 +172,14 @@ describe('sweeping objects no box owns', () => {
       `expected ${k8s.networkPolicyName('gone')} among removed: ${fake.removed.join(', ')}`,
     );
     assert.ok(fake.removed.includes(k8s.podName('gone')));
-    assert.ok(fake.removed.includes(k8s.workspaceClaimName('gone')));
-    assert.ok(fake.removed.includes(k8s.homeClaimName('gone')));
-    assert.ok(fake.removed.includes(k8s.nixClaimName('gone')));
+    assert.ok(fake.removed.includes(k8s.boxClaimName('gone')));
     // And nothing of the box that is still there.
     assert.ok(fake.pods.has(k8s.podName('live')));
-    assert.ok(fake.claims.has(k8s.workspaceClaimName('live')));
-    assert.ok(fake.claims.has(k8s.homeClaimName('live')));
-    assert.ok(fake.claims.has(k8s.nixClaimName('live')));
+    assert.ok(fake.claims.has(k8s.boxClaimName('live')));
     assert.ok(fake.policies.has(k8s.networkPolicyName('live')));
   });
 
-  it('removes the pod before the NetworkPolicy and the PVCs it holds', async () => {
+  it('removes the pod before the NetworkPolicy and the PVC it holds', async () => {
     insertBox('keep');
     insertBox('gone', 'deleted');
     insertObjects('gone');
@@ -195,9 +189,7 @@ describe('sweeping objects no box owns', () => {
     assert.deepEqual(fake.removed, [
       k8s.podName('gone'),
       k8s.networkPolicyName('gone'),
-      k8s.workspaceClaimName('gone'),
-      k8s.homeClaimName('gone'),
-      k8s.nixClaimName('gone'),
+      k8s.boxClaimName('gone'),
     ]);
   });
 
@@ -235,9 +227,7 @@ describe('sweeping objects no box owns', () => {
     // The policy stays for the next sweep; nothing behind it is held up.
     assert.deepEqual(fake.removed, [
       k8s.podName('gone'),
-      k8s.workspaceClaimName('gone'),
-      k8s.homeClaimName('gone'),
-      k8s.nixClaimName('gone'),
+      k8s.boxClaimName('gone'),
     ]);
     assert.ok(fake.policies.has(k8s.networkPolicyName('gone')));
   });
@@ -269,7 +259,7 @@ describe('sweeping objects no box owns', () => {
     await orchestrator.manager.sweepOrphans();
 
     assert.deepEqual(fake.removed, []);
-    assert.ok(fake.claims.has(k8s.workspaceClaimName('a')));
+    assert.ok(fake.claims.has(k8s.boxClaimName('a')));
   });
 
   it('still sweeps a handful of strays beside a database that knows its boxes', async () => {
@@ -291,9 +281,7 @@ describe('sweeping objects no box owns', () => {
     assert.deepEqual(fake.removed, [
       k8s.podName('gone'),
       k8s.networkPolicyName('gone'),
-      k8s.workspaceClaimName('gone'),
-      k8s.homeClaimName('gone'),
-      k8s.nixClaimName('gone'),
+      k8s.boxClaimName('gone'),
     ]);
   });
 });

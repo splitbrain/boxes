@@ -57,11 +57,11 @@ describe('kubernetesRuntime', () => {
     assert.equal(await runtime.boxes.ensureProxyAttached(networkName), false);
   });
 
-  it('volumeRefs names PVCs from the box id alone, ignoring the Docker-only arguments', () => {
+  it('volumeRefs names the PVC from the box id alone, ignoring the Docker-only arguments', () => {
     const runtime = kubernetesRuntime(cfg());
     const volumes = runtime.boxes.volumeRefs('abcd1234', '/some/host/path', 'a-legacy-volume');
-    assert.deepEqual(volumes.workspace, { kind: 'k8s-pvc', claimName: 'boxes-workspace-abcd1234' });
-    assert.deepEqual(volumes.home, { kind: 'k8s-pvc', claimName: 'boxes-home-abcd1234' });
+    assert.deepEqual(volumes.workspace, { kind: 'k8s-pvc', claimName: 'boxes-data-abcd1234', subPath: 'workspace' });
+    assert.deepEqual(volumes.home, { kind: 'k8s-pvc', claimName: 'boxes-data-abcd1234', subPath: 'home' });
     assert.deepEqual(volumes.agentConfig, { kind: 'k8s-emptydir' });
   });
 
@@ -157,39 +157,49 @@ describe('kubernetesRuntime', () => {
     const runtime = kubernetesRuntime(cfg());
     const volumes = runtime.boxes.volumeRefs('s1', '/unused', null);
     await runtime.boxes.provisionVolumes('s1', 'img', volumes);
-    assert.deepEqual(created.sort(), ['boxes-home-s1', 'boxes-nix-s1', 'boxes-workspace-s1'].sort());
+    assert.deepEqual(created, ['boxes-data-s1']);
 
     await runtime.boxes.removeVolumes('s1', volumes);
-    assert.deepEqual(removed.sort(), ['boxes-home-s1', 'boxes-nix-s1', 'boxes-workspace-s1'].sort());
+    assert.deepEqual(removed, ['boxes-data-s1']);
   });
 
-  it('gives a box from before Nix stores existed its claim, and tolerates one already there', async () => {
-    const asked: Array<{ name: string; size: string }> = [];
-    let exists = false;
+  it('keeps workspace, home and Nix store on one claim, sized from config', async () => {
+    let size: string | undefined;
     setKubernetesForTests({
       core: {
         createNamespacedPersistentVolumeClaim: async (params: {
-          body: { metadata: { name: string }; spec: { resources: { requests: { storage: string } } } };
+          body: { spec: { resources: { requests: { storage: string } } } };
         }) => {
-          asked.push({
-            name: params.body.metadata.name,
-            size: params.body.spec.resources.requests.storage,
-          });
-          if (exists) throw Object.assign(new Error('already exists'), { code: 409 });
-          exists = true;
+          size = params.body.spec.resources.requests.storage;
           return params.body;
         },
       },
       exec: { exec: async () => { throw new Error('not used'); } },
     } as never);
 
-    const runtime = kubernetesRuntime(cfg({ K8S_NIX_SIZE: '7Gi' }));
+    const runtime = kubernetesRuntime(cfg({ K8S_VOLUME_SIZE: '50Gi' }));
     const volumes = runtime.boxes.volumeRefs('s1', '/unused', null);
-    await runtime.boxes.ensureAddedVolumes('s1', volumes);
-    await runtime.boxes.ensureAddedVolumes('s1', volumes);
-    assert.deepEqual(asked, [
-      { name: 'boxes-nix-s1', size: '7Gi' },
-      { name: 'boxes-nix-s1', size: '7Gi' },
-    ]);
+    assert.deepEqual(volumes, {
+      workspace: { kind: 'k8s-pvc', claimName: 'boxes-data-s1', subPath: 'workspace' },
+      home: { kind: 'k8s-pvc', claimName: 'boxes-data-s1', subPath: 'home' },
+      nix: { kind: 'k8s-pvc', claimName: 'boxes-data-s1', subPath: 'nix' },
+      agentConfig: { kind: 'k8s-emptydir' },
+    });
+    await runtime.boxes.provisionVolumes('s1', 'img', volumes);
+    assert.equal(size, '50Gi');
+  });
+
+  it('creates no claim to stand in for one that has gone', async () => {
+    setKubernetesForTests({
+      core: {
+        createNamespacedPersistentVolumeClaim: async () => {
+          throw new Error('ensureAddedVolumes created a claim');
+        },
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
+
+    const runtime = kubernetesRuntime(cfg());
+    await runtime.boxes.ensureAddedVolumes('s1', runtime.boxes.volumeRefs('s1', '/unused', null));
   });
 });

@@ -228,15 +228,16 @@ const schema = z.object({
   /** StorageClass a box's PVCs are provisioned with. Empty is the cluster's own default. */
   K8S_STORAGE_CLASS: z.string().default(''),
   /**
-   * Size a box's workspace, home and Nix store PVCs are created with.
+   * Size of the one PVC a box's workspace, home and Nix store share, each in
+   * its own subPath.
    *
    * Kubernetes has no equivalent of a bind mount's unbounded host directory —
    * a PersistentVolumeClaim states a size up front — so this is a limit
-   * Docker deployments have never had to set.
+   * Docker deployments have never had to set. One claim rather than three
+   * because a block storage provider caps how many volumes a node attaches:
+   * Hetzner's 16 would otherwise stop at five running boxes per node.
    */
-  K8S_WORKSPACE_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('10Gi'),
-  K8S_HOME_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('5Gi'),
-  K8S_NIX_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('20Gi'),
+  K8S_VOLUME_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('35Gi'),
   K8S_IMAGE_PULL_POLICY: z.enum(['Always', 'IfNotPresent', 'Never']).default('IfNotPresent'),
   /** A pre-existing imagePullSecret's name, for a box image on a private registry. */
   K8S_IMAGE_PULL_SECRET: z.string().default(''),

@@ -14,10 +14,8 @@ import {
   execInPod,
   missingMounts,
   openTerminalExec,
-  nixClaimName,
   hasBoxNetworkPolicy,
   healthCheck,
-  homeClaimName,
   listBoxClaims,
   listBoxNetworkPolicies,
   listBoxPods,
@@ -28,7 +26,7 @@ import {
   setKubernetesForTests,
   setPodGonePollForTests,
   startPod,
-  workspaceClaimName,
+  boxClaimName,
   type PodSpec,
 } from './kubernetes.ts';
 import type { ProvisionedVolumes } from './runtime/types.ts';
@@ -52,10 +50,12 @@ function apiError(code: number): Error {
   return Object.assign(new Error(`api error ${code}`), { code });
 }
 
+const CLAIM = boxClaimName('abcd1234');
+
 const VOLUMES: ProvisionedVolumes = {
-  workspace: { kind: 'k8s-pvc', claimName: workspaceClaimName('abcd1234') },
-  home: { kind: 'k8s-pvc', claimName: homeClaimName('abcd1234') },
-  nix: { kind: 'k8s-pvc', claimName: nixClaimName('abcd1234') },
+  workspace: { kind: 'k8s-pvc', claimName: CLAIM, subPath: 'workspace' },
+  home: { kind: 'k8s-pvc', claimName: CLAIM, subPath: 'home' },
+  nix: { kind: 'k8s-pvc', claimName: CLAIM, subPath: 'nix' },
   agentConfig: { kind: 'k8s-emptydir' },
 };
 
@@ -103,12 +103,22 @@ describe('createPod', () => {
     assert.equal(container.resources.requests.memory, container.resources.limits.memory);
     assert.equal(container.resources.limits.cpu, '2');
 
-    const mounts = container.volumeMounts as Array<{ name: string; mountPath: string; readOnly?: boolean }>;
-    assert.ok(mounts.some((m) => m.name === 'workspace' && m.mountPath === '/workspace'));
-    assert.ok(mounts.some((m) => m.name === 'home' && m.mountPath === '/home/agent'));
-    assert.ok(mounts.some((m) => m.name === 'agent-config' && m.mountPath === '/boxes/agent' && m.readOnly));
+    // The three mounts share one claim, named once among the pod's volumes,
+    // so a node attaches one block volume for the box rather than three.
+    const claimVolumes = (body.spec.volumes as any[]).filter((v) => v.persistentVolumeClaim);
+    assert.deepEqual(claimVolumes, [{ name: CLAIM, persistentVolumeClaim: { claimName: CLAIM } }]);
 
-    assert.ok(mounts.some((m) => m.name === 'nix' && m.mountPath === '/nix'));
+    const mounts = container.volumeMounts as Array<{
+      name: string;
+      mountPath: string;
+      subPath?: string;
+      readOnly?: boolean;
+    }>;
+    const mountAt = (path: string) => mounts.find((m) => m.mountPath === path);
+    assert.deepEqual(mountAt('/workspace'), { name: CLAIM, subPath: 'workspace', mountPath: '/workspace' });
+    assert.deepEqual(mountAt('/home/agent'), { name: CLAIM, subPath: 'home', mountPath: '/home/agent' });
+    assert.deepEqual(mountAt('/nix'), { name: CLAIM, subPath: 'nix', mountPath: '/nix' });
+    assert.deepEqual(mountAt('/boxes/agent'), { name: 'agent-config', mountPath: '/boxes/agent', readOnly: true });
 
     // Every PVC starts empty and owned by the provisioner, so one init
     // container gives each root to the agent and seeds the home; the
@@ -123,9 +133,9 @@ describe('createPod', () => {
       add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER'],
     });
     assert.deepEqual(setup.volumeMounts, [
-      { name: 'workspace', mountPath: '/mnt/workspace' },
-      { name: 'home', mountPath: '/mnt/home' },
-      { name: 'nix', mountPath: '/mnt/nix' },
+      { name: CLAIM, subPath: 'workspace', mountPath: '/mnt/workspace' },
+      { name: CLAIM, subPath: 'home', mountPath: '/mnt/home' },
+      { name: CLAIM, subPath: 'nix', mountPath: '/mnt/nix' },
     ]);
     const script = setup.command[2] as string;
     assert.match(script, /chown 1020:1020 \/mnt\/workspace/);
@@ -338,10 +348,10 @@ describe('claims', () => {
       exec: { exec: async () => { throw new Error('not used'); } },
     } as never);
 
-    await createClaim(workspaceClaimName('s1'), 's1', '10Gi', cfg({ K8S_STORAGE_CLASS: 'longhorn' }));
+    await createClaim(boxClaimName('s1'), 's1', '10Gi', cfg({ K8S_STORAGE_CLASS: 'longhorn' }));
     const body = sent!.body as any;
     assert.equal(sent?.namespace, 'boxes-sessions');
-    assert.equal(body.metadata.name, workspaceClaimName('s1'));
+    assert.equal(body.metadata.name, boxClaimName('s1'));
     assert.equal(body.metadata.labels[LABEL], 's1');
     assert.deepEqual(body.spec.accessModes, ['ReadWriteOnce']);
     assert.equal(body.spec.resources.requests.storage, '10Gi');

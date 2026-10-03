@@ -224,9 +224,7 @@ test('the runtime defaults to docker, with no Kubernetes setting required', () =
     const cfg = loadConfig({ DATA_DIR: dir });
     assert.equal(cfg.RUNTIME, 'docker');
     assert.equal(cfg.K8S_NAMESPACE, 'boxes-sessions');
-    assert.equal(cfg.K8S_WORKSPACE_SIZE, '10Gi');
-    assert.equal(cfg.K8S_HOME_SIZE, '5Gi');
-    assert.equal(cfg.K8S_NIX_SIZE, '20Gi');
+    assert.equal(cfg.K8S_VOLUME_SIZE, '35Gi');
     assert.equal(cfg.K8S_IN_CLUSTER, false);
     assert.equal(cfg.K8S_IMAGE_PULL_POLICY, 'IfNotPresent');
   });
@@ -239,13 +237,13 @@ test('a deployment can switch to kubernetes and set its own settings', () => {
       RUNTIME: 'kubernetes',
       K8S_NAMESPACE: 'my-boxes',
       K8S_STORAGE_CLASS: 'longhorn',
-      K8S_WORKSPACE_SIZE: '20Gi',
+      K8S_VOLUME_SIZE: '50Gi',
       K8S_IMAGE_PULL_POLICY: 'Always',
     });
     assert.equal(cfg.RUNTIME, 'kubernetes');
     assert.equal(cfg.K8S_NAMESPACE, 'my-boxes');
     assert.equal(cfg.K8S_STORAGE_CLASS, 'longhorn');
-    assert.equal(cfg.K8S_WORKSPACE_SIZE, '20Gi');
+    assert.equal(cfg.K8S_VOLUME_SIZE, '50Gi');
     assert.equal(cfg.K8S_IMAGE_PULL_POLICY, 'Always');
   });
 });
@@ -254,7 +252,7 @@ test('an unknown runtime, or a malformed volume size, fails the boot', () => {
   withDataDir((dir) => {
     assert.throws(() => loadConfig({ DATA_DIR: dir, RUNTIME: 'nomad' }), /Invalid configuration/);
     assert.throws(
-      () => loadConfig({ DATA_DIR: dir, K8S_WORKSPACE_SIZE: 'lots' }),
+      () => loadConfig({ DATA_DIR: dir, K8S_VOLUME_SIZE: 'lots' }),
       /Invalid configuration/,
     );
     assert.throws(

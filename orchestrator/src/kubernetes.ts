@@ -46,16 +46,9 @@ export function podName(boxId: string): string {
   return `boxes-box-${boxId}`;
 }
 
-export function workspaceClaimName(boxId: string): string {
-  return `boxes-workspace-${boxId}`;
-}
-
-export function homeClaimName(boxId: string): string {
-  return `boxes-home-${boxId}`;
-}
-
-export function nixClaimName(boxId: string): string {
-  return `boxes-nix-${boxId}`;
+/** The one PVC a box's workspace, home and Nix store share, each in its own subPath. */
+export function boxClaimName(boxId: string): string {
+  return `boxes-data-${boxId}`;
 }
 
 const NETWORK_POLICY_PREFIX = 'boxes-netpol-';
@@ -191,11 +184,53 @@ function boxEnv(
     .map(([name, value]) => ({ name, value }));
 }
 
-/** The pod volume a ref names. Only the two Kubernetes kinds may reach here. */
-function podVolume(name: string, ref: VolumeRef): V1Volume {
-  if (ref.kind === 'k8s-pvc') return { name, persistentVolumeClaim: { claimName: ref.claimName } };
-  if (ref.kind === 'k8s-emptydir') return { name, emptyDir: {} };
-  throw new Error(`a ${ref.kind} volume ref cannot back a Kubernetes pod`);
+/** Where a mount finds its content: a pod volume, and a subPath inside it. */
+interface MountSource {
+  name: string;
+  subPath?: string;
+}
+
+/** The pod volume names of a box's four mounts, as its volumeMounts address them. */
+const MOUNT_NAMES = { workspace: 'workspace', home: 'home', nix: 'nix', agentConfig: 'agent-config' } as const;
+
+/**
+ * The pod volumes behind a box's four mounts, and which one each mount
+ * reads from.
+ *
+ * Mounts that share a claim share one pod volume, named after the claim, and
+ * tell themselves apart by subPath: a box's workspace, home and Nix store
+ * sit on one PVC so that a node attaches one block volume per box rather than
+ * three. A claim named by one pod volume is also mounted once, where three
+ * pod volumes naming the same claim would leave it to the kubelet to notice.
+ * Only the two Kubernetes kinds may reach here.
+ */
+function podVolumes(volumes: ProvisionedVolumes): {
+  volumes: V1Volume[];
+  sources: Record<keyof ProvisionedVolumes, MountSource>;
+} {
+  const podVols: V1Volume[] = [];
+  const claims = new Set<string>();
+  const source = (key: keyof ProvisionedVolumes, ref: VolumeRef): MountSource => {
+    if (ref.kind === 'k8s-pvc') {
+      if (!claims.has(ref.claimName)) {
+        claims.add(ref.claimName);
+        podVols.push({ name: ref.claimName, persistentVolumeClaim: { claimName: ref.claimName } });
+      }
+      return { name: ref.claimName, ...(ref.subPath ? { subPath: ref.subPath } : {}) };
+    }
+    if (ref.kind === 'k8s-emptydir') {
+      podVols.push({ name: MOUNT_NAMES[key], emptyDir: {} });
+      return { name: MOUNT_NAMES[key] };
+    }
+    throw new Error(`a ${ref.kind} volume ref cannot back a Kubernetes pod`);
+  };
+  const sources = {
+    workspace: source('workspace', volumes.workspace),
+    home: source('home', volumes.home),
+    nix: source('nix', volumes.nix),
+    agentConfig: source('agentConfig', volumes.agentConfig),
+  };
+  return { volumes: podVols, sources };
 }
 
 /** Where the setup init container mounts each PVC it prepares. */
@@ -212,6 +247,10 @@ const HOME_SEEDED = '.boxes/home-seeded';
  * The init container that prepares a box's PVCs before the box runs, or null
  * when none of them is a PVC.
  *
+ * Each mount is mounted at the subPath the box container will use, and the
+ * kubelet creates a subPath that does not exist yet, so a fresh claim needs
+ * no step here to lay out its directories.
+ *
  * A fresh PVC is empty and owned by whoever the provisioner says, so this
  * does what docker.ts's seedHomeFromImage and workspaces.ts's
  * createWorkspace/createNix do for a directory: gives each root to the agent,
@@ -223,14 +262,18 @@ const HOME_SEEDED = '.boxes/home-seeded';
  * root helper docker.ts's oneShot keeps: CHOWN and FOWNER for `cp -a` and the
  * chown, DAC_OVERRIDE to read the agent's 0700 home in the image.
  */
-function volumeSetup(volumes: ProvisionedVolumes, cfg: Config): Omit<V1Container, 'image'> | null {
+function volumeSetup(
+  volumes: ProvisionedVolumes,
+  sources: Record<keyof ProvisionedVolumes, MountSource>,
+  cfg: Config,
+): Omit<V1Container, 'image'> | null {
   const owner = `${cfg.BOX_UID}:${cfg.BOX_GID}`;
   const steps: string[] = [];
-  const mounts: Array<{ name: string; mountPath: string }> = [];
+  const mounts: Array<MountSource & { mountPath: string }> = [];
   for (const name of ['workspace', 'home', 'nix'] as const) {
     if (volumes[name].kind !== 'k8s-pvc') continue;
     const dir = SETUP_MOUNTS[name];
-    mounts.push({ name, mountPath: dir });
+    mounts.push({ ...sources[name], mountPath: dir });
     if (name === 'home') {
       steps.push(
         `if [ ! -e ${dir}/${HOME_SEEDED} ]; then ` +
@@ -271,8 +314,9 @@ export interface PodSpec {
 export async function createPod(spec: PodSpec, cfg: Config): Promise<string> {
   const name = podName(spec.boxId);
 
+  const { volumes, sources } = podVolumes(spec.volumes);
   const initContainers: V1Container[] = [];
-  const setup = volumeSetup(spec.volumes, cfg);
+  const setup = volumeSetup(spec.volumes, sources, cfg);
   if (setup) initContainers.push({ ...setup, image: spec.image });
 
   const pod: V1Pod = {
@@ -283,10 +327,7 @@ export async function createPod(spec: PodSpec, cfg: Config): Promise<string> {
       ...(cfg.K8S_IMAGE_PULL_SECRET ? { imagePullSecrets: [{ name: cfg.K8S_IMAGE_PULL_SECRET }] } : {}),
       ...(initContainers.length > 0 ? { initContainers } : {}),
       volumes: [
-        podVolume('workspace', spec.volumes.workspace),
-        podVolume('home', spec.volumes.home),
-        podVolume('nix', spec.volumes.nix),
-        podVolume('agent-config', spec.volumes.agentConfig),
+        ...volumes,
         // Docker's Tmpfs and ShmSize; see docker.ts's createContainer for why
         // both exist.
         { name: 'tmp', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
@@ -300,10 +341,10 @@ export async function createPod(spec: PodSpec, cfg: Config): Promise<string> {
           imagePullPolicy: cfg.K8S_IMAGE_PULL_POLICY,
           env: boxEnv(spec.env, spec.caCertificate, cfg),
           volumeMounts: [
-            { name: 'workspace', mountPath: WORKSPACE_DIR },
-            { name: 'home', mountPath: HOME_DIR },
-            { name: 'nix', mountPath: NIX_DIR },
-            { name: 'agent-config', mountPath: AGENT_CONFIG_DIR, readOnly: true },
+            { ...sources.workspace, mountPath: WORKSPACE_DIR },
+            { ...sources.home, mountPath: HOME_DIR },
+            { ...sources.nix, mountPath: NIX_DIR },
+            { ...sources.agentConfig, mountPath: AGENT_CONFIG_DIR, readOnly: true },
             { name: 'tmp', mountPath: '/tmp' },
             { name: 'dshm', mountPath: '/dev/shm' },
           ],
