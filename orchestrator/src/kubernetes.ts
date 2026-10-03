@@ -420,6 +420,14 @@ export async function podState(name: string, cfg: Config): Promise<DockerState> 
   }
 }
 
+/** The image the box container of a pod runs, or null for a pod that is not there. */
+export async function podImage(name: string, cfg: Config): Promise<string | null> {
+  const pod = await inspecting(() =>
+    clientsFor(cfg).core.readNamespacedPod({ name, namespace: cfg.K8S_NAMESPACE }),
+  );
+  return pod?.spec?.containers.find((c) => c.name === CONTAINER_NAME)?.image ?? null;
+}
+
 /** Which of `destinations` the box container has no mount at. */
 export async function missingMounts(
   name: string,

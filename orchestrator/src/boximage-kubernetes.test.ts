@@ -11,16 +11,10 @@ import * as k8s from './kubernetes.ts';
 /**
  * The Kubernetes side of boximage.test.ts.
  *
- * There is no image roll-forward to test here: `BoxImageRuntime` is
- * entirely no-op for Kubernetes (see runtime/kubernetes-runtime.ts's `images`
- * object, already covered at the adapter level by
- * runtime/kubernetes-runtime.test.ts's "never reports an image roll-forward
- * opportunity"). What this file checks instead is the two things that follow
- * from that no-op-ness in `BoxManager` itself: `ensureBoxImage()`/
- * `refreshBoxImage()` run cleanly against it rather than assuming a
- * Docker-shaped answer, and `rollOntoCurrentImage()`'s `!wanted || !current`
- * early return means a redundant `start()` on an already-running box
- * recreates nothing — Kubernetes has no image tag to have moved.
+ * Kubernetes knows an image only by its reference (see
+ * runtime/kubernetes-runtime.ts's `images`): nothing is pulled or pruned, a
+ * redundant `start()` on a running box recreates nothing, and a stopped box
+ * starts in a new pod on whatever BOX_IMAGE now names.
  */
 
 interface Fake {
@@ -29,14 +23,18 @@ interface Fake {
   policies: Set<string>;
   podsCreated: string[];
   podsDeleted: string[];
+  images: string[];
 }
 
 function install(fake: Fake): void {
   k8s.setKubernetesForTests({
     core: {
-      createNamespacedPod: async (params: { body: { metadata: { name: string } } }) => {
+      createNamespacedPod: async (params: {
+        body: { metadata: { name: string }; spec: { containers: Array<{ image: string }> } };
+      }) => {
         const name = params.body.metadata.name;
         fake.podsCreated.push(name);
+        fake.images.push(params.body.spec.containers[0]!.image);
         fake.pods.set(name, { boxId: '', running: true });
         return params.body;
       },
@@ -85,10 +83,13 @@ let fake: Fake;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'boxes-boximage-k8s-'));
-  fake = { pods: new Map(), claims: new Set(), policies: new Set(), podsCreated: [], podsDeleted: [] };
+  fake = { pods: new Map(), claims: new Set(), policies: new Set(), podsCreated: [], podsDeleted: [], images: [] };
   install(fake);
   db = openDb(dir);
-  orchestrator = buildApp(loadConfig({ DATA_DIR: dir, RUNTIME: 'kubernetes' }), db);
+  orchestrator = buildApp(
+    loadConfig({ DATA_DIR: dir, RUNTIME: 'kubernetes', BOX_IMAGE: 'reg/box:1' }),
+    db,
+  );
   await orchestrator.egress.prepare();
 });
 
@@ -119,5 +120,25 @@ describe('the box image, which Kubernetes never asks a daemon about', () => {
     // and returns early rather than treating "both unknown" as "moved".
     assert.deepEqual(fake.podsCreated, [k8s.podName(created.id)]);
     assert.deepEqual(fake.podsDeleted, []);
+  });
+
+  it('starts a stopped box on the BOX_IMAGE a new deployment names, since every start makes a new pod', async () => {
+    const created = await orchestrator.manager.create({ name: 'test' });
+    await orchestrator.manager.stop(created.id);
+
+    // The next deployment: same database, a new build of the box image.
+    await orchestrator.app.close();
+    orchestrator = buildApp(
+      loadConfig({ DATA_DIR: dir, RUNTIME: 'kubernetes', BOX_IMAGE: 'reg/box:2' }),
+      db,
+    );
+    await orchestrator.egress.prepare();
+    await orchestrator.manager.start(created.id);
+
+    assert.deepEqual(fake.images, ['reg/box:1', 'reg/box:2']);
+    const row = db.prepare('SELECT image FROM boxes WHERE id = ?').get(created.id) as {
+      image: string;
+    };
+    assert.equal(row.image, 'reg/box:2');
   });
 });

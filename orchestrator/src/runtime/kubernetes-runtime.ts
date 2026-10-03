@@ -169,12 +169,15 @@ export function kubernetesRuntime(cfg: Config): Runtime {
     images: {
       // The kubelet on whichever node schedules a pod pulls its image
       // itself; this process has no Docker Engine API to a cluster node to
-      // ask about one directly.
-      imageId: () => Promise.resolve(null),
+      // ask about one directly. So an image is known by its reference: a box
+      // whose pod runs another reference than BOX_IMAGE moves onto it, which
+      // takes a new tag per build, and a moving tag such as latest is not
+      // noticed.
+      imageId: (image) => Promise.resolve(image),
       pullImage: () => Promise.resolve(),
       imageUserUid: () => Promise.resolve(null),
       imageInfo: () => Promise.resolve(null),
-      containerImageId: () => Promise.resolve(null),
+      containerImageId: (id) => k8s.podImage(id, cfg),
       listSupersededBoxImages: () => Promise.resolve([]),
       removeImage: () => Promise.resolve(false),
     },

@@ -81,10 +81,20 @@ describe('kubernetesRuntime', () => {
     assert.equal(runtime.system.selfContainerId(), null);
   });
 
-  it('never reports an image roll-forward opportunity, which is how rollOntoCurrentImage becomes a no-op here', async () => {
+  it('knows an image by its reference, and a pod by the image its box container runs', async () => {
+    setKubernetesForTests({
+      core: {
+        readNamespacedPod: async (params: { name: string }) => {
+          if (params.name !== 'p1') throw Object.assign(new Error('not found'), { code: 404 });
+          return { spec: { containers: [{ name: 'box', image: 'reg/box:20261003-abc' }] } };
+        },
+      },
+      exec: { exec: async () => { throw new Error('not used'); } },
+    } as never);
     const runtime = kubernetesRuntime(cfg());
-    assert.equal(await runtime.images.imageId('img'), null);
-    assert.equal(await runtime.images.containerImageId('p1'), null);
+    assert.equal(await runtime.images.imageId('reg/box:20261003-abc'), 'reg/box:20261003-abc');
+    assert.equal(await runtime.images.containerImageId('p1'), 'reg/box:20261003-abc');
+    assert.equal(await runtime.images.containerImageId('gone'), null);
     assert.equal(await runtime.images.imageInfo('img'), null);
     assert.equal(await runtime.images.imageUserUid('img'), null);
     assert.deepEqual(await runtime.images.listSupersededBoxImages(), []);

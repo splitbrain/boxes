@@ -580,9 +580,18 @@ export class BoxManager {
     if ((await runtime(this.cfg).boxes.containerState(row.container_id)) !== 'missing') return row;
 
     const slog = log.box(row.id);
-    slog.warn('the container is gone; rebuilding it from the box row', {
-      container: row.container_id,
-    });
+    // A Kubernetes stop deletes the pod, so every start comes through here.
+    // The new pod is on the current image, as a Docker box rolls onto it at
+    // its start.
+    const kubernetes = this.cfg.RUNTIME === 'kubernetes';
+    const image = kubernetes ? this.cfg.BOX_IMAGE : row.image;
+    if (kubernetes) {
+      slog.info('starting the box in a new pod', { image });
+    } else {
+      slog.warn('the container is gone; rebuilding it from the box row', {
+        container: row.container_id,
+      });
+    }
     // A prune that removed the container may have removed the network too.
     if (await runtime(this.cfg).boxes.ensureNetwork(row.network_name, row.subnet, row.id)) {
       slog.info('the box network was gone too; made it again', {
@@ -590,10 +599,10 @@ export class BoxManager {
         subnet: row.subnet,
       });
     }
-    const containerId = await this.recreateContainer(row);
+    const containerId = await this.recreateContainer({ ...row, image });
     this.db
-      .prepare('UPDATE boxes SET container_id = ? WHERE id = ?')
-      .run(containerId, row.id);
+      .prepare('UPDATE boxes SET container_id = ?, image = ? WHERE id = ?')
+      .run(containerId, image, row.id);
     slog.info('rebuilt the container', { container: containerId });
     return this.mustGet(row.id);
   }
