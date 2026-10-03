@@ -338,6 +338,7 @@ export async function createPod(spec: PodSpec, cfg: Config): Promise<string> {
         {
           name: CONTAINER_NAME,
           image: spec.image,
+          command: BOX_COMMAND,
           workingDir: WORKSPACE_DIR,
           imagePullPolicy: cfg.K8S_IMAGE_PULL_POLICY,
           env: boxEnv(spec.env, spec.caCertificate, cfg),
@@ -405,10 +406,18 @@ export async function deletePod(name: string, cfg: Config): Promise<void> {
 }
 
 /**
- * The pod's grace period, the same 10 seconds docker.ts's stopContainer
- * gives. The entrypoint is PID 1 here with no init to forward SIGTERM, so a
- * stop takes all of it.
+ * The box container's command: the image's entrypoint under tini, which is
+ * what docker.ts's `Init: true` gives a Docker box.
+ *
+ * Without an init the entrypoint's `sleep infinity` is PID 1. It never waits
+ * on the processes orphaned to it, so every command whose shell went first
+ * stays a zombie, holds a pid against the limit, and reads as work that keeps
+ * the box awake. The kernel also discards SIGTERM for a PID 1 that has no
+ * handler for it, so every stop would wait out the grace period.
  */
+const BOX_COMMAND = ['/usr/bin/tini', '--', '/usr/local/bin/entrypoint.sh'];
+
+/** The pod's grace period, the same 10 seconds docker.ts's stopContainer gives. */
 const TERMINATION_GRACE_SECONDS = 10;
 
 /**

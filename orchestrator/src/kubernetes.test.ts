@@ -93,6 +93,9 @@ describe('createPod', () => {
 
     const container = body.spec.containers[0];
     assert.equal(container.image, spec.image);
+    // tini as PID 1, which reaps orphans and forwards SIGTERM, as Docker's
+    // `Init: true` does.
+    assert.deepEqual(container.command, ['/usr/bin/tini', '--', '/usr/local/bin/entrypoint.sh']);
     assert.equal(container.workingDir, '/workspace');
     assert.deepEqual(container.securityContext.capabilities, { drop: ['ALL'] });
     assert.equal(container.securityContext.runAsNonRoot, true);

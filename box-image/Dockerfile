@@ -48,9 +48,13 @@ FROM ubuntu:26.04 AS image
 LABEL boxes.image=box
 
 # curl needs a trust store to add the repositories below.
+#
+# tini is PID 1 on Kubernetes, which has no counterpart to Docker's
+# `Init: true`; see kubernetes.ts's BOX_COMMAND.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
+      tini \
  && rm -rf /var/lib/apt/lists/*
 
 # Node from NodeSource, because Ubuntu's own stays at the release's version.
