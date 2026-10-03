@@ -1,7 +1,8 @@
 import type { WebSocket } from 'ws';
 import { parseTerminalControl } from '../../../shared/terminal.ts';
-import * as dk from '../docker.ts';
 import { log } from '../log.ts';
+import { runtime } from '../runtime.ts';
+import type { TerminalExec } from '../runtime/types.ts';
 import type { BoxManager } from '../boxes.ts';
 
 /**
@@ -58,7 +59,7 @@ export function attachTerminal(ws: WebSocket, boxId: string, manager: BoxManager
   const release = manager.holdTerminal(boxId);
 
   /** The pty, once it is open. Null while the box is still being started. */
-  let terminal: dk.TerminalExec | null = null;
+  let terminal: TerminalExec | null = null;
   /** Bytes the browser sent before the pty was there. */
   const queued: Buffer[] = [];
   /** The width the browser last reported. */
@@ -157,7 +158,12 @@ export function attachTerminal(ws: WebSocket, boxId: string, manager: BoxManager
     if (closed) return;
 
     try {
-      terminal = await dk.openTerminalExec(target.containerId, target.workingDir, cols, rows);
+      terminal = await runtime().exec.openTerminalExec(
+        target.containerId,
+        target.workingDir,
+        cols,
+        rows,
+      );
     } catch (err) {
       slog.warn('could not open a terminal', { error: (err as Error).message });
       close(CLOSE.unavailable, (err as Error).message);

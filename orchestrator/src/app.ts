@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import type { FastifyReply } from 'fastify';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
+import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type {
   CredentialSummary,
@@ -52,7 +53,6 @@ import {
   upsertPushSubscription,
   type Db,
 } from './db.ts';
-import * as dk from './docker.ts';
 import { EgressManager } from './egress.ts';
 import { HARNESSES } from './harness.ts';
 import { HttpError } from './http-error.ts';
@@ -62,6 +62,7 @@ import { log } from './log.ts';
 import { Notifier } from './notify.ts';
 import { MAX_FILE_BYTES, resolveInRoot } from './review/fs.ts';
 import { ReviewService } from './review/service.ts';
+import { runtime } from './runtime.ts';
 import { BoxManager } from './boxes.ts';
 import { deploymentId, patchSettings, readSettings } from './settings.ts';
 import { devTunnelsApi, TunnelReconciler } from './tunnels.ts';
@@ -154,9 +155,15 @@ const COMPRESS_THRESHOLD_BYTES = 1024;
  * Sends one file out of a workspace, typed by its name rather than its bytes.
  *
  * {@link servedTypeFor} decides the type and the policy. The caller has
- * already resolved the path inside the workspace and made sure it is a file.
+ * already resolved the path inside the workspace and made sure it is a file,
+ * or opened it through fileAccess() and hands over its stream.
  */
-function sendWorkspaceFile(reply: FastifyReply, path: string, name: string, size: number) {
+function sendWorkspaceFile(
+  reply: FastifyReply,
+  file: string | Readable,
+  name: string,
+  size: number,
+) {
   const served = servedTypeFor(name);
   void reply.headers({
     'Content-Type': served.contentType,
@@ -171,7 +178,7 @@ function sendWorkspaceFile(reply: FastifyReply, path: string, name: string, size
     // Short, because the agent can rewrite the file under a stable name.
     'Cache-Control': 'private, max-age=60',
   });
-  return createReadStream(path);
+  return typeof file === 'string' ? createReadStream(file) : file;
 }
 
 /** Whether the database answers a query, for the readiness probe. */
@@ -188,7 +195,7 @@ function databaseAnswers(db: Db): boolean {
 /** Whether the Docker daemon answers, for the readiness probe. */
 async function dockerAnswers(): Promise<boolean> {
   try {
-    await dk.docker().ping();
+    await runtime().system.healthCheck();
     return true;
   } catch (err) {
     log.warn('the Docker daemon did not answer', { error: (err as Error).message });
@@ -273,6 +280,8 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
   const review = new ReviewService(db, {
     workspacePath: (id) => manager.workspacePathOf(id),
     execTarget: (id) => manager.execTarget(id),
+    reviewable: (id) => manager.reviewable(id),
+    ensureFilesReachable: (id) => manager.ensureFilesReachable(id),
   });
 
   let proxyWarnings: string[] = [];
@@ -598,10 +607,8 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
     const { id } = req.params as { id: string };
     const { path } = req.query as { path?: string };
     if (!path) throw new HttpError(400, 'path is required');
-    const file = review.rawFile(id, path);
-    const stat = statSync(file);
-    if (!stat.isFile()) throw new HttpError(404, 'File not found');
-    return sendWorkspaceFile(reply, file, basename(path), stat.size);
+    const file = await review.rawFile(id, path);
+    return sendWorkspaceFile(reply, file.stream, basename(path), file.size);
   });
 
   /**

@@ -204,6 +204,44 @@ const schema = z.object({
     .string()
     .regex(HOSTNAME, { message: 'must be a bare hostname such as gitlab.example.com' })
     .default('gitlab.com'),
+
+  /**
+   * Where a box runs: a Docker container on this host, or a pod in a
+   * Kubernetes cluster.
+   *
+   * Every setting below this one is read only when it is `kubernetes` — a
+   * Docker deployment carries none of it, the same way EGRESS_PROXY_PORT
+   * carries no meaning for a deployment with the allowlist off.
+   */
+  RUNTIME: z.enum(['docker', 'kubernetes']).default('docker'),
+
+  /** Namespace a box's pod, PVCs and NetworkPolicy are created in. */
+  K8S_NAMESPACE: z.string().min(1).default('boxes-sessions'),
+  /**
+   * Path of the kubeconfig the cluster is reached through. Empty is the
+   * client library's own default: in-cluster credentials when the
+   * orchestrator is itself a pod, `~/.kube/config` otherwise.
+   */
+  K8S_KUBECONFIG: z.string().default(''),
+  /** Whether the orchestrator is itself a pod in the cluster it manages. */
+  K8S_IN_CLUSTER: flag.default(false),
+  /** StorageClass a box's PVCs are provisioned with. Empty is the cluster's own default. */
+  K8S_STORAGE_CLASS: z.string().default(''),
+  /**
+   * Size a box's workspace, home and Nix store PVCs are created with.
+   *
+   * Kubernetes has no equivalent of a bind mount's unbounded host directory —
+   * a PersistentVolumeClaim states a size up front — so this is a limit
+   * Docker deployments have never had to set.
+   */
+  K8S_WORKSPACE_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('10Gi'),
+  K8S_HOME_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('5Gi'),
+  K8S_NIX_SIZE: z.string().regex(/^\d+[EPTGMK]i?$/).default('20Gi'),
+  K8S_IMAGE_PULL_POLICY: z.enum(['Always', 'IfNotPresent', 'Never']).default('IfNotPresent'),
+  /** A pre-existing imagePullSecret's name, for a box image on a private registry. */
+  K8S_IMAGE_PULL_SECRET: z.string().default(''),
+  /** Name of the ClusterIP service the egress proxy is reachable at. */
+  K8S_EGRESS_PROXY_SERVICE: z.string().min(1).default('boxes-egress-proxy'),
 });
 
 /** The parsed settings, plus the values derived from them. */

@@ -1,0 +1,127 @@
+# The egress proxy, run as a cluster-wide Deployment and reached by every
+# box pod through the Service below — the Kubernetes counterpart of
+# compose.yaml's `egress-proxy` service.
+#
+# This is a starting point, not a full deployment: it has no RBAC and no
+# orchestrator Deployment beside it (both are a later phase). What it has to
+# get right now is the two things the rest of the Kubernetes runtime already
+# assumes:
+#
+#   - The Service is named `boxes-egress-proxy` — the default of
+#     K8S_EGRESS_PROXY_SERVICE in orchestrator/src/config.ts — because that is
+#     the hostname orchestrator/src/egress.ts's control-channel calls and
+#     every box pod's HTTP_PROXY resolve against
+#     (<service>.<namespace>.svc.cluster.local).
+#   - The pod template's `app: boxes-egress-proxy` label is exactly what the
+#     per-box NetworkPolicy (orchestrator/src/kubernetes.ts,
+#     boxNetworkPolicySpec) matches its egress rule against. Renaming one
+#     without the other leaves every box unable to reach the proxy at
+#     all — a silent, total loss of egress, not merely an isolation gap.
+#
+# Update the image reference below to wherever a deployment actually
+# publishes proxy/Dockerfile's build; ghcr.io/splitbrain/boxes/proxy:latest
+# only mirrors BOX_IMAGE's own default naming and names nothing real yet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boxes-egress-proxy
+  labels:
+    app: boxes-egress-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: boxes-egress-proxy
+  template:
+    metadata:
+      labels:
+        app: boxes-egress-proxy
+    spec:
+      containers:
+        - name: proxy
+          image: ghcr.io/splitbrain/boxes/proxy:latest
+          ports:
+            - name: proxy
+              containerPort: 3128
+            - name: control
+              containerPort: 3129
+          # proxy/Dockerfile runs as `USER node`, the node:alpine image's own
+          # non-root user, uid/gid 1000.
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            privileged: false
+          resources:
+            # Mirrors compose.yaml's egress-proxy mem_limit: 512m. There is no
+            # Kubernetes equivalent of its pids_limit: 256 — the same gap a
+            # box pod has (see the plan's known-limitations list), left
+            # undocumented in code because there is nothing here to configure.
+            limits:
+              memory: 512Mi
+            requests:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boxes-egress-proxy
+spec:
+  selector:
+    app: boxes-egress-proxy
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+    - name: control
+      port: 3129
+      targetPort: control
+---
+# Security-critical: orchestrator/src/egress.ts's control channel and
+# proxy/src/control.ts's own handling of it are trust-on-first-use, not a
+# shared secret — whichever caller's bearer token reaches POST /policy first
+# becomes the accepted token for the rest of the proxy's life. Without this
+# policy, any other pod in the cluster could win that race ahead of the
+# orchestrator and silently hold the egress proxy's policy and credential
+# material afterwards. Restricting who can even reach the control port is
+# therefore not an optional hardening step here — it is what makes
+# trust-on-first-use mean "trust the orchestrator" rather than "trust
+# whoever asks first".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: boxes-egress-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app: boxes-egress-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    # The control channel: the orchestrator only. `app: boxes-orchestrator`
+    # is not yet a real Deployment — a later phase's orchestrator manifest
+    # MUST carry exactly this label, or the orchestrator can no longer reach
+    # the control port it depends on for every credential push and policy
+    # sync.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: boxes-orchestrator
+      ports:
+        - protocol: TCP
+          port: 3129
+    # The data channel: every box pod, whichever box it belongs to.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: boxes.box
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 3128

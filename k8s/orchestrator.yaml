@@ -1,0 +1,177 @@
+# The orchestrator itself, run in the same cluster it manages — the
+# Kubernetes counterpart of compose.yaml's `orchestrator` service.
+#
+# This assumes the orchestrator runs in-cluster (K8S_IN_CLUSTER=true below),
+# which is what lets it authenticate to the API server with the ServiceAccount
+# token Kubernetes mounts into its own pod rather than a kubeconfig it has to
+# be handed. Running it outside the cluster works too (point K8S_KUBECONFIG at
+# a kubeconfig instead), but then this Deployment is the wrong shape for it —
+# use whatever process manager already runs the rest of a deployment's tools.
+#
+# Apply this alongside egress-proxy.yaml, in the same namespace both name by
+# default (boxes-sessions): every rule below assumes that namespace, and has
+# to be updated to match if K8S_NAMESPACE is changed.
+#
+# The image reference below is a placeholder, on the same terms as
+# egress-proxy.yaml's: point it at wherever a deployment actually publishes
+# orchestrator/Dockerfile's build.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: boxes-orchestrator
+---
+# Exactly what orchestrator/src/kubernetes.ts calls, and nothing more: a
+# box's pod, its three PVCs and its NetworkPolicy, the exec subresource
+# those pods are reached through, and one read of the orchestrator's own
+# namespace for the readiness probe. No ConfigMap access — a box's agent
+# configuration is an empty emptyDir for now, not a ConfigMap the orchestrator
+# would need to write (see the README's Kubernetes section for that gap) — and
+# nothing cluster-scoped: this Role only ever reaches the one namespace it is
+# bound in.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: boxes-orchestrator
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "delete"]
+  # healthCheck() reads the namespace itself, for a readiness probe that
+  # fails when the API server is unreachable rather than for anything the
+  # namespace's own contents answer. Named explicitly, not "all namespaces":
+  # Namespace is cluster-scoped, and resourceNames is what still lets a
+  # namespaced Role grant exactly one of them rather than every namespace on
+  # the cluster.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["boxes-sessions"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: boxes-orchestrator
+subjects:
+  # Unlike every other object here, a RoleBinding's own subject namespace is
+  # not filled in by `kubectl apply -n` — it has to be spelled out, and
+  # applying this whole file into any namespace other than boxes-sessions
+  # means updating this one line to match, or the binding points at a
+  # ServiceAccount that was never created there.
+  - kind: ServiceAccount
+    name: boxes-orchestrator
+    namespace: boxes-sessions
+roleRef:
+  kind: Role
+  name: boxes-orchestrator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Where the orchestrator's own state lives: its SQLite database, the
+# credential store and the egress proxy's CA and control token — the
+# Kubernetes counterpart of compose.yaml's boxes-data volume, mounted at /data
+# below on the same terms.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: boxes-orchestrator-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boxes-orchestrator
+  labels:
+    # Required exactly as spelled: egress-proxy.yaml's own NetworkPolicy
+    # grants its control port only to a pod carrying this label, and the
+    # orchestrator's every credential push and policy sync depends on
+    # reaching it. Renaming this without updating that policy leaves the
+    # orchestrator unable to configure its own egress proxy.
+    app: boxes-orchestrator
+spec:
+  # One replica: the database is a single SQLite file on the PVC below, and
+  # the idle reaper and orphan sweep are written for one process making those
+  # decisions, not several racing each other.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: boxes-orchestrator
+  template:
+    metadata:
+      labels:
+        app: boxes-orchestrator
+    spec:
+      serviceAccountName: boxes-orchestrator
+      containers:
+        - name: orchestrator
+          image: ghcr.io/splitbrain/boxes/orchestrator:latest
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: RUNTIME
+              value: kubernetes
+            - name: K8S_NAMESPACE
+              value: boxes-sessions
+            - name: K8S_IN_CLUSTER
+              value: "true"
+            - name: K8S_EGRESS_PROXY_SERVICE
+              value: boxes-egress-proxy
+            # The default anyway, named explicitly because the PVC below is
+            # mounted here and the two have to agree.
+            - name: DATA_DIR
+              value: /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # No runAsNonRoot or readOnlyRootFilesystem: orchestrator/Dockerfile
+          # sets no USER and runs as root, unlike the box image and the
+          # egress proxy — a leftover of the Docker deployment needing
+          # root-equivalent access to /var/run/docker.sock, which Kubernetes
+          # mode replaces with the RBAC above instead. Pretending a hardening
+          # this image cannot back up would be worse than stating the gap.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # Mirrors compose.yaml's orchestrator mem_limit: 1g. No Kubernetes
+            # equivalent of its pids_limit: 512 exists, the same gap every pod
+            # this deployment creates has.
+            limits:
+              memory: 1Gi
+            requests:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: boxes-orchestrator-data
+---
+# ClusterIP only: this names the orchestrator inside the cluster, the same way
+# compose.yaml's orchestrator service is reachable at orchestrator:3000 from
+# another container on its network. Publishing it outside the cluster — a
+# port-forward for trying this out, or an Ingress with its own authentication
+# in front for anything real — is left to whoever operates the cluster, the
+# same way compose.yaml leaves the reverse proxy to whoever operates the host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: boxes-orchestrator
+spec:
+  selector:
+    app: boxes-orchestrator
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

@@ -156,6 +156,18 @@ export async function pushPolicy(
   return controlCall(cfg, material, 'POST', '/policy', policy);
 }
 
+/**
+ * The proxy's own hostname on the control channel: a Docker container name
+ * resolved by the daemon's embedded DNS, or the egress proxy's cluster
+ * Service under Kubernetes, where there is no shared bridge network for a
+ * bare container name to resolve on.
+ */
+function egressProxyHost(cfg: Config): string {
+  return cfg.RUNTIME === 'kubernetes'
+    ? `${cfg.K8S_EGRESS_PROXY_SERVICE}.${cfg.K8S_NAMESPACE}.svc.cluster.local`
+    : cfg.EGRESS_PROXY_CONTAINER;
+}
+
 /** One authenticated call on the control channel, returning the proxy's status. */
 async function controlCall(
   cfg: Config,
@@ -164,7 +176,7 @@ async function controlCall(
   path: string,
   body?: unknown,
 ): Promise<EgressStatus> {
-  const url = `http://${cfg.EGRESS_PROXY_CONTAINER}:${cfg.EGRESS_CONTROL_PORT}${path}`;
+  const url = `http://${egressProxyHost(cfg)}:${cfg.EGRESS_CONTROL_PORT}${path}`;
   const res = await fetch(url, {
     method,
     headers: {

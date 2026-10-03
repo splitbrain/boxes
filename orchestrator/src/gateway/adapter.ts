@@ -13,9 +13,10 @@ import {
   type Db,
   type ThreadRow,
 } from '../db.ts';
-import * as dk from '../docker.ts';
 import { HARNESS_IDS, type Harness, type HarnessId } from '../harness.ts';
 import type { Logger } from '../log.ts';
+import { runtime } from '../runtime.ts';
+import type { AdapterExec } from '../runtime/types.ts';
 import { ACP_METHOD } from '../../../shared/acp.ts';
 import type {
   BackgroundProcess,
@@ -223,7 +224,7 @@ export interface AdapterHost {
  */
 export class AdapterConnection {
   /** The adapter process, while it runs. */
-  private exec: dk.AdapterExec | null = null;
+  private exec: AdapterExec | null = null;
   /** The ACP connection over the exec's stdio, while it is open. */
   private conn: ClientConnection | null = null;
   /** The adapter's answer to `initialize`, once the handshake is done. */
@@ -450,10 +451,10 @@ export class AdapterConnection {
 
   /** Spawns the adapter exec and performs the ACP handshake. */
   private async spawnAndInitialize(containerId: string): Promise<void> {
-    const exec = await dk.spawnAdapterExec(
+    const exec = await runtime().exec.spawnAdapterExec(
       containerId,
       [...this.harness.cmd],
-      dk.WORKSPACE_DIR,
+      runtime().boxes.WORKSPACE_DIR,
     );
     this.exec = exec;
 
@@ -486,7 +487,7 @@ export class AdapterConnection {
       protocolVersion: 1,
       clientCapabilities: CLIENT_CAPABILITIES,
     });
-    this.slog.info('adapter initialized', { workingDir: dk.WORKSPACE_DIR });
+    this.slog.info('adapter initialized', { workingDir: runtime().boxes.WORKSPACE_DIR });
   }
 
   /**
@@ -626,7 +627,7 @@ export class AdapterConnection {
     const method = from ? ACP_METHOD.sessionFork : ACP_METHOD.sessionNew;
     const res = (await this.request(method, {
       ...(from ? { sessionId: from } : {}),
-      cwd: dk.WORKSPACE_DIR,
+      cwd: runtime().boxes.WORKSPACE_DIR,
       mcpServers: [],
       ...this.meta(),
     })) as {
@@ -698,7 +699,7 @@ export class AdapterConnection {
     return (await this.whileReplaying(acpThreadId, () =>
       this.request(ACP_METHOD.sessionLoad, {
         sessionId: acpThreadId,
-        cwd: dk.WORKSPACE_DIR,
+        cwd: runtime().boxes.WORKSPACE_DIR,
         mcpServers: [],
         ...this.meta(),
       }),
@@ -991,7 +992,7 @@ export class AdapterConnection {
   }
 
   /** ACP Stream over the demuxed exec: ndJSON in, ndJSON out. */
-  private makeStream(exec: dk.AdapterExec): Stream {
+  private makeStream(exec: AdapterExec): Stream {
     const readable = Readable.toWeb(
       this.siftExtensions(exec.stdout),
     ) as ReadableStream<Uint8Array>;

@@ -1,6 +1,5 @@
-import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
 import type { ReviewDirEntry, ReviewFileStatus } from '../../../shared/types.ts';
+import { fileAccess } from '../fileaccess.ts';
 import type { RepoMap } from './repos.ts';
 
 /** The review file at the workspace root, which the tree does not list. */
@@ -51,17 +50,18 @@ export function listedDir(relDir: string): boolean {
 }
 
 /**
- * Reads one directory of the workspace into its children.
+ * Reads one directory of a box's workspace into its children.
  *
  * Only this directory is read, so a large tree beside the code costs nothing
  * until someone opens it. Only plain files and directories are listed. The
- * agent controls the tree, so a symlink could lead out of it. A directory that
- * cannot be read lists nothing.
+ * agent controls the tree, so a symlink could lead out of it; fileAccess()'s
+ * lstat-based entries report one as neither. A directory that cannot be read
+ * lists nothing.
  */
-export function readDir(root: string, relDir: string): DirChild[] {
+export async function readDir(boxId: string, relDir: string): Promise<DirChild[]> {
   let entries;
   try {
-    entries = readdirSync(relDir === '' ? root : join(root, relDir), { withFileTypes: true });
+    entries = await fileAccess().listDir(boxId, 'workspace', relDir === '' ? '.' : relDir);
   } catch {
     return []; // unreadable directory: empty, not fatal
   }
@@ -69,10 +69,11 @@ export function readDir(root: string, relDir: string): DirChild[] {
   const children: DirChild[] = [];
   for (const entry of entries) {
     const name = entry.name;
-    if (entry.isDirectory()) {
+    if (entry.isSymlink) continue;
+    if (entry.isDirectory) {
       if (SKIPPED_DIRS.has(name)) continue;
       children.push({ name, isDir: true });
-    } else if (entry.isFile()) {
+    } else {
       // A REVIEW.md deeper in the tree is a project file like any other.
       if (relDir === '' && name === REVIEW_FILE) continue;
       children.push({ name, isDir: false });

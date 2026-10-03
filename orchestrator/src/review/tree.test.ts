@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
 import type { ReviewDirEntry, ReviewFileStatus } from '../../../shared/types.ts';
+import { setFileAccessForTests } from '../fileaccess.ts';
+import type { DirEntry, FileAccess } from '../fileaccess/types.ts';
 import { setGitRunnerForTests, type GitBox, type GitRunner } from './git.ts';
 import { discoverRepos, RepoMap } from './repos.ts';
 import {
@@ -39,6 +41,48 @@ const localGit: GitRunner = async (target, argv, env) => {
     };
   }
 };
+
+/**
+ * A FileAccess whose "box id" is a literal directory path, for driving readDir
+ * against a real temp tree: the same real symlinks and `lstatSync` a Docker
+ * deployment's own FileAccess uses, just addressed directly.
+ */
+function rawFileAccess(): FileAccess {
+  function entries(path: string): DirEntry[] {
+    let dirents;
+    try {
+      dirents = readdirSync(path, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return dirents.map((entry) => {
+      const st = lstatSync(join(path, entry.name));
+      return {
+        name: entry.name,
+        isDirectory: st.isDirectory(),
+        isSymlink: st.isSymbolicLink(),
+        size: st.size,
+        mode: st.mode,
+        mtimeMs: st.mtimeMs,
+      };
+    });
+  }
+  const notUsed = (): never => {
+    throw new Error('not used by these tests');
+  };
+  return {
+    async listDir(boxId, _root, relDir) {
+      return entries(relDir === '' || relDir === '.' ? boxId : join(boxId, relDir));
+    },
+    readFile: notUsed,
+    openFile: notUsed,
+    writeFileAtomic: notUsed,
+    removeFile: notUsed,
+    fileHash: notUsed,
+    isDirectory: notUsed,
+    directorySize: notUsed,
+  };
+}
 
 /** A map with no repository in it, for the merges that are not about git. */
 function noRepos(): RepoMap {
@@ -89,9 +133,11 @@ describe('readDir', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'boxes-dir-'));
+    setFileAccessForTests(rawFileAccess());
   });
 
   afterEach(() => {
+    setFileAccessForTests(null);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -102,21 +148,21 @@ describe('readDir', () => {
     writeFileSync(full, content);
   }
 
-  test('one directory comes back, and nothing below it', () => {
+  test('one directory comes back, and nothing below it', async () => {
     file('a.txt');
     file('src/main.ts');
     file('src/util/helpers.ts');
-    assert.deepEqual(readDir(dir, '').toSorted((a, b) => (a.name < b.name ? -1 : 1)), [
+    assert.deepEqual((await readDir(dir, '')).toSorted((a, b) => (a.name < b.name ? -1 : 1)), [
       { name: 'a.txt', isDir: false },
       { name: 'src', isDir: true },
     ]);
-    assert.deepEqual(readDir(dir, 'src').toSorted((a, b) => (a.name < b.name ? -1 : 1)), [
+    assert.deepEqual((await readDir(dir, 'src')).toSorted((a, b) => (a.name < b.name ? -1 : 1)), [
       { name: 'main.ts', isDir: false },
       { name: 'util', isDir: true },
     ]);
   });
 
-  test('git metadata stays out, and nothing else does', () => {
+  test('git metadata stays out, and nothing else does', async () => {
     file('keep.ts');
     file('node_modules/pkg/index.js');
     file('dist/bundle.js');
@@ -125,7 +171,7 @@ describe('readDir', () => {
     file('logo.png');
     file('tool.exe');
     // No ignore file applies, so dependency and build output shows too.
-    assert.deepEqual(named(readDir(dir, '').map(asEntry)).toSorted(), [
+    assert.deepEqual(named((await readDir(dir, '')).map(asEntry)).toSorted(), [
       'd:dist',
       'd:node_modules',
       'f:keep.ts',
@@ -134,14 +180,14 @@ describe('readDir', () => {
     ]);
   });
 
-  test("the review's own file is left out, but only at the root", () => {
+  test("the review's own file is left out, but only at the root", async () => {
     file('REVIEW.md');
     file('docs/REVIEW.md');
-    assert.deepEqual(named(readDir(dir, '').map(asEntry)).toSorted(), ['d:docs']);
-    assert.deepEqual(named(readDir(dir, 'docs').map(asEntry)), ['f:REVIEW.md']);
+    assert.deepEqual(named((await readDir(dir, '')).map(asEntry)).toSorted(), ['d:docs']);
+    assert.deepEqual(named((await readDir(dir, 'docs')).map(asEntry)), ['f:REVIEW.md']);
   });
 
-  test('a symlink is neither listed nor followed', () => {
+  test('a symlink is neither listed nor followed', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'boxes-outside-'));
     try {
       writeFileSync(join(outside, 'secret.txt'), 'not the agent business');
@@ -149,17 +195,17 @@ describe('readDir', () => {
       symlinkSync(outside, join(dir, 'escape'));
       symlinkSync(join(outside, 'secret.txt'), join(dir, 'link.txt'));
 
-      assert.deepEqual(named(readDir(dir, '').map(asEntry)), ['f:real.txt']);
+      assert.deepEqual(named((await readDir(dir, '')).map(asEntry)), ['f:real.txt']);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
   });
 
-  test('a directory that is not there lists nothing rather than failing', () => {
-    assert.deepEqual(readDir(dir, 'nosuch'), []);
+  test('a directory that is not there lists nothing rather than failing', async () => {
+    assert.deepEqual((await readDir(dir, 'nosuch')), []);
   });
 
-  test('the cap is a real number, not a placeholder', () => {
+  test('the cap is a real number, not a placeholder', async () => {
     assert.equal(MAX_DIR_ENTRIES, 2000);
   });
 
@@ -279,11 +325,13 @@ describe('dirEntries over real repositories', () => {
 
   beforeEach(() => {
     setGitRunnerForTests(localGit);
+    setFileAccessForTests(rawFileAccess());
     dir = mkdtempSync(join(tmpdir(), 'boxes-rdir-'));
   });
 
   afterEach(() => {
     setGitRunnerForTests(null);
+    setFileAccessForTests(null);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -312,13 +360,13 @@ describe('dirEntries over real repositories', () => {
     file('notes/todo.md');
 
     const map = await discoverRepos(dir, box());
-    const root = dirEntries('', readDir(dir, ''), {}, new Map(), map);
+    const root = dirEntries('', await readDir(dir, ''), {}, new Map(), map);
     const byName = new Map(root.map((entry) => [entry.name, entry]));
     assert.equal(byName.get('repo-a')?.repo, true);
     assert.equal(byName.get('notes')?.repo, undefined);
 
     // And not on a directory inside one, only on its root.
-    const inside = dirEntries('repo-a', readDir(dir, 'repo-a'), {}, new Map(), map);
+    const inside = dirEntries('repo-a', await readDir(dir, 'repo-a'), {}, new Map(), map);
     assert.equal(inside.find((entry) => entry.name === 'src')?.repo, undefined);
   });
 
@@ -329,7 +377,7 @@ describe('dirEntries over real repositories', () => {
     file('outer/inner/b.txt');
 
     const map = await discoverRepos(dir, box());
-    const outer = dirEntries('outer', readDir(dir, 'outer'), {}, new Map(), map);
+    const outer = dirEntries('outer', await readDir(dir, 'outer'), {}, new Map(), map);
     assert.deepEqual(named(outer), ['d:inner', 'f:a.ts']);
     assert.equal(outer[0]!.repo, true);
   });

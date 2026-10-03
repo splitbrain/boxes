@@ -219,6 +219,51 @@ test('the OpenAI credential travels to the API-key endpoint alone', () => {
   assert.equal(openai?.placeholderPrefix, 'sk-');
 });
 
+test('the runtime defaults to docker, with no Kubernetes setting required', () => {
+  withDataDir((dir) => {
+    const cfg = loadConfig({ DATA_DIR: dir });
+    assert.equal(cfg.RUNTIME, 'docker');
+    assert.equal(cfg.K8S_NAMESPACE, 'boxes-sessions');
+    assert.equal(cfg.K8S_WORKSPACE_SIZE, '10Gi');
+    assert.equal(cfg.K8S_HOME_SIZE, '5Gi');
+    assert.equal(cfg.K8S_NIX_SIZE, '20Gi');
+    assert.equal(cfg.K8S_IN_CLUSTER, false);
+    assert.equal(cfg.K8S_IMAGE_PULL_POLICY, 'IfNotPresent');
+  });
+});
+
+test('a deployment can switch to kubernetes and set its own settings', () => {
+  withDataDir((dir) => {
+    const cfg = loadConfig({
+      DATA_DIR: dir,
+      RUNTIME: 'kubernetes',
+      K8S_NAMESPACE: 'my-boxes',
+      K8S_STORAGE_CLASS: 'longhorn',
+      K8S_WORKSPACE_SIZE: '20Gi',
+      K8S_IMAGE_PULL_POLICY: 'Always',
+    });
+    assert.equal(cfg.RUNTIME, 'kubernetes');
+    assert.equal(cfg.K8S_NAMESPACE, 'my-boxes');
+    assert.equal(cfg.K8S_STORAGE_CLASS, 'longhorn');
+    assert.equal(cfg.K8S_WORKSPACE_SIZE, '20Gi');
+    assert.equal(cfg.K8S_IMAGE_PULL_POLICY, 'Always');
+  });
+});
+
+test('an unknown runtime, or a malformed volume size, fails the boot', () => {
+  withDataDir((dir) => {
+    assert.throws(() => loadConfig({ DATA_DIR: dir, RUNTIME: 'nomad' }), /Invalid configuration/);
+    assert.throws(
+      () => loadConfig({ DATA_DIR: dir, K8S_WORKSPACE_SIZE: 'lots' }),
+      /Invalid configuration/,
+    );
+    assert.throws(
+      () => loadConfig({ DATA_DIR: dir, K8S_IMAGE_PULL_POLICY: 'sometimes' }),
+      /Invalid configuration/,
+    );
+  });
+});
+
 test('the box uid defaults off 1000 and is settable', () => {
   withDataDir((dir) => {
     // 1000 is the base image's uid and, on a host, usually a person's. The

@@ -1,7 +1,7 @@
 import type { DeploymentImages, ImageInfo } from '../../shared/types.ts';
 import type { Config } from './config.ts';
-import * as dk from './docker.ts';
 import { log } from './log.ts';
+import { runtime } from './runtime.ts';
 
 /** Reports which build of each of the deployment's three images is running. */
 
@@ -38,8 +38,8 @@ async function safely(
 /** The image behind a container, by container name or id. */
 async function imageOfContainer(container: string | null): Promise<ImageInfo | null> {
   if (!container) return null;
-  const id = await dk.containerImageId(container);
-  return id ? dk.imageInfo(id) : null;
+  const id = await runtime().images.containerImageId(container);
+  return id ? runtime().images.imageInfo(id) : null;
 }
 
 /**
@@ -55,9 +55,9 @@ export async function deploymentImages(cfg: Config): Promise<DeploymentImages> {
   if (cached && now - cached.at < CACHE_MS) return cached.images;
 
   const [orchestrator, proxy, box] = await Promise.all([
-    safely('orchestrator', () => imageOfContainer(dk.selfContainerId())),
+    safely('orchestrator', () => imageOfContainer(runtime().system.selfContainerId())),
     safely('proxy', () => imageOfContainer(cfg.EGRESS_PROXY_CONTAINER)),
-    safely('box', () => dk.imageInfo(cfg.BOX_IMAGE)),
+    safely('box', () => runtime().images.imageInfo(cfg.BOX_IMAGE)),
   ]);
 
   cached = { at: now, images: { orchestrator, proxy, box } };

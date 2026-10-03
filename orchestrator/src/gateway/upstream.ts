@@ -16,10 +16,11 @@ import {
   type BoxRow,
   type ThreadRow,
 } from '../db.ts';
-import * as dk from '../docker.ts';
 import { DEFAULT_HARNESS, harness, HARNESS_IDS, type HarnessId } from '../harness.ts';
 import { log, type Logger } from '../log.ts';
 import type { NotifyKind, Notifier } from '../notify.ts';
+import { runtime } from '../runtime.ts';
+import type { ContainerProcess } from '../runtime/types.ts';
 import { Activity } from './activity.ts';
 import {
   AdapterConnection,
@@ -359,8 +360,8 @@ export class UpstreamBox implements AdapterHost {
     const row = this.row();
     if (!row.container_id) throw new Error('Box has no container');
 
-    await dk.startContainer(row.container_id);
-    await dk.ensureProxyAttached(row.network_name, this.cfg);
+    await runtime().boxes.startContainer(row.container_id);
+    await runtime().boxes.ensureProxyAttached(row.network_name);
     return row.container_id;
   }
 
@@ -539,10 +540,10 @@ export class UpstreamBox implements AdapterHost {
   async stopBoxWork(): Promise<number> {
     const containerId = this.row().container_id;
     if (!containerId) return 0;
-    if ((await dk.containerState(containerId)) !== 'running') return 0;
+    if ((await runtime().boxes.containerState(containerId)) !== 'running') return 0;
 
     const doomed = workPids(
-      await dk.containerProcessesFromInside(containerId),
+      await runtime().exec.containerProcessesFromInside(containerId),
       ALL_HARNESSES,
     );
     if (doomed.length === 0) {
@@ -552,7 +553,7 @@ export class UpstreamBox implements AdapterHost {
     }
 
     this.slog.info('stopping everything running in the box', { pids: doomed });
-    await dk.killInContainer(containerId, 'TERM', doomed);
+    await runtime().exec.killInContainer(containerId, 'TERM', doomed);
     // No reading yet, because the signalled processes are likely still in
     // the table. The escalation takes one when it settles.
     this.escalate(containerId);
@@ -569,12 +570,12 @@ export class UpstreamBox implements AdapterHost {
       void (async () => {
         try {
           const left = workPids(
-            await dk.containerProcessesFromInside(containerId),
+            await runtime().exec.containerProcessesFromInside(containerId),
             ALL_HARNESSES,
           );
           if (left.length === 0) return;
           this.slog.info('work in the box ignored TERM; killing', { pids: left });
-          await dk.killInContainer(containerId, 'KILL', left);
+          await runtime().exec.killInContainer(containerId, 'KILL', left);
         } catch (err) {
           this.slog.warn('could not finish stopping what the box was running', {
             error: (err as Error).message,
@@ -592,11 +593,11 @@ export class UpstreamBox implements AdapterHost {
    * What is running in this box's container, for the probe. Null when the box
    * has no container or it is not running.
    */
-  private async containerProcesses(): Promise<dk.ContainerProcess[] | null> {
+  private async containerProcesses(): Promise<ContainerProcess[] | null> {
     const containerId = this.row().container_id;
     if (!containerId) return null;
-    if ((await dk.containerState(containerId)) !== 'running') return null;
-    return dk.containerProcesses(containerId);
+    if ((await runtime().boxes.containerState(containerId)) !== 'running') return null;
+    return runtime().exec.containerProcesses(containerId);
   }
 
   /** The threads of this box the agent is talking on. */

@@ -1,5 +1,5 @@
-import * as dk from '../docker.ts';
 import { log } from '../log.ts';
+import { runtime } from '../runtime.ts';
 
 /** A box's container and the workspace inside it: where review runs git. */
 export interface GitBox {
@@ -107,7 +107,7 @@ export type GitRunner = (
  * next to the Docker socket.
  */
 const inBoxContainer: GitRunner = async (target, argv, env) => {
-  const result = await dk.execInContainer(target.containerId, argv, {
+  const result = await runtime().exec.execInContainer(target.containerId, argv, {
     workingDir: target.dir,
     env,
     timeoutMs: TIMEOUT_MS,

@@ -117,6 +117,75 @@ there is nobody to ask for a passphrase. A backup of the volume is a backup of
 them, and the reverse proxy in front of the dashboard is a requirement rather
 than a suggestion.
 
+## Kubernetes (experimental)
+
+Boxes can run a box as a pod instead of a Docker container. This is newer
+and far less exercised than the Docker deployment above: it has not been run
+against a real cluster, only verified with unit tests against a faked
+Kubernetes API. Treat it as something to try, not something to depend on yet.
+
+It needs a cluster whose CNI enforces `NetworkPolicy` — Calico or Cilium, for
+example. **Flannel's default configuration, which is what kind, minikube and a
+stock k3s all run out of the box, does not enforce it.** Without one, a
+box's `NetworkPolicy` is created but has no effect, and box isolation
+does not exist on that cluster no matter how correct the rest of this setup
+is. `tests/smoke-test-k8s.sh` checks this directly; run it before trusting a
+cluster with anything real.
+
+Apply the two manifests in `k8s/`, in the namespace they both default to
+(`boxes-sessions`):
+
+```sh
+kubectl create namespace boxes-sessions
+kubectl apply -n boxes-sessions -f k8s/egress-proxy.yaml -f k8s/orchestrator.yaml
+```
+
+Both files have an image reference to update first — they point at
+`ghcr.io/splitbrain/boxes/proxy:latest` and `.../orchestrator:latest` as
+placeholders, the same names the Docker images above publish under, not
+something published for Kubernetes specifically yet.
+
+Switching a deployment to it is one setting: `RUNTIME=kubernetes` (the
+default is `docker`). The rest are optional, in `orchestrator/src/config.ts`:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `K8S_NAMESPACE` | `boxes-sessions` | Namespace every box's pod, PVCs and NetworkPolicy are created in |
+| `K8S_KUBECONFIG` | *(empty)* | Path to a kubeconfig, for an orchestrator running outside the cluster |
+| `K8S_IN_CLUSTER` | `false` | Whether the orchestrator is itself a pod, using its own ServiceAccount |
+| `K8S_STORAGE_CLASS` | *(empty, cluster default)* | StorageClass a box's PVCs are provisioned with |
+| `K8S_WORKSPACE_SIZE` | `10Gi` | Size of a box's workspace PVC |
+| `K8S_HOME_SIZE` | `5Gi` | Size of a box's home PVC |
+| `K8S_NIX_SIZE` | `20Gi` | Size of a box's Nix store PVC, mounted at `/nix` |
+| `K8S_IMAGE_PULL_POLICY` | `IfNotPresent` | `imagePullPolicy` on a box pod |
+| `K8S_IMAGE_PULL_SECRET` | *(empty)* | An `imagePullSecrets` entry, for a box image on a private registry |
+| `K8S_EGRESS_PROXY_SERVICE` | `boxes-egress-proxy` | Name of the egress proxy's cluster Service |
+
+### Known limitations
+
+- **Agent configuration doesn't reach a box yet.** A box's `AGENTS.md`,
+  skills and commands are written to a host directory for Docker; a
+  Kubernetes pod gets an empty mount instead, so a configured agent set has no
+  effect there yet.
+- **The review tool's git status and diff don't work yet.** Finding a
+  box's repositories still reads a host path Kubernetes has none of, so a
+  review shows no changes and no repository, even where the workspace holds
+  one.
+- **Attachment uploads fail** with a generic server error rather than a
+  useful one — cleanly, nothing is written to the wrong place, but the upload
+  does not work.
+- **A terminal opens at a fixed size.** Resizing it is not wired up yet, so it
+  stays whatever size the shell started at.
+- **A box's process count is unlimited.** Docker's `pids_limit` (a fork
+  bomb containment) has no Kubernetes equivalent at the pod level; only a
+  cluster-wide kubelet setting comes close, and this deployment does not set
+  one for you.
+- **A moving `:latest` tag is not detected.** Docker boxes roll onto a
+  newer pull of the box image automatically; a Kubernetes deployment has
+  no cheap way to compare image digests without its own registry access, so
+  this never happens automatically here — set `K8S_IMAGE_PULL_POLICY=Always`
+  and recreate a box's pod by hand if this matters to you.
+
 ## Usage
 
 ### Box list

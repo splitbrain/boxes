@@ -10,7 +10,7 @@ import {
   type ThreadOptions,
   type ThreadSummary,
 } from '../../shared/types.ts';
-import { AgentStore, ensureAgentsRoot, hostAgentConfigPath } from './agents.ts';
+import { AgentStore, ensureAgentsRoot } from './agents.ts';
 import type { Config } from './config.ts';
 import type { EgressManager } from './egress.ts';
 import {
@@ -31,12 +31,16 @@ import {
   type ThreadRow,
 } from './db.ts';
 import { BoxUsage, BOX_SIZE_TTL_MS } from './diskusage.ts';
-import * as dk from './docker.ts';
+import { fileAccess } from './fileaccess.ts';
+import type { FileRoot } from './fileaccess/types.ts';
 import { DEFAULT_HARNESS, harness } from './harness.ts';
 import { HttpError } from './http-error.ts';
 import { LOGIN_CONTAINER_MAX_AGE_MS } from './login.ts';
 import { log } from './log.ts';
 import type { Notifier } from './notify.ts';
+import { isDirectory } from './review/fs.ts';
+import { runtime } from './runtime.ts';
+import type { BoxContainerSpec, BoxRuntime, ProvisionedVolumes } from './runtime/types.ts';
 import { generateWsToken } from './secret.ts';
 import { readSettings } from './settings.ts';
 import type { BoxReading } from './tunnels.ts';
@@ -97,12 +101,27 @@ export class BoxManager {
   /** Permission requests waiting for a browser, across all boxes. */
   readonly pending: PendingStore;
 
-  /** How big each box has got, measured off the request path. */
+  /**
+   * How big each box has got, measured off the request path.
+   *
+   * A path here is a `<root>:<id>` token rather than a filesystem path, and
+   * fileAccess() measures it: for Docker the same directory
+   * workspacePathOf/homePathOf/nixPathOf name, for Kubernetes over the box's
+   * pod.
+   */
   private readonly usage = new BoxUsage({
     // Everything a box is on disk. A box on a named home volume has no home
     // path, so only its workspace and Nix store count.
-    pathsOf: (id) => [this.workspacePathOf(id), this.homePathOf(id), this.nixPathOf(id)],
+    pathsOf: (id) => [
+      this.workspacePathOf(id) ? `workspace:${id}` : null,
+      this.homePathOf(id) ? `home:${id}` : null,
+      this.cfg.RUNTIME === 'kubernetes' || this.nixPathOf(id) ? `nix:${id}` : null,
+    ],
     ttlMs: BOX_SIZE_TTL_MS,
+    measure: (token) => {
+      const [root, id] = token.split(':') as [FileRoot, string];
+      return fileAccess(this.cfg).directorySize(id, root);
+    },
     onTrouble: (id, error) =>
       log.box(id).warn('could not measure what a box is using', {
         error: error.message,
@@ -195,6 +214,9 @@ export class BoxManager {
    * failure here is fatal, and the message names the setting that fixes it.
    */
   async resolveHostDataDir(): Promise<void> {
+    // Bind sources are a Docker concern alone: a Kubernetes box's mounts are
+    // PVCs, named from its id rather than resolved against a host path.
+    if (this.cfg.RUNTIME === 'kubernetes') return;
     ws.ensureWorkspacesRoot(this.cfg.DATA_DIR);
     ensureAgentsRoot(this.cfg.DATA_DIR);
     if (this.cfg.HOST_DATA_DIR) {
@@ -203,8 +225,8 @@ export class BoxManager {
       });
       return;
     }
-    if (!dk.inContainer()) return;
-    const source = await dk.resolveHostMountSource(this.cfg.DATA_DIR);
+    if (!runtime(this.cfg).boxes.inContainer()) return;
+    const source = await runtime(this.cfg).boxes.resolveHostMountSource(this.cfg.DATA_DIR);
     if (!source) {
       throw new Error(
         `Could not resolve the host-side path of ${this.cfg.DATA_DIR}: this process is in a ` +
@@ -257,6 +279,36 @@ export class BoxManager {
     return ws.directoryExists(path) ? path : null;
   }
 
+  /**
+   * Whether a review can reach this box's files at all right now.
+   *
+   * For Docker, a directory-backed box whose directory is there. A box still
+   * on a named volume has no path this process can read. A Kubernetes box's
+   * workspace is a PVC from the moment it is created, reachable through its
+   * pod, which {@link ensureFilesReachable} brings up.
+   */
+  reviewable(id: string): boolean {
+    const row = this.getRow(id);
+    if (!row || row.status === 'deleted') return false;
+    if (this.cfg.RUNTIME === 'kubernetes') return true;
+    const path = this.workspacePathOf(id);
+    return path !== null && isDirectory(path);
+  }
+
+  /**
+   * Makes sure a review can reach this box's files before touching any of
+   * them.
+   *
+   * A no-op for Docker, whose files are directories on this process's own
+   * filesystem whether or not the container runs. A Kubernetes box's files
+   * are reachable only through its pod, so this starts it as opening a
+   * thread would.
+   */
+  async ensureFilesReachable(id: string): Promise<void> {
+    if (this.cfg.RUNTIME !== 'kubernetes') return;
+    await this.execTarget(id);
+  }
+
   // --- the box image ----------------------------------------------------
 
   /**
@@ -267,11 +319,11 @@ export class BoxManager {
    * says nothing.
    */
   async ensureBoxImage(): Promise<void> {
-    if (!(await dk.imageId(this.cfg.BOX_IMAGE))) {
+    if (!(await runtime(this.cfg).images.imageId(this.cfg.BOX_IMAGE))) {
       log.info('the box image is not on this host; pulling it', {
         image: this.cfg.BOX_IMAGE,
       });
-      await dk.pullImage(this.cfg.BOX_IMAGE);
+      await runtime(this.cfg).images.pullImage(this.cfg.BOX_IMAGE);
       log.info('pulled the box image', { image: this.cfg.BOX_IMAGE });
     }
     await this.warnOnBoxUidDrift();
@@ -293,7 +345,7 @@ export class BoxManager {
   private async warnOnBoxUidDrift(): Promise<void> {
     let imageUid: number | null;
     try {
-      imageUid = await dk.imageUserUid(this.cfg.BOX_IMAGE);
+      imageUid = await runtime(this.cfg).images.imageUserUid(this.cfg.BOX_IMAGE);
     } catch (err) {
       log.warn('could not read the box image user', { error: (err as Error).message });
       return;
@@ -317,9 +369,9 @@ export class BoxManager {
    * moves onto the new image at its next start.
    */
   async refreshBoxImage(): Promise<void> {
-    const before = await dk.imageId(this.cfg.BOX_IMAGE);
-    await dk.pullImage(this.cfg.BOX_IMAGE);
-    const after = await dk.imageId(this.cfg.BOX_IMAGE);
+    const before = await runtime(this.cfg).images.imageId(this.cfg.BOX_IMAGE);
+    await runtime(this.cfg).images.pullImage(this.cfg.BOX_IMAGE);
+    const after = await runtime(this.cfg).images.imageId(this.cfg.BOX_IMAGE);
     if (after && after !== before) {
       log.info('the box image moved; boxes adopt it as they are started', {
         image: this.cfg.BOX_IMAGE,
@@ -344,15 +396,15 @@ export class BoxManager {
    */
   private async pruneSupersededImages(supersededId: string | null): Promise<void> {
     if (!this.cfg.BOX_IMAGE_PRUNE) return;
-    const current = await dk.imageId(this.cfg.BOX_IMAGE);
-    const candidates = new Set(await dk.listSupersededBoxImages());
+    const current = await runtime(this.cfg).images.imageId(this.cfg.BOX_IMAGE);
+    const candidates = new Set(await runtime(this.cfg).images.listSupersededBoxImages());
     // An image built without the label is found only here, by its id.
     if (supersededId) candidates.add(supersededId);
     candidates.delete(current ?? '');
 
     for (const id of candidates) {
       try {
-        if (await dk.removeImage(id)) {
+        if (await runtime(this.cfg).images.removeImage(id)) {
           log.info('removed a superseded box image', { image: id });
         }
       } catch (err) {
@@ -384,9 +436,9 @@ export class BoxManager {
     // A login container belongs to no box, so the rules below do not apply.
     await this.sweepLoginContainers();
 
-    const containers = await dk.listBoxContainers();
-    const networks = await dk.listBoxNetworks();
-    const volumes = await dk.listBoxVolumes();
+    const containers = await runtime(this.cfg).boxes.listBoxContainers();
+    const networks = await runtime(this.cfg).boxes.listBoxNetworks();
+    const volumes = await runtime(this.cfg).boxes.listBoxVolumes();
     // A teardown removes the Docker objects first, so a box it gave up on
     // halfway may have only its directories left.
     const directories = ws.boxDirectoryIds(this.cfg.DATA_DIR);
@@ -426,16 +478,16 @@ export class BoxManager {
     log.info('sweeping what is left of boxes that are gone', { boxes: [...boxes] });
     for (const container of strayContainers) {
       await this.sweeping(container.boxId, 'container', () =>
-        dk.removeContainer(container.id),
+        runtime(this.cfg).boxes.removeContainer(container.id),
       );
     }
     for (const network of strayNetworks) {
       await this.sweeping(network.boxId, 'network', () =>
-        dk.removeNetwork(network.name, this.cfg),
+        runtime(this.cfg).boxes.removeNetwork(network.name),
       );
     }
     for (const volume of strayVolumes) {
-      await this.sweeping(volume.boxId, 'volume', () => dk.removeVolume(volume.name));
+      await this.sweeping(volume.boxId, 'volume', () => runtime(this.cfg).boxes.removeVolume(volume.name));
     }
     for (const boxId of boxes) {
       await this.sweeping(boxId, 'workspace', () =>
@@ -462,9 +514,9 @@ export class BoxManager {
    */
   private async sweepLoginContainers(): Promise<void> {
     const cutoff = Date.now() - LOGIN_CONTAINER_MAX_AGE_MS;
-    let containers: Awaited<ReturnType<typeof dk.listLoginContainers>>;
+    let containers: Awaited<ReturnType<BoxRuntime['listLoginContainers']>>;
     try {
-      containers = await dk.listLoginContainers();
+      containers = await runtime(this.cfg).boxes.listLoginContainers();
     } catch (err) {
       log.warn('could not list login containers', { error: (err as Error).message });
       return;
@@ -472,7 +524,7 @@ export class BoxManager {
     for (const container of containers) {
       if (container.createdAt > cutoff) continue;
       try {
-        await dk.removeContainer(container.id);
+        await runtime(this.cfg).boxes.removeContainer(container.id);
         log.info('swept an abandoned login container', {
           credential: container.credentialId,
           container: container.id,
@@ -525,14 +577,14 @@ export class BoxManager {
    */
   private async restoreMissingContainer(row: BoxRow): Promise<BoxRow> {
     if (!row.container_id || !row.workspace_dir) return row;
-    if ((await dk.containerState(row.container_id)) !== 'missing') return row;
+    if ((await runtime(this.cfg).boxes.containerState(row.container_id)) !== 'missing') return row;
 
     const slog = log.box(row.id);
     slog.warn('the container is gone; rebuilding it from the box row', {
       container: row.container_id,
     });
     // A prune that removed the container may have removed the network too.
-    if (await dk.ensureNetwork(row.network_name, row.subnet, row.id)) {
+    if (await runtime(this.cfg).boxes.ensureNetwork(row.network_name, row.subnet, row.id)) {
       slog.info('the box network was gone too; made it again', {
         network: row.network_name,
         subnet: row.subnet,
@@ -562,8 +614,8 @@ export class BoxManager {
     let wanted: string | null;
     let current: string | null;
     try {
-      wanted = await dk.imageId(this.cfg.BOX_IMAGE);
-      current = await dk.containerImageId(row.container_id);
+      wanted = await runtime(this.cfg).images.imageId(this.cfg.BOX_IMAGE);
+      current = await runtime(this.cfg).images.containerImageId(row.container_id);
     } catch (err) {
       // A box that already has a container can start without the comparison.
       slog.warn('could not compare the box image; starting as it is', {
@@ -613,7 +665,7 @@ export class BoxManager {
    * which the idle reaper produces on its own within IDLE_STOP_MINUTES.
    */
   private async deferredWhileRunning(row: BoxRow, what: string): Promise<boolean> {
-    if ((await dk.containerState(row.container_id)) !== 'running') return false;
+    if ((await runtime(this.cfg).boxes.containerState(row.container_id)) !== 'running') return false;
     log.box(row.id).info(`${what} deferred: the container is still running`);
     return true;
   }
@@ -630,14 +682,14 @@ export class BoxManager {
    */
   private async recreateContainer(row: BoxRow): Promise<string> {
     if (row.container_id) {
-      await dk.stopContainer(row.container_id);
-      await dk.removeContainer(row.container_id);
+      await runtime(this.cfg).boxes.stopContainer(row.container_id);
+      await runtime(this.cfg).boxes.removeContainer(row.container_id);
     }
-    const containerId = await dk.createContainer(this.containerSpec(row), this.cfg);
+    const containerId = await runtime(this.cfg).boxes.createContainer(this.containerSpec(row));
     this.db
       .prepare('UPDATE boxes SET container_id = ?, workspace_dir = ? WHERE id = ?')
       .run(containerId, row.workspace_dir, row.id);
-    await dk.startContainer(containerId);
+    await runtime(this.cfg).boxes.startContainer(containerId);
     return containerId;
   }
 
@@ -677,28 +729,36 @@ export class BoxManager {
    * swaps in the secret. So no container is rebuilt when a credential
    * arrives.
    */
-  private containerSpec(row: BoxRow): dk.CreateContainerSpec {
+  private containerSpec(row: BoxRow): BoxContainerSpec {
     const settings = readSettings(this.db);
     return {
       boxId: row.id,
       image: row.image,
       networkName: row.network_name,
       subnet: row.subnet,
-      workspaceSource: ws.hostWorkspacePath(this.hostDataDir, row.id),
-      nixSource: ws.hostNixPath(this.hostDataDir, row.id),
-      agentConfigSource: hostAgentConfigPath(this.hostDataDir, row.id),
-      // A directory for a newer box, and the named volume for an older one.
-      // Homes are never migrated.
-      homeSource: row.home_dir
-        ? ws.hostHomePath(this.hostDataDir, row.id)
-        : row.home_volume,
-      env: dk.credentialEnv(
+      volumes: this.boxVolumes(row),
+      env: runtime(this.cfg).boxes.credentialEnv(
         (id) => this.egress.placeholderFor(id),
         { gitName: settings.gitName, gitEmail: settings.gitEmail },
         this.cfg.GITLAB_HOST,
       ),
       caCertificate: this.egress.caCertificate(),
     };
+  }
+
+  /**
+   * The runtime's own handles for a box's four mounts.
+   *
+   * For Docker, a home directory for a newer box and the named volume for an
+   * older one; homes are never migrated. The Kubernetes runtime ignores both
+   * `hostDataDir` and the volume, since its boxes are backed by PVCs alone.
+   */
+  private boxVolumes(row: BoxRow): ProvisionedVolumes {
+    return runtime(this.cfg).boxes.volumeRefs(
+      row.id,
+      this.hostDataDir,
+      row.home_dir ? null : row.home_volume || null,
+    );
   }
 
   /** The persistent upstream for a box, created on first use. */
@@ -777,7 +837,7 @@ export class BoxManager {
       profile: 'DEFAULT',
       image: this.cfg.BOX_IMAGE,
       container_id: null,
-      network_name: dk.names.network(id),
+      network_name: runtime(this.cfg).boxes.names.network(id),
       subnet,
       // Both are directories, so the volume columns stay empty.
       ws_volume: '',
@@ -838,21 +898,18 @@ export class BoxManager {
    */
   private async createResources(row: BoxRow): Promise<void> {
     const id = row.id;
-    await dk.createNetwork(row.network_name, row.subnet, id);
-    await dk.ensureProxyAttached(row.network_name, this.cfg);
-    ws.createWorkspace(this.cfg.DATA_DIR, id);
-    ws.createNix(this.cfg.DATA_DIR, id);
+    await runtime(this.cfg).boxes.createNetwork(row.network_name, row.subnet, id);
+    await runtime(this.cfg).boxes.ensureProxyAttached(row.network_name);
     // Before the container, because it is one of its mounts.
     this.agents.materialize(id, row.agent_set_id);
-    // The bind mount hides the image's /home/agent, so the image's home is
-    // copied in.
-    ws.createHome(this.cfg.DATA_DIR, id);
-    await dk.seedHomeFromImage(ws.hostHomePath(this.hostDataDir, id), row.image, id);
-    const containerId = await dk.createContainer(this.containerSpec(row), this.cfg);
+    // The workspace, home and Nix store. A Docker home is a bind mount that
+    // hides the image's /home/agent, so the image's home is copied in.
+    await runtime(this.cfg).boxes.provisionVolumes(id, row.image, this.boxVolumes(row));
+    const containerId = await runtime(this.cfg).boxes.createContainer(this.containerSpec(row));
     // Recorded before the start, so a start that fails leaves a row naming
     // the container and the teardown removes it.
     this.db.prepare('UPDATE boxes SET container_id = ? WHERE id = ?').run(containerId, id);
-    await dk.startContainer(containerId);
+    await runtime(this.cfg).boxes.startContainer(containerId);
   }
 
   // --- start / stop / delete ------------------------------------------------
@@ -874,7 +931,7 @@ export class BoxManager {
     // which the daemon would otherwise create empty and owned by root.
     this.agents.materialize(row.id, row.agent_set_id);
     // The Nix store likewise, which an older box may not have yet.
-    ws.createNix(this.cfg.DATA_DIR, row.id);
+    await runtime(this.cfg).boxes.ensureAddedVolumes(row.id, this.boxVolumes(row));
     // Before anything binds the other two, for the same reason.
     this.requireDirectories(row);
     let current = await this.migrateWorkspace(row);
@@ -901,6 +958,9 @@ export class BoxManager {
    * directories are checked.
    */
   private requireDirectories(row: BoxRow): void {
+    // A Kubernetes box's mounts are PVCs the cluster owns, not directories
+    // this process can see.
+    if (this.cfg.RUNTIME === 'kubernetes') return;
     const missing: string[] = [];
     const workspace = ws.workspacePath(this.cfg.DATA_DIR, row.id);
     const home = ws.homePath(this.cfg.DATA_DIR, row.id);
@@ -935,8 +995,8 @@ export class BoxManager {
     if (!stored.container_id) throw new HttpError(409, 'Box has no container');
     const row = await this.prepareContainer(stored);
     this.giveUpIfPreempted(id);
-    await dk.startContainer(row.container_id!);
-    await dk.ensureProxyAttached(row.network_name, this.cfg);
+    await runtime(this.cfg).boxes.startContainer(row.container_id!);
+    await runtime(this.cfg).boxes.ensureProxyAttached(row.network_name);
     this.setStatus(id, 'running');
     // The upstream reconnects on the next forwarded message, which sends
     // session/load again and restores the thread.
@@ -965,7 +1025,7 @@ export class BoxManager {
     const hostDirectory = ws.hostWorkspacePath(this.hostDataDir, row.id);
 
     if (row.ws_volume) {
-      await dk.copyVolumeToDirectory(row.ws_volume, hostDirectory, row.image, row.id);
+      await runtime(this.cfg).boxes.copyVolumeToDirectory(row.ws_volume, hostDirectory, row.image, row.id);
     }
     // cp -a kept the ownership of the contents; the directory itself needs it.
     ws.chownToAgent(directory);
@@ -973,7 +1033,7 @@ export class BoxManager {
     await this.recreateContainer({ ...row, workspace_dir: directory });
     this.db.prepare("UPDATE boxes SET ws_volume = '' WHERE id = ?").run(row.id);
 
-    if (row.ws_volume) await dk.removeVolume(row.ws_volume);
+    if (row.ws_volume) await runtime(this.cfg).boxes.removeVolume(row.ws_volume);
     slog.info('workspace migrated', { directory });
     return this.mustGet(row.id);
   }
@@ -989,7 +1049,10 @@ export class BoxManager {
    */
   private async ensureTemplateMounts(row: BoxRow): Promise<BoxRow> {
     if (!row.container_id) return row;
-    const missing = await dk.missingMounts(row.container_id, [dk.AGENT_CONFIG_DIR, dk.NIX_DIR]);
+    const missing = await runtime(this.cfg).boxes.missingMounts(row.container_id, [
+      runtime(this.cfg).boxes.AGENT_CONFIG_DIR,
+      runtime(this.cfg).boxes.NIX_DIR,
+    ]);
     if (missing.length === 0) return row;
     if (await this.deferredWhileRunning(row, 'the mounts it lacks')) return row;
     log.box(row.id).info('recreating the container with the mounts it lacks', { missing });
@@ -1032,7 +1095,7 @@ export class BoxManager {
     // Everything queued before this has given up; what comes after may run.
     this.preempted.delete(id);
     const row = this.mustGet(id);
-    if (row.container_id) await dk.stopContainer(row.container_id);
+    if (row.container_id) await runtime(this.cfg).boxes.stopContainer(row.container_id);
     this.setStatus(id, 'stopped');
     log.box(id).info('box stopped');
     return this.detail(id);
@@ -1075,36 +1138,23 @@ export class BoxManager {
     const slog = log.box(id);
     if (row.container_id) {
       try {
-        await dk.stopContainer(row.container_id);
-        await dk.removeContainer(row.container_id);
+        await runtime(this.cfg).boxes.stopContainer(row.container_id);
+        await runtime(this.cfg).boxes.removeContainer(row.container_id);
       } catch (err) {
         slog.warn('container teardown failed', { error: (err as Error).message });
       }
     }
     try {
-      await dk.removeNetwork(row.network_name, this.cfg);
+      await runtime(this.cfg).boxes.removeNetwork(row.network_name);
     } catch (err) {
       slog.warn('network teardown failed', { error: (err as Error).message });
     }
-    if (row.workspace_dir) {
-      try {
-        ws.removeWorkspace(this.cfg.DATA_DIR, row.id);
-      } catch (err) {
-        slog.warn('workspace removal failed', { error: (err as Error).message });
-      }
-    }
-    if (row.home_dir) {
-      try {
-        ws.removeHome(this.cfg.DATA_DIR, row.id);
-      } catch (err) {
-        slog.warn('home removal failed', { error: (err as Error).message });
-      }
-    }
-    // No column says which boxes have a Nix store, so every box is tried.
+    // The workspace, home and Nix store. No column says which boxes have a
+    // Nix store, so every box is tried.
     try {
-      ws.removeNix(this.cfg.DATA_DIR, row.id);
+      await runtime(this.cfg).boxes.removeVolumes(row.id, this.boxVolumes(row));
     } catch (err) {
-      slog.warn('nix store removal failed', { error: (err as Error).message });
+      slog.warn('volume removal failed', { error: (err as Error).message });
     }
     try {
       this.agents.removeMaterialized(row.id);
@@ -1112,8 +1162,8 @@ export class BoxManager {
       slog.warn('agent configuration removal failed', { error: (err as Error).message });
     }
     // Only an older box still has volumes.
-    if (row.ws_volume) await dk.removeVolume(row.ws_volume);
-    if (row.home_volume) await dk.removeVolume(row.home_volume);
+    if (row.ws_volume) await runtime(this.cfg).boxes.removeVolume(row.ws_volume);
+    if (row.home_volume) await runtime(this.cfg).boxes.removeVolume(row.home_volume);
   }
 
   // --- views ----------------------------------------------------------------
@@ -1145,9 +1195,9 @@ export class BoxManager {
     // runs.
     const row = await this.prepareContainer(stored);
     this.giveUpIfPreempted(id);
-    await dk.startContainer(row.container_id!);
+    await runtime(this.cfg).boxes.startContainer(row.container_id!);
     this.touch(id);
-    return { containerId: row.container_id!, workingDir: dk.WORKSPACE_DIR };
+    return { containerId: row.container_id!, workingDir: runtime(this.cfg).boxes.WORKSPACE_DIR };
   }
 
   /** Marks a box active, so reaching into the box holds off the reaper. */
@@ -1216,11 +1266,11 @@ export class BoxManager {
   async processReadings(): Promise<BoxReading[]> {
     return Promise.all(
       this.allRows().map(async (row): Promise<BoxReading> => {
-        const state = await dk.containerState(row.container_id);
+        const state = await runtime(this.cfg).boxes.containerState(row.container_id);
         if (state === 'exited' || state === 'missing') return { boxId: row.id, commands: [] };
         if (state !== 'running' || !row.container_id) return { boxId: row.id, commands: null };
         try {
-          const processes = await dk.containerProcesses(row.container_id);
+          const processes = await runtime(this.cfg).exec.containerProcesses(row.container_id);
           return { boxId: row.id, commands: processes.map((p) => p.command) };
         } catch {
           return { boxId: row.id, commands: null };
@@ -1247,7 +1297,7 @@ export class BoxManager {
     pendingCount: number,
     turnActive: boolean,
   ): Promise<BoxSummary> {
-    const dockerState = await dk.containerState(row.container_id);
+    const dockerState = await runtime(this.cfg).boxes.containerState(row.container_id);
     const pendingByThread = this.pending.countsByThread(row.id);
     // The gateway's in-memory view of which threads are speaking and which
     // have tasks running, read once so every thread answers from the same
@@ -1313,7 +1363,7 @@ export class BoxManager {
       homeVolume: row.home_volume,
       homeDir: row.home_dir,
       acpSessionId: latestThread(this.db, id)?.acp_session_id ?? null,
-      proxyAttached: await dk.isProxyAttached(row.network_name, this.cfg),
+      proxyAttached: await runtime(this.cfg).boxes.isProxyAttached(row.network_name),
       // `upstreams.get` rather than `upstream()`, which would create one. A
       // box without an upstream has no reading, so the list is empty.
       boxWork: [...(this.upstreams.get(id)?.boxWork ?? [])],
@@ -1443,7 +1493,7 @@ export class BoxManager {
     // Helpers are left out: one that outlived its job is labelled with the
     // box too, and adopting it would leave the row naming a copy script.
     const live = new Map(
-      (await dk.listBoxContainers()).filter((c) => !c.helper).map((c) => [c.boxId, c]),
+      (await runtime(this.cfg).boxes.listBoxContainers()).filter((c) => !c.helper).map((c) => [c.boxId, c]),
     );
     for (const row of this.allRows()) {
       // A turn cannot survive an orchestrator restart, because the upstream
@@ -1467,7 +1517,7 @@ export class BoxManager {
           .run(container.id, row.id);
       }
       this.setStatus(row.id, container.running ? 'running' : 'stopped');
-      await dk.ensureProxyAttached(row.network_name, this.cfg);
+      await runtime(this.cfg).boxes.ensureProxyAttached(row.network_name);
     }
     log.info('boot reconciliation complete', { boxes: this.allRows().length });
   }
@@ -1480,7 +1530,7 @@ export class BoxManager {
     const warnings: string[] = [];
     for (const row of this.allRows()) {
       if (row.status !== 'running') continue;
-      const ok = await dk.ensureProxyAttached(row.network_name, this.cfg);
+      const ok = await runtime(this.cfg).boxes.ensureProxyAttached(row.network_name);
       if (!ok) warnings.push(row.id);
     }
     return warnings;
