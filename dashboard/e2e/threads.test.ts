@@ -347,6 +347,37 @@ test('threads marked done and idle for more than a week fold away under a summar
   }
 });
 
+test('the list shows idle threads by last activity, oldest first, and the working threads last', async () => {
+  stub.resetBoxes();
+  stub.createBox({
+    threads: [
+      { title: 'first busy', speaking: true, lastActiveAt: Date.now() },
+      { title: 'recent idle', lastActiveAt: Date.now() - 60_000 },
+      { title: 'second busy', pendingCount: 1, lastActiveAt: Date.now() - 120_000 },
+      { title: 'old idle', lastActiveAt: Date.now() - 3_600_000 },
+      { title: 'old done', done: true, lastActiveAt: Date.now() - 8 * 86_400_000 },
+      { title: 'older done', done: true, lastActiveAt: Date.now() - 9 * 86_400_000 },
+    ],
+  });
+  const { page, errors, close } = await openPage(stub.url, '/');
+  try {
+    const list = page.locator('summary, a[href*="/threads/"] .truncate');
+    await expect.poll(() => list.count()).toBe(7);
+    expect(await list.allTextContents()).toEqual([
+      '2 older done threads',
+      'older done',
+      'old done',
+      'old idle',
+      'recent idle',
+      'first busy',
+      'second busy',
+    ]);
+    expect(errors).toEqual([]);
+  } finally {
+    await close();
+  }
+});
+
 test('a single thread marked done and idle for more than a week stays in the list', async () => {
   stub.resetBoxes();
   stub.createBox({

@@ -33,6 +33,31 @@ function counted(count: number, noun: string): string {
 }
 
 /**
+ * True while the agent works on a thread or waits for an approval.
+ *
+ * @param thread The thread.
+ * @returns True when the thread works.
+ */
+function working(thread: ThreadSummary): boolean {
+  return thread.turnActive || thread.speaking || thread.backgroundBusy || thread.pendingCount > 0;
+}
+
+/**
+ * Compares two threads for the list order: idle threads by last activity, oldest first, then the threads that work.
+ *
+ * The threads that work keep their creation order, because each update from the agent changes their last activity.
+ *
+ * @param a The first thread.
+ * @param b The second thread.
+ * @returns A negative number when a comes first, a positive number when b comes first.
+ */
+function byAge(a: ThreadSummary, b: ThreadSummary): number {
+  if (working(a) !== working(b)) return working(a) ? 1 : -1;
+  if (working(a)) return a.ordinal - b.ordinal;
+  return a.lastActiveAt - b.lastActiveAt || a.ordinal - b.ordinal;
+}
+
+/**
  * Builds the status badges for a box.
  *
  * The turn, task and approval badges cover every thread of the box, so one
@@ -224,11 +249,12 @@ export function BoxCard({ box }: { box: BoxSummary }) {
   // Read at render. The list poll re-renders the card every five seconds,
   // which is often enough for ages in whole minutes.
   const now = Date.now();
-  // Threads marked done that were not active for a while fold away below the others.
+  const threads = [...box.threads].sort(byAge);
+  // Threads marked done that were not active for a while fold away above the others.
   const old = (t: ThreadSummary) => t.done && now - t.lastActiveAt > DONE_FOLD_MS;
-  const folded = box.threads.filter(old);
+  const folded = threads.filter(old);
   // A single folded thread would take the same space as the summary.
-  const shown = folded.length > 1 ? box.threads.filter((t) => !old(t)) : box.threads;
+  const shown = folded.length > 1 ? threads.filter((t) => !old(t)) : threads;
 
   /**
    * Renders the row of one thread.
@@ -314,7 +340,6 @@ export function BoxCard({ box }: { box: BoxSummary }) {
       </Link>
 
       <div className="flex flex-col border-t px-2 py-2">
-        {shown.map(threadRow)}
         {folded.length > 1 ? (
           <details>
             <summary className="cursor-pointer rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent">
@@ -323,6 +348,7 @@ export function BoxCard({ box }: { box: BoxSummary }) {
             <div className="flex flex-col">{folded.map(threadRow)}</div>
           </details>
         ) : null}
+        {shown.map(threadRow)}
 
         <div className="flex gap-1 pt-1">
           <button
