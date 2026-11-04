@@ -154,7 +154,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libicu78 \
 # /usr/local.
 RUN npm install -g --prefix /usr/local \
       @anthropic-ai/claude-code@^2 \
-      @agentclientprotocol/claude-agent-acp@^0.81.0 \
+      @agentclientprotocol/claude-agent-acp@^0.92.0 \
  && npm cache clean --force
 
 # The Codex CLI and its ACP adapter, both pinned exactly.

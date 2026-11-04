@@ -1040,3 +1040,15 @@ test('a refused full history leaves the thread as it was', async () => {
   assert.equal(snapshot.loadingHistory, false);
   assert.equal(snapshot.error, 'The agent is working on this thread.');
 });
+
+test('the store publishes the predicted next prompt and a send clears it', async () => {
+  const { store, client } = makeStore();
+  push(client, {
+    sessionUpdate: 'session_info_update',
+    _meta: { promptSuggestions: { suggestions: [{ text: 'run the tests' }] } },
+  } as ThreadUpdate);
+  assert.equal(store.getSnapshot().promptSuggestion, 'run the tests');
+
+  await store.send([{ type: 'text', text: 'deploy it' }]);
+  assert.equal(store.getSnapshot().promptSuggestion, null);
+});
