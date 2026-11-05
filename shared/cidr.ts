@@ -1,16 +1,29 @@
 /** Address checks of the egress policy, which decide the addresses that an agent may connect to. */
 
-/** IPv4 ranges an agent must never reach through the proxy. */
-const V4_BLOCKED: ReadonlyArray<readonly [string, number]> = [
+/**
+ * The kind of an address for the egress policy.
+ *
+ * - `public`: every box can reach it.
+ * - `private`: a private network. A box reaches it only through a host that the user named explicitly.
+ * - `forbidden`: no box ever reaches it, because it is the proxy itself, cloud metadata, or not a unicast address.
+ */
+export type AddressKind = 'public' | 'private' | 'forbidden';
+
+/** IPv4 ranges of private networks. The user can open them to a box with an explicit host. */
+const V4_PRIVATE: ReadonlyArray<readonly [string, number]> = [
   ['10.0.0.0', 8],
   ['172.16.0.0', 12],
   ['192.168.0.0', 16],
-  ['169.254.0.0', 16], // link-local, including cloud metadata at 169.254.169.254
-  ['127.0.0.0', 8],
-  ['100.64.0.0', 10], // carrier-grade NAT
-  ['0.0.0.0', 8],
+  ['100.64.0.0', 10], // carrier-grade NAT, also Tailscale
   ['192.0.0.0', 24], // IETF protocol assignments
   ['198.18.0.0', 15], // benchmarking
+];
+
+/** IPv4 ranges that no box reaches, also with an explicit host. */
+const V4_FORBIDDEN: ReadonlyArray<readonly [string, number]> = [
+  ['169.254.0.0', 16], // link-local, including cloud metadata at 169.254.169.254
+  ['127.0.0.0', 8], // loopback, where the proxy has its control channel and its engine
+  ['0.0.0.0', 8], // 0.0.0.0 connects to the local host on Linux
   ['224.0.0.0', 4], // multicast
   ['240.0.0.0', 4], // reserved, including 255.255.255.255
 ];
@@ -142,48 +155,79 @@ function embeddedV4(groups: readonly number[]): number | null {
 }
 
 /**
- * Checks if an address is in a range that an agent must not reach.
+ * Finds the kind of an IPv4 address.
  *
- * @param address The IPv4 or IPv6 address.
- * @returns True when the address is blocked. Input that does not parse counts as blocked.
+ * @param value The address as an unsigned integer.
+ * @returns The kind of the address.
  */
-export function isBlockedAddress(address: string): boolean {
-  const text = address.trim();
-  if (text === '') return true;
-
-  const v4 = v4ToInt(text);
-  if (v4 !== null) {
-    return V4_BLOCKED.some(([base, prefix]) => inV4Range(v4, base, prefix));
-  }
-
-  const groups = parseV6(text);
-  if (groups === null) return true;
-
-  const embedded = embeddedV4(groups);
-  if (embedded !== null) {
-    return V4_BLOCKED.some(([base, prefix]) => inV4Range(embedded, base, prefix));
-  }
-
-  const [g0 = 0] = groups;
-  // :: unspecified. The embedded v4 check above already blocks ::1 as 0.0.0.1.
-  if (groups.every((g) => g === 0)) return true;
-  // fc00::/7 unique local
-  if ((g0 & 0xfe00) === 0xfc00) return true;
-  // fe80::/10 link-local
-  if ((g0 & 0xffc0) === 0xfe80) return true;
-  // ff00::/8 multicast
-  if ((g0 & 0xff00) === 0xff00) return true;
-
-  return false;
+function v4Kind(value: number): AddressKind {
+  if (V4_FORBIDDEN.some(([base, prefix]) => inV4Range(value, base, prefix))) return 'forbidden';
+  if (V4_PRIVATE.some(([base, prefix]) => inV4Range(value, base, prefix))) return 'private';
+  return 'public';
 }
 
 /**
- * Checks if every address of a DNS answer is safe to connect to.
+ * Finds the kind of an address for the egress policy.
+ *
+ * @param address The IPv4 or IPv6 address.
+ * @returns The kind of the address. Input that does not parse is forbidden.
+ */
+export function addressKind(address: string): AddressKind {
+  const text = address.trim();
+  if (text === '') return 'forbidden';
+
+  const v4 = v4ToInt(text);
+  if (v4 !== null) return v4Kind(v4);
+
+  const groups = parseV6(text);
+  if (groups === null) return 'forbidden';
+
+  const embedded = embeddedV4(groups);
+  if (embedded !== null) return v4Kind(embedded);
+
+  const [g0 = 0] = groups;
+  // :: unspecified. The embedded v4 check above already forbids ::1 as 0.0.0.1.
+  if (groups.every((g) => g === 0)) return 'forbidden';
+  // fe80::/10 link-local
+  if ((g0 & 0xffc0) === 0xfe80) return 'forbidden';
+  // ff00::/8 multicast
+  if ((g0 & 0xff00) === 0xff00) return 'forbidden';
+  // fc00::/7 unique local, also Tailscale
+  if ((g0 & 0xfe00) === 0xfc00) return 'private';
+
+  return 'public';
+}
+
+/**
+ * Checks if an address is in a range that a box reaches only through an explicit host, or never.
+ *
+ * @param address The IPv4 or IPv6 address.
+ * @returns True when the address is not public. Input that does not parse counts as blocked.
+ */
+export function isBlockedAddress(address: string): boolean {
+  return addressKind(address) !== 'public';
+}
+
+/**
+ * Finds the kind of a DNS answer: the most restricted kind of its addresses.
+ *
+ * @param addresses The resolved addresses.
+ * @returns The kind of the answer. An empty answer is forbidden.
+ */
+export function answerKind(addresses: readonly string[]): AddressKind {
+  if (addresses.length === 0) return 'forbidden'; // An empty answer fails closed.
+  const kinds = addresses.map(addressKind);
+  if (kinds.includes('forbidden')) return 'forbidden';
+  if (kinds.includes('private')) return 'private';
+  return 'public';
+}
+
+/**
+ * Checks if every address of a DNS answer is public.
  *
  * @param addresses The resolved addresses.
  * @returns True when the list has addresses and none of them is blocked.
  */
 export function allAddressesAllowed(addresses: readonly string[]): boolean {
-  if (addresses.length === 0) return false; // An empty answer fails closed.
-  return addresses.every((a) => !isBlockedAddress(a));
+  return answerKind(addresses) === 'public';
 }

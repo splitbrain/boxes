@@ -251,8 +251,8 @@ const schema = z.object({
    * The GitLab host of the token on the settings page, as a bare hostname
    * without a scheme or a path.
    *
-   * A self-managed instance must be on a public address, because the proxy
-   * refuses private ranges, also for a host in the credential set.
+   * A self-managed instance can be on a private address, because the proxy
+   * lets a host of a credential reach a private range.
    */
   GITLAB_HOST: z
     .string()

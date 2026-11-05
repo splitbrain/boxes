@@ -4,7 +4,7 @@ import dns from 'node:dns';
 import net from 'node:net';
 import * as oauth from 'oauth4webapi';
 import { Agent, fetch as undiciFetch } from 'undici';
-import { isBlockedAddress } from '../../shared/cidr.ts';
+import { type AddressKind, addressKind } from '../../shared/cidr.ts';
 import type {
   AgentMcpServer,
   McpCallbackAnswer,
@@ -61,6 +61,11 @@ export interface OAuthRequest {
   redirect?: 'manual';
   /** The signal that aborts the request. */
   signal?: AbortSignal;
+  /**
+   * The hostname of the MCP server that the user entered. Only this host may have a private address, because the
+   * user named it. Hosts that a remote server names stay public.
+   */
+  privateHost?: string;
 }
 
 /** The function that sends one request of the OAuth client. Tests pass a fake. */
@@ -194,7 +199,7 @@ export class McpOAuth {
     try {
       const found = await this.discover(entry.url);
       const as = found.as;
-      const client = await this.selectClient(doc, as, redirectUri, body);
+      const client = await this.selectClient(doc, as, redirectUri, body, entry.url);
       if (client === null) return { needsClient: true, redirectUri };
 
       const server: OAuthServer = {
@@ -292,7 +297,7 @@ export class McpOAuth {
         checked,
         login.redirectUri,
         login.verifier,
-        { ...this.httpOptions(), additionalParameters: { resource: login.resource } },
+        { ...this.httpOptions(login.resource), additionalParameters: { resource: login.resource } },
       );
       tokens = await oauth.processAuthorizationCodeResponse(as, client, response);
     } catch (err) {
@@ -410,7 +415,7 @@ export class McpOAuth {
         client,
         clientAuth(doc.client),
         doc.refresh_token,
-        { ...this.httpOptions(), additionalParameters: { resource: row.url } },
+        { ...this.httpOptions(row.url), additionalParameters: { resource: row.url } },
       );
       tokens = await oauth.processRefreshTokenResponse(as, client, response);
     } catch (err) {
@@ -453,7 +458,8 @@ export class McpOAuth {
    * @throws {Error} When a step fails.
    */
   private async discover(url: string): Promise<Discovery> {
-    const probe = await this.fetch(url, {
+    const fetch = this.fetchFor(url);
+    const probe = await fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -474,7 +480,7 @@ export class McpOAuth {
       : wellKnownResource(resource);
     let metadata: Record<string, unknown> | null = null;
     for (const candidate of candidates) {
-      const res = await this.getJson(candidate.url);
+      const res = await this.getJson(candidate.url, fetch);
       if (res === null) continue;
       const named = typeof res.resource === 'string' ? res.resource : '';
       if (!candidate.expected.includes(normalUrl(named))) {
@@ -492,7 +498,7 @@ export class McpOAuth {
     const issuer = new URL(httpsUrl(first, 'authorization server'));
     let as: oauth.AuthorizationServer | null = null;
     for (const candidate of wellKnownServer(issuer)) {
-      const res = await this.fetch(candidate, {
+      const res = await fetch(candidate, {
         method: 'GET',
         headers: { accept: 'application/json' },
         redirect: 'manual',
@@ -519,11 +525,12 @@ export class McpOAuth {
    * Reads one JSON document.
    *
    * @param url The URL of the document.
+   * @param fetch The fetch function of the MCP server.
    * @returns The document, or null when the answer is not a 200 with a JSON object.
    * @throws {Error} When the URL does not use https, or the request fails.
    */
-  private async getJson(url: string): Promise<Record<string, unknown> | null> {
-    const res = await this.fetch(httpsUrl(url, 'metadata URL'), {
+  private async getJson(url: string, fetch: OAuthFetch): Promise<Record<string, unknown> | null> {
+    const res = await fetch(httpsUrl(url, 'metadata URL'), {
       method: 'GET',
       headers: { accept: 'application/json' },
       redirect: 'manual',
@@ -547,6 +554,7 @@ export class McpOAuth {
    * @param as The authorization server metadata.
    * @param redirectUri The redirect URI of the login.
    * @param body The client that the user entered.
+   * @param mcpUrl The URL of the MCP server.
    * @returns The client, or null when the user must enter a client ID.
    */
   private async selectClient(
@@ -554,6 +562,7 @@ export class McpOAuth {
     as: oauth.AuthorizationServer,
     redirectUri: string,
     body: McpConnectBody,
+    mcpUrl: string,
   ): Promise<OAuthClient | null> {
     const clientId = body.clientId?.trim() ?? '';
     if (clientId !== '') {
@@ -583,7 +592,7 @@ export class McpOAuth {
           ? { token_endpoint_auth_method: 'none' }
           : {}),
       },
-      this.httpOptions(),
+      this.httpOptions(mcpUrl),
     );
     const registered = await oauth.processDynamicClientRegistrationResponse(response);
     const secret =
@@ -604,12 +613,25 @@ export class McpOAuth {
   }
 
   /**
+   * Gives the fetch function for the requests of one MCP server. The host of the MCP server may have a private
+   * address, because the user entered it.
+   *
+   * @param mcpUrl The URL of the MCP server.
+   * @returns The fetch function.
+   */
+  private fetchFor(mcpUrl: string): OAuthFetch {
+    const privateHost = new URL(mcpUrl).hostname;
+    return (url, init) => this.fetch(url, { ...init, privateHost });
+  }
+
+  /**
    * Gives the options of the requests of oauth4webapi.
    *
+   * @param mcpUrl The URL of the MCP server.
    * @returns The options with the fetch function.
    */
-  private httpOptions(): { [oauth.customFetch]: OAuthFetch } {
-    return { [oauth.customFetch]: this.fetch };
+  private httpOptions(mcpUrl: string): { [oauth.customFetch]: OAuthFetch } {
+    return { [oauth.customFetch]: this.fetchFor(mcpUrl) };
   }
 
   /** Deletes the started logins that are older than LOGIN_TTL_MS. */
@@ -810,15 +832,8 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Resolves a hostname and refuses it when an address is private. The connections of guardedFetch use it, so the
- * check also covers the address that the connection uses.
- *
- * @param hostname The hostname.
- * @param options The options of the lookup.
- * @param callback Gets the addresses, or the error.
- */
-function guardedLookup(
+/** The signature of the lookup function of a connection. */
+type Lookup = (
   hostname: string,
   options: dns.LookupOptions,
   callback: (
@@ -826,28 +841,55 @@ function guardedLookup(
     address: string | dns.LookupAddress[],
     family?: number,
   ) => void,
-): void {
-  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
-    if (err) {
-      callback(err, []);
-      return;
-    }
-    const blocked = addresses.find((entry) => isBlockedAddress(entry.address));
-    if (blocked || addresses.length === 0) {
-      callback(new Error(`${hostname} resolves to the private address ${blocked?.address}`), []);
-      return;
-    }
-    if (options.all) {
-      callback(null, addresses);
-      return;
-    }
-    const first = addresses[0] as dns.LookupAddress;
-    callback(null, first.address, first.family);
-  });
+) => void;
+
+/**
+ * Checks if an address kind passes.
+ *
+ * @param kind The kind of the address.
+ * @param allowPrivate True when the host may have a private address.
+ * @returns True when the address passes.
+ */
+function kindAllowed(kind: AddressKind, allowPrivate: boolean): boolean {
+  return kind === 'public' || (kind === 'private' && allowPrivate);
 }
 
-/** The connection pool of guardedFetch. */
-const guardedAgent = new Agent({ connect: { lookup: guardedLookup } });
+/**
+ * Makes a lookup that resolves a hostname and refuses it when an address does not pass. The connections of
+ * guardedFetch use it, so the check also covers the address that the connection uses.
+ *
+ * @param allowPrivate True when the host may have a private address. A forbidden address never passes.
+ * @returns The lookup function.
+ */
+function guardedLookup(allowPrivate: boolean): Lookup {
+  return (hostname, options, callback) => {
+    dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+      if (err) {
+        callback(err, []);
+        return;
+      }
+      const blocked = addresses.find(
+        (entry) => !kindAllowed(addressKind(entry.address), allowPrivate),
+      );
+      if (blocked || addresses.length === 0) {
+        callback(new Error(`${hostname} resolves to the blocked address ${blocked?.address}`), []);
+        return;
+      }
+      if (options.all) {
+        callback(null, addresses);
+        return;
+      }
+      const first = addresses[0] as dns.LookupAddress;
+      callback(null, first.address, first.family);
+    });
+  };
+}
+
+/** The connection pool of guardedFetch for public hosts. */
+const guardedAgent = new Agent({ connect: { lookup: guardedLookup(false) } });
+
+/** The connection pool of guardedFetch for the host of an MCP server, which may have a private address. */
+const privateAgent = new Agent({ connect: { lookup: guardedLookup(true) } });
 
 /**
  * Sends one request to a remote server of an OAuth login. The request refuses a URL without https and a host with
@@ -862,8 +904,10 @@ export const guardedFetch: OAuthFetch = async (url, init) => {
   const target = new URL(url);
   if (target.protocol !== 'https:') throw new Error(`${url} does not use https`);
   const host = target.hostname.replace(/^\[(.*)\]$/, '$1');
-  if (net.isIP(host) !== 0 && isBlockedAddress(host)) {
-    throw new Error(`${target.host} is a private address`);
+  const allowPrivate =
+    init.privateHost !== undefined && sameHost(target.hostname, init.privateHost);
+  if (net.isIP(host) !== 0 && !kindAllowed(addressKind(host), allowPrivate)) {
+    throw new Error(`${target.host} is a blocked address`);
   }
   const signal = AbortSignal.any([
     AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -876,7 +920,7 @@ export const guardedFetch: OAuthFetch = async (url, init) => {
       headers: init.headers,
       body: init.body,
       redirect: 'manual',
-      dispatcher: guardedAgent,
+      dispatcher: allowPrivate ? privateAgent : guardedAgent,
       signal,
     });
   } catch (err) {
@@ -905,3 +949,15 @@ export const guardedFetch: OAuthFetch = async (url, init) => {
     headers: [...res.headers],
   });
 };
+
+/**
+ * Compares two hostnames of URLs. Case and a trailing dot do not count.
+ *
+ * @param a The first hostname.
+ * @param b The second hostname.
+ * @returns True when both name the same host.
+ */
+function sameHost(a: string, b: string): boolean {
+  const norm = (h: string): string => h.toLowerCase().replace(/\.$/, '');
+  return norm(a) === norm(b);
+}

@@ -15,7 +15,9 @@ the closed mode, a box can reach only the hosts that the proxy adds to the mode.
 - the host and the port of each MCP server in the [agent sets](agent-sets.md) of the box,
 - the hosts in the profile.
 
-The proxy refuses a private address in each mode, also when a profile names it.
+The proxy refuses a private address, such as a Kubernetes service or a host in a Tailscale network, unless a host in
+this list names the host. The open mode alone does not allow a private address. The proxy always refuses loopback,
+link-local, multicast and reserved addresses.
 
 A host in the list is an exact name or a name that starts with `*.`. A name that starts with `*.` includes one level of
 subdomains, so `*.npmjs.org` includes `registry.npmjs.org`, but not `npmjs.org` or `a.b.npmjs.org`. A name with a port,
@@ -36,7 +38,8 @@ default profile.
 The proxy keeps a list of the hosts that the profile of each box refused, with the port, the number of attempts and the
 time of the last attempt. The list holds the 50 most recent hosts of each box, and the details page of the box shows it.
 The proxy keeps the list in memory only, so a restart of the proxy clears it. When the agent needs a host from the
-list, add the host to the profile.
+list, add the host to the profile. The list also shows a host that has a private address and that no host pattern of
+the box names.
 
 ## Technical internals
 

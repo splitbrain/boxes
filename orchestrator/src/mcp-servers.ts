@@ -7,7 +7,7 @@
 
 import net from 'node:net';
 import type { McpServer } from '@agentclientprotocol/sdk';
-import { isBlockedAddress } from '../../shared/cidr.ts';
+import { addressKind } from '../../shared/cidr.ts';
 import type { AgentMcpAuth, AgentMcpServer } from '../../shared/types.ts';
 import { HttpError } from './http-error.ts';
 import { OAUTH_HEADER } from './mcp-secrets.ts';
@@ -131,8 +131,10 @@ export function validMcpServer(body: AgentMcpServer): AgentMcpServer {
     throw new HttpError(400, 'url must not contain credentials; put them into a header');
   }
   const target = targetOf(url);
-  if (net.isIP(target.host) !== 0 && isBlockedAddress(target.host)) {
-    throw new HttpError(400, 'url must not name a private address');
+  // A private address is fine, because the user names the server. Loopback,
+  // link-local and the other forbidden ranges stay out of reach of the proxy.
+  if (net.isIP(target.host) !== 0 && addressKind(target.host) === 'forbidden') {
+    throw new HttpError(400, 'url must not name a loopback, link-local or reserved address');
   }
   if (body.auth === 'oauth' && url.protocol !== 'https:') {
     throw new HttpError(400, 'url must use https, because an OAuth token goes only over https');

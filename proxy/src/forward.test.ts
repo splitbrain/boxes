@@ -149,27 +149,88 @@ describe('vetTarget', () => {
     ).resolves.toEqual({ ok: true, address: '93.184.216.34', family: 4 });
   });
 
-  it('refuses a name that resolves to any blocked address, closing DNS rebinding', async () => {
+  it('refuses a name that resolves to any private address, closing DNS rebinding', async () => {
     resolvesTo('93.184.216.34', '192.168.1.5');
     await expect(vetTarget({ host: 'rebind.example', port: 443 }, OPEN)).resolves.toEqual({
       ok: false,
-      category: 'blocked-address',
-      reason: 'hostname resolves to a blocked address',
+      category: 'private-address',
+      reason:
+        'an address of the hostname is in a private range, which only a host in the egress profile of this box can reach',
     });
   });
 
-  it('refuses address literals in private space, including the v4-mapped form', async () => {
-    for (const host of ['192.168.1.1', '10.0.0.1', '169.254.169.254', '127.0.0.1', '::1']) {
+  it('refuses a name that resolves to any forbidden address, also when the profile names it', async () => {
+    resolvesTo('10.0.0.5', '127.0.0.1');
+    await expect(
+      vetTarget({ host: 'loop.example', port: 443 }, allowing('loop.example')),
+    ).resolves.toEqual({
+      ok: false,
+      category: 'blocked-address',
+      reason: 'an address of the hostname is in a blocked range',
+    });
+  });
+
+  it('refuses address literals in private space in the open mode, including the v4-mapped form', async () => {
+    for (const host of [
+      '192.168.1.1',
+      '10.0.0.1',
+      '100.64.0.1',
+      'fd7a:115c:a1e0::1',
+      '::ffff:192.168.1.1',
+    ]) {
       await expect(vetTarget({ host, port: 443 }, OPEN)).resolves.toEqual({
+        ok: false,
+        category: 'private-address',
+        reason:
+          'target address is in a private range, which only a host in the egress profile of this box can reach',
+      });
+    }
+  });
+
+  it('refuses forbidden address literals, also when the profile names them', async () => {
+    for (const host of ['169.254.169.254', '127.0.0.1', '0.0.0.0', '::1', 'fe80::1']) {
+      await expect(
+        vetTarget({ host, port: 443 }, allowing(host.includes(':') ? `[${host}]` : host)),
+      ).resolves.toEqual({
         ok: false,
         category: 'blocked-address',
         reason: 'target address is in a blocked range',
       });
     }
-    await expect(vetTarget({ host: '::ffff:192.168.1.1', port: 443 }, OPEN)).resolves.toEqual({
+  });
+
+  it('lets a host of the profile reach a private address', async () => {
+    resolvesTo('10.43.27.38');
+    await expect(
+      vetTarget(
+        { host: 'gonats-api.gonats.svc.cluster.local', port: 8080 },
+        allowing('gonats-api.gonats.svc.cluster.local:8080'),
+      ),
+    ).resolves.toEqual({ ok: true, address: '10.43.27.38', family: 4 });
+  });
+
+  it('lets a wildcard host of the profile reach a private address in the open mode', async () => {
+    resolvesTo('192.168.1.20');
+    const box: EgressBoxPolicy = { ...OPEN, hosts: ['*.home.arpa'] };
+    await expect(vetTarget({ host: 'ha.home.arpa', port: 443 }, box)).resolves.toEqual({
+      ok: true,
+      address: '192.168.1.20',
+      family: 4,
+    });
+  });
+
+  it('lets a private address literal of the profile pass', async () => {
+    await expect(
+      vetTarget({ host: '100.101.102.103', port: 8123 }, allowing('100.101.102.103:8123')),
+    ).resolves.toEqual({ ok: true, address: '100.101.102.103', family: 4 });
+  });
+
+  it('does not open a private address for another port of a listed host', async () => {
+    resolvesTo('10.43.27.38');
+    const box: EgressBoxPolicy = { ...OPEN, hosts: ['api.internal:8080'] };
+    await expect(vetTarget({ host: 'api.internal', port: 443 }, box)).resolves.toMatchObject({
       ok: false,
-      category: 'blocked-address',
-      reason: 'target address is in a blocked range',
+      category: 'private-address',
     });
   });
 

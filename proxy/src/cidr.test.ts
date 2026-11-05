@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { allAddressesAllowed, isBlockedAddress } from '../../shared/cidr.ts';
+import {
+  addressKind,
+  allAddressesAllowed,
+  answerKind,
+  isBlockedAddress,
+} from '../../shared/cidr.ts';
 
 test('blocks RFC1918 IPv4 ranges', () => {
   for (const addr of [
@@ -102,4 +107,51 @@ test('a multi-answer record is rejected if ANY address is private', () => {
 
 test('an empty answer set fails closed', () => {
   assert.equal(allAddressesAllowed([]), false);
+});
+
+test('sorts private networks as private, so an explicit host can open them', () => {
+  for (const addr of [
+    '10.43.27.38',
+    '172.16.0.1',
+    '192.168.1.1',
+    '100.64.0.1',
+    '100.101.102.103',
+    '198.18.0.1',
+    'fd7a:115c:a1e0::1',
+    'fc00::1',
+    '::ffff:10.0.0.1',
+  ]) {
+    assert.equal(addressKind(addr), 'private', `${addr} should be private`);
+  }
+});
+
+test('sorts loopback, link-local, multicast and reserved as forbidden', () => {
+  for (const addr of [
+    '127.0.0.1',
+    '169.254.169.254',
+    '0.0.0.0',
+    '224.0.0.1',
+    '255.255.255.255',
+    '::',
+    '::1',
+    'fe80::1',
+    'ff02::1',
+    '::ffff:127.0.0.1',
+    'not-an-ip',
+  ]) {
+    assert.equal(addressKind(addr), 'forbidden', `${addr} should be forbidden`);
+  }
+});
+
+test('sorts public addresses as public', () => {
+  for (const addr of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111']) {
+    assert.equal(addressKind(addr), 'public', `${addr} should be public`);
+  }
+});
+
+test('a DNS answer takes the most restricted kind of its addresses', () => {
+  assert.equal(answerKind(['8.8.8.8', '1.1.1.1']), 'public');
+  assert.equal(answerKind(['8.8.8.8', '10.0.0.1']), 'private');
+  assert.equal(answerKind(['10.0.0.1', '127.0.0.1']), 'forbidden');
+  assert.equal(answerKind([]), 'forbidden');
 });

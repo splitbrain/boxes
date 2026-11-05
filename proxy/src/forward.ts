@@ -3,10 +3,10 @@
 import dns from 'node:dns';
 import http from 'node:http';
 import net from 'node:net';
-import { allAddressesAllowed, isBlockedAddress } from '../../shared/cidr.ts';
+import { type AddressKind, addressKind, answerKind } from '../../shared/cidr.ts';
 import { DEFAULT_PORTS } from '../../shared/hosts.ts';
 import type { EgressBoxPolicy, EgressPolicy } from '../../shared/types.ts';
-import { hostAllowed, isInjectionHost } from './policy.ts';
+import { hostAllowed, hostListed, isInjectionHost } from './policy.ts';
 
 /** Time limit to open the upstream connection of a CONNECT, in milliseconds. */
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -22,6 +22,7 @@ export type DenialCategory =
   | 'port'
   | 'allowlist'
   | 'blocked-address'
+  | 'private-address'
   | 'dns'
   | 'credential-upgrade'
   | 'plaintext-credential-host'
@@ -101,10 +102,35 @@ export type Verdict =
  * that a change to the profile can lift it.
  *
  * @param category The category of the denial.
- * @returns True for the categories allowlist and port.
+ * @returns True for the categories allowlist, port and private-address.
  */
 export function isProfileDenial(category: DenialCategory): boolean {
-  return category === 'allowlist' || category === 'port';
+  return category === 'allowlist' || category === 'port' || category === 'private-address';
+}
+
+/**
+ * Turns the kind of an address into a verdict. A public address passes. A
+ * private address passes only when a host pattern of the box names the
+ * target. A forbidden address never passes.
+ *
+ * @param kind The kind of the address or of the DNS answer.
+ * @param listed True when a host pattern of the box names the target.
+ * @param what The subject of the reason, as in "target address" or "an address of the hostname".
+ * @returns Null when the address passes, or the denial.
+ */
+function addressDenial(
+  kind: AddressKind,
+  listed: boolean,
+  what: string,
+): { category: DenialCategory; reason: string } | null {
+  if (kind === 'public' || (kind === 'private' && listed)) return null;
+  if (kind === 'private') {
+    return {
+      category: 'private-address',
+      reason: `${what} is in a private range, which only a host in the egress profile of this box can reach`,
+    };
+  }
+  return { category: 'blocked-address', reason: `${what} is in a blocked range` };
 }
 
 /**
@@ -125,15 +151,14 @@ export async function vetTarget(target: Target, box: EgressBoxPolicy): Promise<V
     };
   }
 
+  // A private address needs a host that the user named. The open mode alone
+  // does not open private networks.
+  const listed = hostListed(target.host, target.port, box);
+
   const literalFamily = net.isIP(target.host);
   if (literalFamily !== 0) {
-    if (isBlockedAddress(target.host)) {
-      return {
-        ok: false,
-        category: 'blocked-address',
-        reason: 'target address is in a blocked range',
-      };
-    }
+    const denial = addressDenial(addressKind(target.host), listed, 'target address');
+    if (denial) return { ok: false, ...denial };
     return { ok: true, address: target.host, family: literalFamily };
   }
 
@@ -150,15 +175,14 @@ export async function vetTarget(target: Target, box: EgressBoxPolicy): Promise<V
 
   const chosen = answers[0];
   if (!chosen) return { ok: false, category: 'dns', reason: 'no addresses resolved' };
-  if (!allAddressesAllowed(answers.map((a) => a.address))) {
-    // One blocked answer rejects the hostname, against DNS rebinding. A hostname
-    // must not pass with a public record and connect with a private one.
-    return {
-      ok: false,
-      category: 'blocked-address',
-      reason: 'hostname resolves to a blocked address',
-    };
-  }
+  // The most restricted answer decides, against DNS rebinding. A hostname must
+  // not pass with a public record and connect with a private one.
+  const denial = addressDenial(
+    answerKind(answers.map((a) => a.address)),
+    listed,
+    'an address of the hostname',
+  );
+  if (denial) return { ok: false, ...denial };
   return { ok: true, address: chosen.address, family: chosen.family };
 }
 

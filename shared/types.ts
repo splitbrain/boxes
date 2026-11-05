@@ -791,8 +791,9 @@ export interface EgressDenial {
   /** The port of the target. */
   port: number;
   /**
-   * The denial category. It is allowlist for a host that the profile does not allow on port 80 or 443, and
-   * port for another port that no pattern of the profile names.
+   * The denial category. It is allowlist for a host that the profile does not allow on port 80 or 443,
+   * port for another port that no pattern of the profile names, and private-address for a host with a private
+   * address that no pattern of the profile names.
    */
   category: string;
   /** The number of refused attempts of the target while it is in the list of the box. */

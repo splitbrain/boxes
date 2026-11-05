@@ -428,7 +428,33 @@ test('a refused token gets a refresh or the status failing, and a missing scope 
 
 test('the fetch of the OAuth client refuses http and private addresses', async () => {
   await assert.rejects(guardedFetch('http://example.com/', {}), /does not use https/);
-  await assert.rejects(guardedFetch('https://127.0.0.1/', {}), /private address/);
-  await assert.rejects(guardedFetch('https://[::1]/', {}), /private address/);
-  await assert.rejects(guardedFetch('https://localhost/', {}), /private address/);
+  await assert.rejects(guardedFetch('https://127.0.0.1/', {}), /blocked address/);
+  await assert.rejects(guardedFetch('https://[::1]/', {}), /blocked address/);
+  await assert.rejects(guardedFetch('https://localhost/', {}), /blocked address/);
+  await assert.rejects(guardedFetch('https://10.0.0.5/', {}), /blocked address/);
+});
+
+test('the fetch of the OAuth client lets only the host of the MCP server have a private address', async () => {
+  // Another host than the MCP server stays public.
+  await assert.rejects(
+    guardedFetch('https://10.0.0.5/', { privateHost: '10.0.0.6' }),
+    /blocked address/,
+  );
+  // Loopback stays forbidden, also for the host of the MCP server.
+  await assert.rejects(
+    guardedFetch('https://127.0.0.1/', { privateHost: '127.0.0.1' }),
+    /blocked address/,
+  );
+  await assert.rejects(
+    guardedFetch('https://localhost/', { privateHost: 'localhost' }),
+    /blocked address/,
+  );
+  // The host of the MCP server passes the address check. Nothing listens there, so the request fails later.
+  await assert.rejects(
+    guardedFetch('https://10.255.255.1/', {
+      privateHost: '10.255.255.1',
+      signal: AbortSignal.timeout(50),
+    }),
+    /could not reach/,
+  );
 });

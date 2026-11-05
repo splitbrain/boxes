@@ -34,6 +34,20 @@ function hostMatchesAny(host: string, port: number, patterns: readonly string[])
  */
 export function hostAllowed(host: string, port: number, box: EgressBoxPolicy): boolean {
   if (box.open && DEFAULT_PORTS.has(port)) return true;
+  return hostListed(host, port, box);
+}
+
+/**
+ * Checks if a host pattern of a box names a host on a port. Only such an
+ * explicit host can reach a private address. The open mode alone does not
+ * count.
+ *
+ * @param host The hostname or IP literal.
+ * @param port The destination port.
+ * @param box The policy of the box.
+ * @returns True when a host pattern of the box matches.
+ */
+export function hostListed(host: string, port: number, box: EgressBoxPolicy): boolean {
   return hostMatchesAny(host, port, box.hosts);
 }
 

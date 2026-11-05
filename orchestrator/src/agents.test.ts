@@ -17,7 +17,7 @@ import { AgentStore } from './agents.ts';
 import { type Db, openDb } from './db.ts';
 import { HttpError } from './http-error.ts';
 import { McpSecretStore } from './mcp-secrets.ts';
-import { mcpHostPattern } from './mcp-servers.ts';
+import { mcpHostPattern, validMcpServer } from './mcp-servers.ts';
 
 /** The temporary DATA_DIR of each test. */
 let dir: string;
@@ -679,8 +679,13 @@ test('an MCP server is checked at save', () => {
   assert.throws(() => put({ url: 'mcp.example.com' }), /absolute/);
   assert.throws(() => put({ url: 'ftp://mcp.example.com/' }), /absolute/);
   assert.throws(() => put({ url: 'https://user:pw@api.githubcopilot.com/' }), /credentials/);
-  assert.throws(() => put({ ...none, url: 'https://10.0.0.5/mcp' }), /private address/);
-  assert.throws(() => put({ ...none, url: 'https://[::1]/mcp' }), /private address/);
+  assert.throws(() => put({ ...none, url: 'https://127.0.0.1/mcp' }), /loopback/);
+  assert.throws(() => put({ ...none, url: 'https://169.254.169.254/mcp' }), /loopback/);
+  assert.throws(() => put({ ...none, url: 'https://[::1]/mcp' }), /loopback/);
+  // The user names the server, so a private address is fine.
+  for (const url of ['https://10.0.0.5/mcp', 'http://100.101.102.103:8123/mcp']) {
+    assert.doesNotThrow(() => validMcpServer({ ...GITHUB_MCP, ...none, url }));
+  }
   assert.throws(() => put({ url: 'http://api.githubcopilot.com/mcp/' }), /secret header/);
   assert.throws(
     () => put({ ...header('X-Key', 'k', true), url: 'http://mcp.example.com/' }),

@@ -73,7 +73,8 @@ and it can have at most 32 characters. The name, the URL and the authentication 
 them, delete the MCP server and add it again.
 
 The URL must use `https`. An MCP server without secrets can also use `http`, because the egress proxy puts secrets only
-into `https` requests. Boxes does not support MCP servers or authorization servers at private IP addresses. The
+into `https` requests. An MCP server can have a private address. An authorization server must have a public address,
+unless it is on the host of the MCP server. The URL must not name a loopback, link-local or reserved address. The
 [egress proxy](egress.md) always allows the host and the port of an MCP server.
 
 An MCP server uses a bearer token, custom headers, an OAuth login, or no authentication. An MCP server has at most 20

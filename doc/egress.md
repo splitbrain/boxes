@@ -33,8 +33,10 @@ flowchart TB
 The orchestrator sets `HTTP_PROXY` and `HTTPS_PROXY` in the environment of each box container. Tools that use these
 variables connect through the proxy. The [egress profile](egress-profiles.md) of the box decides which hosts and ports
 the proxy allows. All other connections fail, because the box network has no other route. An agent thus cannot use SSH,
-and cannot connect to a database on a remote host. The proxy always refuses a private address, also when a public host
-name has a private address. The proxy closes a connection that carries no traffic for 120 seconds.
+and cannot connect to a database on a remote host. The proxy refuses a private address, unless a host pattern of the
+box names the host. These patterns come from the egress profile, the credentials, the API keys and the MCP servers. The
+proxy always refuses loopback, link-local, multicast and reserved addresses.
+The proxy closes a connection that carries no traffic for 120 seconds.
 
 ## Credentials
 
@@ -167,8 +169,9 @@ The tunnel never intercepts, so the connections of the engine cannot loop back i
 
 The front door (`forward.ts`) handles plain HTTP with an absolute URI, and CONNECT. It vets a target in a fixed order:
 the host and the port, then the address. The host check comes before the DNS lookup, so the proxy never resolves a
-denied name. Every resolved address must pass. `shared/cidr.ts` holds the blocked ranges, with the IPv6 forms that
-embed an IPv4 address, and input that it cannot parse fails closed.
+denied name. Every resolved address must pass. `shared/cidr.ts` sorts each address as public, private or forbidden,
+also the IPv6 forms that embed an IPv4 address. Input that it cannot parse is forbidden. A private address passes only
+when a host pattern of the box names the host.
 
 A forwarder connects to the one address that vetting chose, and does not resolve the name a second time. This closes DNS
 rebinding for that connection. On the intercepted path the upstream tunnel gives this protection, because the front door
