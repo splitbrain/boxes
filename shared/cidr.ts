@@ -199,16 +199,6 @@ export function addressKind(address: string): AddressKind {
 }
 
 /**
- * Checks if an address is in a range that a box reaches only through an explicit host, or never.
- *
- * @param address The IPv4 or IPv6 address.
- * @returns True when the address is not public. Input that does not parse counts as blocked.
- */
-export function isBlockedAddress(address: string): boolean {
-  return addressKind(address) !== 'public';
-}
-
-/**
  * Finds the kind of a DNS answer: the most restricted kind of its addresses.
  *
  * @param addresses The resolved addresses.
@@ -220,14 +210,4 @@ export function answerKind(addresses: readonly string[]): AddressKind {
   if (kinds.includes('forbidden')) return 'forbidden';
   if (kinds.includes('private')) return 'private';
   return 'public';
-}
-
-/**
- * Checks if every address of a DNS answer is public.
- *
- * @param addresses The resolved addresses.
- * @returns True when the list has addresses and none of them is blocked.
- */
-export function allAddressesAllowed(addresses: readonly string[]): boolean {
-  return answerKind(addresses) === 'public';
 }
