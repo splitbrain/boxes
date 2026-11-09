@@ -776,6 +776,17 @@ export const MIGRATIONS: string[] = [
     FOREIGN KEY (set_id, server) REFERENCES agent_mcp_servers(set_id, name) ON DELETE CASCADE
   );
   `,
+  // Adds the upstream CAs of each user, one for each host pattern.
+  `
+  CREATE TABLE upstream_cas (
+    owner      TEXT NOT NULL,
+    host       TEXT NOT NULL,
+    cert       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (owner, host)
+  );
+  `,
 ];
 
 /** An open database handle. */

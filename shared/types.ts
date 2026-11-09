@@ -58,6 +58,10 @@ export interface ApiKeySummary {
   hosts: string[];
   /** The last four characters of the key, or null for a key too short to show any. */
   account: string | null;
+  /** The upstream CA that all hosts of the key share, or null when the hosts have none or different ones. */
+  upstreamCa: string | null;
+  /** True when the hosts of the key have different upstream CAs. */
+  mixedUpstreamCas: boolean;
   /** The time the key was last stored, in epoch milliseconds. */
   updatedAt: number;
 }
@@ -727,6 +731,19 @@ export interface EgressBoxPolicy {
    * exact name or a wildcard for one label, with an optional port.
    */
   hosts: string[];
+  /** The upstream CAs of the owner of the box. Undefined means none. */
+  upstreamCas?: EgressUpstreamCa[];
+}
+
+/**
+ * A private certificate authority that the proxy trusts for one host, in
+ * addition to the public ones, when it intercepts the TLS of the host.
+ */
+export interface EgressUpstreamCa {
+  /** The host pattern, with the grammar of the hosts of a box. */
+  host: string;
+  /** One or more certificates, as PEM. */
+  cert: string;
 }
 
 /** The status that the proxy reports on the control channel. It holds no secret. */
@@ -1187,6 +1204,17 @@ export interface AgentMcpServerState extends AgentMcpServer {
   status: AgentMcpTokenStatus | null;
   /** The reason of the last failure of the OAuth token, or null. */
   lastError: string | null;
+  /** The upstream CA of the host of the server, or null when it has none. */
+  upstreamCa: string | null;
+}
+
+/** Body of a request that saves a remote MCP server. */
+export interface AgentMcpServerBody extends AgentMcpServer {
+  /**
+   * The upstream CA of the host of the server, as PEM. An empty string removes the upstream CA of the host, and
+   * undefined keeps it.
+   */
+  upstreamCa?: string;
 }
 
 /** Body of a request that starts the OAuth login of a remote MCP server. */

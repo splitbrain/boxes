@@ -2,6 +2,7 @@
 
 import dns from 'node:dns';
 import net from 'node:net';
+import tls from 'node:tls';
 import * as oauth from 'oauth4webapi';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { type AddressKind, addressKind } from '../../shared/cidr.ts';
@@ -66,6 +67,8 @@ export interface OAuthRequest {
    * user named it. Hosts that a remote server names stay public.
    */
   privateHost?: string;
+  /** The upstream CA of the MCP server as PEM. A request to privateHost trusts it in addition to the public CAs. */
+  upstreamCa?: string;
 }
 
 /** The function that sends one request of the OAuth client. Tests pass a fake. */
@@ -156,6 +159,7 @@ export class McpOAuth {
   /**
    * @param secrets The store of the secret rows.
    * @param server The function that gives a stored MCP server of a user, or throws a 404.
+   * @param upstreamCa The function that gives the upstream CA of the host of an MCP server of a user, or null.
    * @param fetch The function that sends the requests to the remote servers.
    * @param now The clock.
    */
@@ -164,6 +168,8 @@ export class McpOAuth {
     private readonly secrets: McpSecretStore,
     /** Gives a stored MCP server of a user. */
     private readonly server: (owner: string, setId: string, name: string) => AgentMcpServer,
+    /** Gives the upstream CA of the host of an MCP server of a user. */
+    private readonly upstreamCa: (owner: string, mcpUrl: string) => string | null,
     /** Sends the requests to the remote servers. */
     private readonly fetch: OAuthFetch = guardedFetch,
     /** The clock. */
@@ -197,9 +203,9 @@ export class McpOAuth {
     const doc = readDocument(row.oauth);
 
     try {
-      const found = await this.discover(entry.url);
+      const found = await this.discover(owner, entry.url);
       const as = found.as;
-      const client = await this.selectClient(doc, as, redirectUri, body, entry.url);
+      const client = await this.selectClient(owner, doc, as, redirectUri, body, entry.url);
       if (client === null) return { needsClient: true, redirectUri };
 
       const server: OAuthServer = {
@@ -297,7 +303,10 @@ export class McpOAuth {
         checked,
         login.redirectUri,
         login.verifier,
-        { ...this.httpOptions(login.resource), additionalParameters: { resource: login.resource } },
+        {
+          ...this.httpOptions(owner, login.resource),
+          additionalParameters: { resource: login.resource },
+        },
       );
       tokens = await oauth.processAuthorizationCodeResponse(as, client, response);
     } catch (err) {
@@ -415,7 +424,7 @@ export class McpOAuth {
         client,
         clientAuth(doc.client),
         doc.refresh_token,
-        { ...this.httpOptions(row.url), additionalParameters: { resource: row.url } },
+        { ...this.httpOptions(row.owner, row.url), additionalParameters: { resource: row.url } },
       );
       tokens = await oauth.processRefreshTokenResponse(as, client, response);
     } catch (err) {
@@ -453,12 +462,13 @@ export class McpOAuth {
   /**
    * Finds the authorization server of an MCP server through its protected resource metadata.
    *
+   * @param owner The owner of the MCP server.
    * @param url The URL of the MCP server.
    * @returns The authorization server metadata and the scopes of the resource.
    * @throws {Error} When a step fails.
    */
-  private async discover(url: string): Promise<Discovery> {
-    const fetch = this.fetchFor(url);
+  private async discover(owner: string, url: string): Promise<Discovery> {
+    const fetch = this.fetchFor(owner, url);
     const probe = await fetch(url, {
       method: 'POST',
       headers: {
@@ -550,6 +560,7 @@ export class McpOAuth {
    * authorization server with the same redirect URI comes next. Otherwise, the orchestrator registers a new
    * client through Dynamic Client Registration.
    *
+   * @param owner The owner of the MCP server.
    * @param doc The stored OAuth document.
    * @param as The authorization server metadata.
    * @param redirectUri The redirect URI of the login.
@@ -558,6 +569,7 @@ export class McpOAuth {
    * @returns The client, or null when the user must enter a client ID.
    */
   private async selectClient(
+    owner: string,
     doc: OAuthDocument,
     as: oauth.AuthorizationServer,
     redirectUri: string,
@@ -592,7 +604,7 @@ export class McpOAuth {
           ? { token_endpoint_auth_method: 'none' }
           : {}),
       },
-      this.httpOptions(mcpUrl),
+      this.httpOptions(owner, mcpUrl),
     );
     const registered = await oauth.processDynamicClientRegistrationResponse(response);
     const secret =
@@ -614,24 +626,28 @@ export class McpOAuth {
 
   /**
    * Gives the fetch function for the requests of one MCP server. The host of the MCP server may have a private
-   * address, because the user entered it.
+   * address, because the user entered it. A request to the host trusts the upstream CA of the user for the host.
    *
+   * @param owner The owner of the MCP server.
    * @param mcpUrl The URL of the MCP server.
    * @returns The fetch function.
    */
-  private fetchFor(mcpUrl: string): OAuthFetch {
+  private fetchFor(owner: string, mcpUrl: string): OAuthFetch {
     const privateHost = new URL(mcpUrl).hostname;
-    return (url, init) => this.fetch(url, { ...init, privateHost });
+    const upstreamCa = this.upstreamCa(owner, mcpUrl);
+    return (url, init) =>
+      this.fetch(url, { ...init, privateHost, ...(upstreamCa ? { upstreamCa } : {}) });
   }
 
   /**
    * Gives the options of the requests of oauth4webapi.
    *
+   * @param owner The owner of the MCP server.
    * @param mcpUrl The URL of the MCP server.
    * @returns The options with the fetch function.
    */
-  private httpOptions(mcpUrl: string): { [oauth.customFetch]: OAuthFetch } {
-    return { [oauth.customFetch]: this.fetchFor(mcpUrl) };
+  private httpOptions(owner: string, mcpUrl: string): { [oauth.customFetch]: OAuthFetch } {
+    return { [oauth.customFetch]: this.fetchFor(owner, mcpUrl) };
   }
 
   /** Deletes the started logins that are older than LOGIN_TTL_MS. */
@@ -892,6 +908,18 @@ const guardedAgent = new Agent({ connect: { lookup: guardedLookup(false) } });
 const privateAgent = new Agent({ connect: { lookup: guardedLookup(true) } });
 
 /**
+ * Makes a connection pool for the host of an MCP server with an upstream CA.
+ *
+ * @param cert The upstream CA as PEM.
+ * @returns The pool, which trusts the CA in addition to the public CAs.
+ */
+function upstreamCaAgent(cert: string): Agent {
+  return new Agent({
+    connect: { lookup: guardedLookup(true), ca: [...tls.rootCertificates, cert] },
+  });
+}
+
+/**
  * Sends one request to a remote server of an OAuth login. The request refuses a URL without https and a host with
  * a private address. It has a timeout of REQUEST_TIMEOUT_MS, and it refuses an answer above MAX_ANSWER_BYTES.
  *
@@ -913,41 +941,47 @@ export const guardedFetch: OAuthFetch = async (url, init) => {
     AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     ...(init.signal ? [init.signal] : []),
   ]);
-  let res: Awaited<ReturnType<typeof undiciFetch>>;
+  // A pool with an upstream CA serves one request, so a removed CA leaves no pool behind.
+  const own = allowPrivate && init.upstreamCa ? upstreamCaAgent(init.upstreamCa) : null;
   try {
-    res = await undiciFetch(url, {
-      method: init.method ?? 'GET',
-      headers: init.headers,
-      body: init.body,
-      redirect: 'manual',
-      dispatcher: allowPrivate ? privateAgent : guardedAgent,
-      signal,
-    });
-  } catch (err) {
-    // The fetch error says only "fetch failed", and its cause has the reason.
-    const cause = (err as { cause?: unknown }).cause;
-    const reason = cause instanceof Error ? cause.message : (err as Error).message;
-    throw new Error(`could not reach ${target.host}: ${reason}`);
-  }
-
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  if (res.body) {
-    for await (const chunk of res.body) {
-      size += chunk.byteLength;
-      if (size > MAX_ANSWER_BYTES) {
-        await res.body.cancel();
-        throw new Error(`the answer of ${target.host} is larger than ${MAX_ANSWER_BYTES} bytes`);
-      }
-      chunks.push(chunk);
+    let res: Awaited<ReturnType<typeof undiciFetch>>;
+    try {
+      res = await undiciFetch(url, {
+        method: init.method ?? 'GET',
+        headers: init.headers,
+        body: init.body,
+        redirect: 'manual',
+        dispatcher: own ?? (allowPrivate ? privateAgent : guardedAgent),
+        signal,
+      });
+    } catch (err) {
+      // The fetch error says only "fetch failed", and its cause has the reason.
+      const cause = (err as { cause?: unknown }).cause;
+      const reason = cause instanceof Error ? cause.message : (err as Error).message;
+      throw new Error(`could not reach ${target.host}: ${reason}`);
     }
+
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (res.body) {
+      for await (const chunk of res.body) {
+        size += chunk.byteLength;
+        if (size > MAX_ANSWER_BYTES) {
+          await res.body.cancel();
+          throw new Error(`the answer of ${target.host} is larger than ${MAX_ANSWER_BYTES} bytes`);
+        }
+        chunks.push(chunk);
+      }
+    }
+    const empty = res.status === 204 || res.status === 304;
+    return new Response(empty ? null : Buffer.concat(chunks), {
+      status: res.status,
+      statusText: res.statusText,
+      headers: [...res.headers],
+    });
+  } finally {
+    void own?.destroy();
   }
-  const empty = res.status === 204 || res.status === 304;
-  return new Response(empty ? null : Buffer.concat(chunks), {
-    status: res.status,
-    statusText: res.statusText,
-    headers: [...res.headers],
-  });
 };
 
 /**

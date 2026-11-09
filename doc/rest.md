@@ -152,10 +152,12 @@ mutation answers with the whole set.
 `PUT …/items` accepts an `AgentItemBody` with `name` and `content`, and creates or replaces the skill under that name.
 DELETE removes it.
 
-`PUT …/mcp-servers` accepts an `AgentMcpServer` with `name`, `url`, `auth` and `headers`. It creates the
-[MCP server](agent-sets.md#mcp-servers), or it changes the headers of the server with that name. Each header has
-`name`, `value` and `secret`. A secret header with an empty value keeps the stored value. The answer contains each
-secret header with an empty value. DELETE removes the server.
+`PUT …/mcp-servers` accepts an `AgentMcpServerBody` with `name`, `url`, `auth`, `headers` and an optional
+`upstreamCa`. It creates the [MCP server](agent-sets.md#mcp-servers), or it changes the headers and the upstream CA of
+the server with that name. Each header has `name`, `value` and `secret`. A secret header with an empty value keeps the
+stored value. The answer contains each secret header with an empty value. `upstreamCa` holds the
+[upstream CA](credentials.md#other-api-keys) of the host of the server as PEM. An absent `upstreamCa` keeps the stored
+one, and an empty string removes it. DELETE removes the server.
 
 `POST …/connect` accepts `{ "origin": "…", "clientId"?, "clientSecret"? }` and starts the
 [OAuth login](agent-sets.md#mcp-servers) of the server. `origin` is the origin of the dashboard, and it must be equal
@@ -196,6 +198,20 @@ over it. Each skill in `skills` names the repository it comes from, or `null`.
 `:id` is one of `claude`, `openai`, `github`, `gitlab`, `devtunnels`. A PUT accepts a `PutCredentialBody` with `method`
 (`token`, `api_key`, or `oauth`; default `token`) and the `secret`. The secret goes in and never comes back out: every
 answer carries only an account and a status.
+
+## API keys
+
+| Method | Path | Answer |
+| --- | --- | --- |
+| GET | `/api/api-keys` | `ApiKeySummary[]` |
+| PUT | `/api/api-keys/:name` | `ApiKeySummary` |
+| DELETE | `/api/api-keys/:name` | 204 |
+
+`:name` is the environment variable of the [API key](credentials.md#other-api-keys). A PUT accepts `hosts`, an optional
+`secret` and an optional `upstreamCa`. A PUT without a `secret` keeps the stored key. `upstreamCa` holds the upstream
+CA of all hosts of the key as PEM. An absent `upstreamCa` keeps the upstream CAs of the hosts, and an empty string
+removes them. The answer holds the name, the hosts, the last four characters of the key, the upstream CA that all
+hosts of the key share, or `null`, and `mixedUpstreamCas`, which is true when the hosts have different upstream CAs.
 
 ## Logins
 

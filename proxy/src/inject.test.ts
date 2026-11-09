@@ -6,10 +6,12 @@
 
 import { createHash } from 'node:crypto';
 import http from 'node:http';
+import http2 from 'node:http2';
 import https from 'node:https';
 import net from 'node:net';
 import { networkInterfaces } from 'node:os';
 import tls from 'node:tls';
+import * as mockttp from 'mockttp';
 import { generateCACertificate } from 'mockttp';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { EgressPolicy, EgressRefusedToken } from '../../shared/types.ts';
@@ -39,7 +41,19 @@ let origin: https.Server;
 /** Port the stand-in origin listens on. */
 let originPort = 0;
 
-/** A stand-in for the upstream tunnel. It forwards every CONNECT to the stand-in origin. */
+/** The hostname of the stand-in origin with a private CA. */
+const PRIVATE_HOST = 'mcp.internal';
+
+/** The private CA of the stand-in origin for PRIVATE_HOST. */
+let privateCa: { key: string; cert: string };
+
+/** A TLS server that stands in for PRIVATE_HOST. It signs its certificate with the private CA. */
+let privateOrigin: mockttp.Mockttp;
+
+/**
+ * A stand-in for the upstream tunnel. It forwards each CONNECT to PRIVATE_HOST
+ * to the private origin, and every other CONNECT to the stand-in origin.
+ */
 let tunnel: http.Server;
 
 /** Port the stand-in tunnel listens on. */
@@ -56,6 +70,12 @@ let starts = 0;
 
 /** The refused OAuth tokens that the engine reported. */
 let refusedTokens: EgressRefusedToken[] = [];
+
+/** The server name of each TLS connection of the engine, and true when the connection named a CA list. */
+let upstreamTls: Array<{ servername: string | undefined; ca: boolean }> = [];
+
+/** The box of each connection of a test to the engine, by the local port of the connection. */
+const engineClients = new Map<number, string>();
 
 /** The unwrapped TLS client, for the connections these tests make themselves. */
 const connectTls = tls.connect;
@@ -84,13 +104,15 @@ const listen = (server: http.Server | https.Server): Promise<number> =>
  *
  * The engine checks the certificate of the origin against the system trust
  * store, and the test process cannot add a CA to that store at run time. The
- * wrapper skips the check for a connection that names no CA, as the
- * connections of the engine do. The connections of the tests use the
+ * wrapper skips the check for a connection that names no CA list, and records
+ * each connection in upstreamTls. The connections of the tests use the
  * unwrapped client.
  */
 function trustTheStandInOrigin(): void {
-  const relaxed = (options: tls.ConnectionOptions, onSecure?: () => void): tls.TLSSocket =>
-    connectTls(options.ca ? options : { ...options, rejectUnauthorized: false }, onSecure);
+  const relaxed = (options: tls.ConnectionOptions, onSecure?: () => void): tls.TLSSocket => {
+    upstreamTls.push({ servername: options.servername, ca: options.ca !== undefined });
+    return connectTls(options.ca ? options : { ...options, rejectUnauthorized: false }, onSecure);
+  };
   tls.connect = relaxed as typeof tls.connect;
 }
 
@@ -139,11 +161,18 @@ beforeAll(async () => {
   });
   originPort = await listen(origin);
 
+  privateCa = await generateCACertificate({ subject: { commonName: 'Boxes private test CA' } });
+  privateOrigin = mockttp.getLocal({ https: privateCa });
+  await privateOrigin.start();
+  await privateOrigin.forGet().always().thenReply(200, 'private origin reached\n');
+  await privateOrigin.forAnyWebSocket().always().thenEcho();
+
   // The engine reaches its proxy by CONNECT, whatever the target scheme.
   tunnel = http.createServer();
   tunnel.on('connect', (req, client, head) => {
     connects.push(req.url ?? '');
-    const upstream = net.connect({ host: '127.0.0.1', port: originPort }, () => {
+    const port = req.url?.startsWith(`${PRIVATE_HOST}:`) ? privateOrigin.port : originPort;
+    const upstream = net.connect({ host: '127.0.0.1', port }, () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length > 0) upstream.write(head);
       upstream.pipe(client);
@@ -157,6 +186,7 @@ beforeAll(async () => {
   interceptor = new Interceptor({
     policy: () => policy,
     upstreamProxyUrl: () => `http://127.0.0.1:${tunnelPort}`,
+    engineClients,
     denied: () => {},
     refusedToken: (report) => refusedTokens.push(report),
     log: (msg) => {
@@ -169,11 +199,13 @@ afterEach(() => {
   received = [];
   connects = [];
   refusedTokens = [];
+  upstreamTls = [];
   endStream();
 });
 
 afterAll(async () => {
   await interceptor.stop();
+  await privateOrigin.stop();
   origin.close();
   tunnel.close();
   tls.connect = connectTls;
@@ -208,15 +240,20 @@ function githubPolicy(over: Partial<EgressPolicy> = {}): EgressPolicy {
  * @param port The port of the engine.
  * @param authority The host and port to send in the CONNECT.
  * @param host The address of the engine to connect to.
+ * @param box The id of the box that the connection belongs to, or undefined for no box.
  * @returns The socket, once the engine has answered the CONNECT.
  */
 function tunnelThroughEngine(
   port: number,
   authority: string,
   host = '127.0.0.1',
+  box?: string,
 ): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host, port }, () => {
+      if (box !== undefined && socket.localPort !== undefined) {
+        engineClients.set(socket.localPort, box);
+      }
       socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`);
       socket.once('data', () => resolve(socket));
     });
@@ -233,6 +270,7 @@ function tunnelThroughEngine(
  * @param path The request path.
  * @param engineHost The address of the engine to connect to.
  * @param targetPort The port of the origin, as the client names it in the CONNECT.
+ * @param box The id of the box that the connection belongs to, or undefined for no box.
  * @returns The status and the body of the answer.
  */
 async function throughEngine(
@@ -242,8 +280,9 @@ async function throughEngine(
   path = '/user',
   engineHost = '127.0.0.1',
   targetPort = 443,
+  box?: string,
 ): Promise<Answer> {
-  const socket = await tunnelThroughEngine(port, `${host}:${targetPort}`, engineHost);
+  const socket = await tunnelThroughEngine(port, `${host}:${targetPort}`, engineHost, box);
   return new Promise((resolve, reject) => {
     const req = https.request(
       {
@@ -273,6 +312,7 @@ async function throughEngine(
  * @param extraHeaders More request headers.
  * @param host The hostname of the origin.
  * @param path The request path.
+ * @param box The id of the box that the connection belongs to, or undefined for no box.
  * @returns Status 101 when the engine forwarded the upgrade. Otherwise the
  *   status of the refusal, with its status message as the body.
  */
@@ -281,8 +321,9 @@ async function upgradeThroughEngine(
   extraHeaders: http.OutgoingHttpHeaders = {},
   host = 'api.github.com',
   path = '/v1/responses',
+  box?: string,
 ): Promise<Answer> {
-  const socket = await tunnelThroughEngine(port, `${host}:443`, '127.0.0.1');
+  const socket = await tunnelThroughEngine(port, `${host}:443`, '127.0.0.1', box);
   return new Promise((resolve, reject) => {
     const req = https.request({
       createConnection: () => connectTls({ socket, servername: host, ca: ca.cert }),
@@ -689,6 +730,107 @@ describe('the interception engine', () => {
     expect(received).toHaveLength(1);
     expect(received[0]?.headers.authorization).toBe(`Bearer ${SECRET}`);
     secure.destroy();
+  }, 30_000);
+
+  it('trusts an upstream CA for the boxes that have it, and only for them', async () => {
+    const other = await generateCACertificate({ subject: { commonName: 'Boxes other CA' } });
+    policy = githubPolicy({
+      credentials: [],
+      boxes: [
+        {
+          box: 'with-ca',
+          token: 'token-a',
+          open: false,
+          hosts: [],
+          upstreamCas: [{ host: PRIVATE_HOST, cert: privateCa.cert }],
+        },
+        {
+          box: 'other-ca',
+          token: 'token-b',
+          open: false,
+          hosts: [],
+          upstreamCas: [{ host: PRIVATE_HOST, cert: other.cert }],
+        },
+        { box: 'without-ca', token: 'token-c', open: false, hosts: [] },
+      ],
+    });
+    await interceptor.apply();
+    const port = interceptor.port()!;
+    const get = (box: string): Promise<Answer> =>
+      throughEngine(port, {}, PRIVATE_HOST, '/', '127.0.0.1', 443, box);
+
+    expect(await get('with-ca')).toEqual({ status: 200, body: 'private origin reached\n' });
+    expect(upstreamTls.filter((c) => c.servername === PRIVATE_HOST)).toEqual([
+      { servername: PRIVATE_HOST, ca: true },
+    ]);
+    expect((await get('other-ca')).status).toBe(502);
+
+    upstreamTls = [];
+    await get('without-ca');
+    expect(upstreamTls.filter((c) => c.servername === PRIVATE_HOST)).toEqual([
+      { servername: PRIVATE_HOST, ca: false },
+    ]);
+
+    const upgrade = await upgradeThroughEngine(port, {}, PRIVATE_HOST, '/ws', 'with-ca');
+    expect(upgrade.status).toBe(101);
+  }, 30_000);
+
+  it('trusts an upstream CA for a client that speaks HTTP/2', async () => {
+    policy = githubPolicy({
+      credentials: [],
+      boxes: [
+        {
+          box: 'with-ca',
+          token: 'token-a',
+          open: false,
+          hosts: [],
+          upstreamCas: [{ host: PRIVATE_HOST, cert: privateCa.cert }],
+        },
+      ],
+    });
+    await interceptor.apply();
+
+    const socket = await tunnelThroughEngine(
+      interceptor.port()!,
+      `${PRIVATE_HOST}:443`,
+      '127.0.0.1',
+      'with-ca',
+    );
+    const session = http2.connect(`https://${PRIVATE_HOST}`, {
+      createConnection: () =>
+        connectTls({ socket, servername: PRIVATE_HOST, ca: ca.cert, ALPNProtocols: ['h2'] }),
+    });
+    const answer = await new Promise<Answer>((resolve, reject) => {
+      const stream = session.request({ ':path': '/' });
+      let status = 0;
+      let body = '';
+      stream.on('response', (headers) => (status = Number(headers[':status'])));
+      stream.on('data', (chunk) => (body += chunk));
+      stream.on('end', () => resolve({ status, body }));
+      stream.on('error', reject);
+    });
+    session.close();
+
+    expect(answer).toEqual({ status: 200, body: 'private origin reached\n' });
+    expect(upstreamTls.filter((c) => c.servername === PRIVATE_HOST)).toEqual([
+      { servername: PRIVATE_HOST, ca: true },
+    ]);
+  }, 30_000);
+
+  it('restarts when the set of upstream CAs changes', async () => {
+    const box = { box: 'with-ca', token: 'token-a', open: false, hosts: [] };
+    policy = githubPolicy({ boxes: [box] });
+    await interceptor.apply();
+    starts = 0;
+
+    policy = githubPolicy({
+      boxes: [{ ...box, upstreamCas: [{ host: PRIVATE_HOST, cert: privateCa.cert }] }],
+    });
+    await interceptor.apply();
+    expect(starts).toBe(1);
+
+    await interceptor.apply();
+    expect(starts).toBe(1);
   }, 30_000);
 
   it('stops decrypting as soon as the policy drops its credentials', async () => {

@@ -5,7 +5,13 @@ import * as mockttp from 'mockttp';
 import type { EgressPolicy, EgressRefusedToken } from '../../shared/types.ts';
 import { bearerChallenge } from '../../shared/www-authenticate.ts';
 import { type DenialCategory, PLAINTEXT_CREDENTIAL_REASON } from './forward.ts';
-import { credentialsForHost, decideCredentials, injectionPatterns } from './policy.ts';
+import {
+  credentialsForHost,
+  decideCredentials,
+  injectionPatterns,
+  upstreamCaCerts,
+  upstreamCasFor,
+} from './policy.ts';
 
 /** Callbacks of the interceptor. */
 export interface InterceptorOptions {
@@ -16,12 +22,35 @@ export interface InterceptorOptions {
    * through, so the address vetting also covers what the engine forwards.
    */
   upstreamProxyUrl: () => string;
+  /** The id of the box of each open connection from the front door, by the remote port of the connection. */
+  engineClients: ReadonlyMap<number, string>;
   /** Counts one denial under its category. */
   denied: (category: DenialCategory) => void;
   /** Records a server answer that refused an OAuth token. */
   refusedToken: (report: EgressRefusedToken) => void;
   /** Writes one structured log line. */
   log: (msg: string, fields?: Record<string, unknown>) => void;
+}
+
+/**
+ * Gives the destination of an intercepted request.
+ *
+ * @param req The intercepted request or upgrade.
+ * @returns The hostname, the port and the scheme with its colon. The scheme is empty when the URL does not parse.
+ */
+function targetOf(req: CompletedRequest): { host: string; port: number; protocol: string } {
+  try {
+    const url = new URL(req.url);
+    const encrypted = url.protocol === 'https:' || url.protocol === 'wss:';
+    const port = url.port !== '' ? Number(url.port) : encrypted ? 443 : 80;
+    return { host: url.hostname, port, protocol: url.protocol };
+  } catch {
+    return {
+      host: req.destination?.hostname ?? '',
+      port: req.destination?.port ?? 443,
+      protocol: '',
+    };
+  }
 }
 
 /**
@@ -74,8 +103,8 @@ export class Interceptor {
   /** The running engine, or null when nothing is intercepted. */
   private server: mockttp.Mockttp | null = null;
 
-  /** The CA certificate the running server was started with. */
-  private runningCert: string | null = null;
+  /** The CA certificate and the upstream CAs that the running server was started with, as one text. */
+  private runningKey: string | null = null;
 
   /**
    * The last queued call. enqueue chains each new call to it, so starts and
@@ -122,10 +151,11 @@ export class Interceptor {
   /**
    * Makes the engine match the current policy.
    *
-   * A policy without a CA or without credentials stops the engine. A changed CA
-   * restarts the engine, because the engine signs its certificates with the CA.
-   * A changed credential needs no restart, because the rule reads the policy
-   * for each request.
+   * A policy without a CA, or without credentials and upstream CAs, stops the
+   * engine. A changed CA restarts the engine, because the engine signs its
+   * certificates with the CA. A changed set of upstream CAs restarts the
+   * engine, because each upstream CA has rules of its own. A changed credential
+   * needs no restart, because the rules read the policy for each request.
    *
    * Calls run one after another. A new server listens before the old server
    * stops, so port() never returns null while the policy asks for interception.
@@ -142,13 +172,16 @@ export class Interceptor {
   /** The body of apply, run with no other call in flight. */
   private async applyNow(): Promise<void> {
     const policy = this.opts.policy();
-    const wanted = policy.ca !== null && policy.credentials.length > 0 ? policy.ca : null;
+    const certs = upstreamCaCerts(policy).sort();
+    const wanted =
+      policy.ca !== null && (policy.credentials.length > 0 || certs.length > 0) ? policy.ca : null;
 
     if (wanted === null) {
       await this.stopNow();
       return;
     }
-    if (this.server && this.runningCert === wanted.cert) return;
+    const key = [wanted.cert, ...certs].join('\n');
+    if (this.server && this.runningKey === key) return;
 
     const server = mockttp.getLocal({
       https: { key: wanted.key, cert: wanted.cert },
@@ -161,18 +194,41 @@ export class Interceptor {
 
     await server.start();
     try {
+      const proxyConfig = { proxyUrl: this.opts.upstreamProxyUrl() };
+      // The engine uses the first rule that matches, so the rules of the
+      // upstream CAs come before the general rule.
+      for (const cert of certs) {
+        await server
+          .forAnyRequest()
+          .always()
+          .matching((req) => this.upstreamCa(req) === cert)
+          .thenPassThrough({
+            beforeRequest: (req) => this.decide(req),
+            proxyConfig,
+            additionalTrustedCAs: [{ cert }],
+          });
+      }
       await server.forAnyRequest().thenPassThrough({
         beforeRequest: (req) => this.decide(req),
-        proxyConfig: { proxyUrl: this.opts.upstreamProxyUrl() },
+        proxyConfig,
       });
 
-      // The first rule forwards the upgrades that upgradeAllowed accepts. The
-      // second refuses all others with a 403 and a reason.
+      // The engine runs the matchers of all rules, and upgradeAllowed counts each
+      // refusal. Only one matcher gets past the check of the upstream CA, so
+      // upgradeAllowed runs once for each upgrade. The last rule refuses all
+      // other upgrades with a 403 and a reason.
+      for (const cert of certs) {
+        await server
+          .forAnyWebSocket()
+          .always()
+          .matching((req) => this.upstreamCa(req) === cert && this.upgradeAllowed(req))
+          .thenPassThrough({ proxyConfig, additionalTrustedCAs: [{ cert }] });
+      }
       await server
         .forAnyWebSocket()
         .always()
-        .matching((req) => this.upgradeAllowed(req))
-        .thenPassThrough({ proxyConfig: { proxyUrl: this.opts.upstreamProxyUrl() } });
+        .matching((req) => this.upstreamCa(req) === null && this.upgradeAllowed(req))
+        .thenPassThrough({ proxyConfig });
       await server
         .forAnyWebSocket()
         .always()
@@ -199,7 +255,7 @@ export class Interceptor {
 
     const previous = this.server;
     this.server = server;
-    this.runningCert = wanted.cert;
+    this.runningKey = key;
     if (previous) await this.stopServer(previous);
     this.opts.log('interception engine started', {
       port: server.port,
@@ -212,7 +268,7 @@ export class Interceptor {
     if (!this.server) return;
     const server = this.server;
     this.server = null;
-    this.runningCert = null;
+    this.runningKey = null;
     await this.stopServer(server);
   }
 
@@ -278,6 +334,22 @@ export class Interceptor {
   }
 
   /**
+   * Finds the upstream CA that a request trusts. The box of the request is the
+   * box of its connection from the front door.
+   *
+   * @param req The intercepted request or upgrade.
+   * @returns The certificate of the first upstream CA of the box for the host of the request, or null.
+   */
+  private upstreamCa(req: CompletedRequest): string | null {
+    const id =
+      req.remotePort === undefined ? undefined : this.opts.engineClients.get(req.remotePort);
+    const box = id === undefined ? undefined : this.opts.policy().boxes.find((b) => b.box === id);
+    if (!box) return null;
+    const { host, port } = targetOf(req);
+    return upstreamCasFor(host, port, box)[0] ?? null;
+  }
+
+  /**
    * Runs the checks that requests and upgrades share. The request must come
    * from the front door over loopback and must use TLS to a credential host.
    * decideCredentials then decides the swap.
@@ -287,23 +359,7 @@ export class Interceptor {
    */
   private screen(req: CompletedRequest): { host: string; verdict: Screening } {
     const policy = this.opts.policy();
-    let host: string;
-    let port: number;
-    let protocol = '';
-    try {
-      const url = new URL(req.url);
-      host = url.hostname;
-      protocol = url.protocol;
-      port =
-        url.port !== ''
-          ? Number(url.port)
-          : protocol === 'https:' || protocol === 'wss:'
-            ? 443
-            : 80;
-    } catch {
-      host = req.destination?.hostname ?? '';
-      port = req.destination?.port ?? 443;
-    }
+    const { host, port, protocol } = targetOf(req);
 
     // The engine listens on every interface, and the proxy sits on every box
     // network. Only the front door, over loopback, may reach it, so an agent

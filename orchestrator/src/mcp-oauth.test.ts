@@ -56,6 +56,7 @@ function setup(options: FakeOAuthOptions = {}): { fake: FakeOAuth; client: McpOA
   const client = new McpOAuth(
     secrets,
     (owner, id, name) => agents.mcpServer(owner, id, name),
+    () => null,
     fake.fetch,
     () => now,
   );
@@ -144,6 +145,29 @@ test('a login finds the authorization server, registers a client and stores the 
   );
   // The second login uses the stored client.
   assert.equal(fake.requests.filter((r) => r.url.endsWith('/register')).length, 1);
+});
+
+test('each request of a login and a refresh names the upstream CA of the MCP server of its owner', async () => {
+  const fake = fakeOAuth();
+  agents.putMcpServer('', setId, { name: 'docs', url: fake.mcpUrl, auth: 'oauth', headers: [] });
+  const inits: Array<string | undefined> = [];
+  const client = new McpOAuth(
+    secrets,
+    (owner, id, name) => agents.mcpServer(owner, id, name),
+    (owner, url) => (owner === '' && url === fake.mcpUrl ? 'PRIVATE CA' : null),
+    async (url, init) => {
+      inits.push(init.upstreamCa);
+      return fake.fetch(url, init);
+    },
+    () => now,
+  );
+
+  await login(fake, client);
+  now += 3_600_000;
+  await client.refresh(setId, 'docs');
+
+  assert.ok(inits.length > 3);
+  assert.deepEqual(new Set(inits), new Set(['PRIVATE CA']));
 });
 
 test('a login without a challenge reads the well-known metadata and the scopes of the resource', async () => {
@@ -314,6 +338,7 @@ test('a resource metadata document for another resource is refused', async () =>
   const client = new McpOAuth(
     secrets,
     (owner, id, name) => agents.mcpServer(owner, id, name),
+    () => null,
     async (url, init) =>
       fake.fetch(url === 'https://mcp.example.com/mcp/' ? fake.mcpUrl : url, init),
     () => now,

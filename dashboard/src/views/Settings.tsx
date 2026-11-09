@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { useUp } from '@/hooks/use-up';
 import { CODEX_LOGIN_OFFERED } from '@/lib/harness';
 import { shortAge } from '@/lib/rough';
@@ -246,7 +247,9 @@ export function Settings() {
         <ApiKeys
           stored={apiKeys}
           busy={busy}
-          onSave={(name, hosts, secret) => act(() => api.putApiKey(name, hosts, secret))}
+          onSave={(name, hosts, secret, upstreamCa) =>
+            act(() => api.putApiKey(name, hosts, secret, upstreamCa))
+          }
           onRemove={(name) => act(() => api.deleteApiKey(name))}
         />
       ) : null}
@@ -462,7 +465,8 @@ function account(stored: CredentialSummary): string {
  *
  * @param stored The stored API keys.
  * @param busy True while a change runs, which disables the buttons.
- * @param onSave Stores a key. An empty secret keeps the stored key. Resolves to true when that succeeded.
+ * @param onSave Stores a key. An empty secret keeps the stored key, and an empty upstream CA removes the upstream CA
+ *   of the hosts. Resolves to true when that succeeded.
  * @param onRemove Removes a key. Resolves to true when that succeeded.
  */
 function ApiKeys({
@@ -473,15 +477,16 @@ function ApiKeys({
 }: {
   stored: ApiKeySummary[];
   busy: boolean;
-  onSave: (name: string, hosts: string[], secret: string) => Promise<boolean>;
+  onSave: (name: string, hosts: string[], secret: string, upstreamCa: string) => Promise<boolean>;
   onRemove: (name: string) => Promise<boolean>;
 }) {
   const [name, setName] = useState('');
   const [hosts, setHosts] = useState('');
   const [secret, setSecret] = useState('');
+  const [upstreamCa, setUpstreamCa] = useState('');
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   // A stored key can keep its secret while its hosts change.
-  const existing = stored.some((key) => key.name === name.trim());
+  const existing = stored.find((key) => key.name === name.trim());
   const ready = name.trim() !== '' && hosts.trim() !== '' && (existing || secret.trim() !== '');
 
   /** Saves the key in the form, and clears the form on success. */
@@ -492,9 +497,10 @@ function ApiKeys({
     const typed = secret.trim();
     setSecret('');
     const list = hosts.split(/[\s,]+/).filter((h) => h !== '');
-    if (await onSave(name.trim(), list, typed)) {
+    if (await onSave(name.trim(), list, typed, upstreamCa)) {
       setName('');
       setHosts('');
+      setUpstreamCa('');
     }
   };
 
@@ -529,6 +535,7 @@ function ApiKeys({
               onClick={() => {
                 setName(key.name);
                 setHosts(key.hosts.join(', '));
+                setUpstreamCa(key.upstreamCa ?? '');
               }}
             >
               Edit
@@ -546,7 +553,11 @@ function ApiKeys({
             </Button>
           </div>
           <p className="text-muted-foreground">
-            {[key.hosts.join(', '), key.account ? `ends ${key.account}` : 'stored'].join(' · ')}
+            {[
+              key.hosts.join(', '),
+              key.account ? `ends ${key.account}` : 'stored',
+              ...(key.upstreamCa ? ['upstream CA'] : []),
+            ].join(' · ')}
           </p>
         </div>
       ))}
@@ -577,6 +588,26 @@ function ApiKeys({
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
         />
+        <Label htmlFor="api-key-upstream-ca">Upstream CA (optional)</Label>
+        <Textarea
+          id="api-key-upstream-ca"
+          className="max-h-40 font-mono text-xs md:text-xs"
+          placeholder="-----BEGIN CERTIFICATE-----"
+          value={upstreamCa}
+          onChange={(e) => setUpstreamCa(e.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          The certificate of a private certificate authority, as PEM. The egress proxy trusts it for
+          the hosts of the key, in addition to the public authorities. Each host has one upstream
+          CA, which your keys and MCP servers for the host share. A save sets it for all hosts of
+          the key, and an empty field removes it.
+        </p>
+        {existing?.mixedUpstreamCas ? (
+          <Notice className="rounded-md border px-3 py-2">
+            The hosts of this key have different upstream CAs. A save with an empty field removes
+            them.
+          </Notice>
+        ) : null}
         <div className="flex justify-end">
           <Button type="submit" disabled={busy || !ready}>
             {existing ? 'Save key' : 'Add key'}

@@ -472,6 +472,46 @@ describe('the front door', () => {
     expect(denials.map((d) => d.category)).toEqual(['plaintext-credential-host', 'port']);
   });
 
+  it('hands a host with an upstream CA of the box to the engine, with the id of the box', async () => {
+    resolvesTo('10.0.0.5');
+    const engine: Array<string | undefined> = [];
+    const engineClients = new Map<number, string>();
+    const fakeEngine = http.createServer();
+    fakeEngine.on('connect', (req, socket: net.Socket) => {
+      engine.push(`${req.url} ${engineClients.get(socket.remotePort ?? 0)}`);
+      socket.end('HTTP/1.1 200 Connection Established\r\n\r\n');
+    });
+    const enginePort = await listen(fakeEngine);
+    const policy: EgressPolicy = {
+      boxes: [
+        {
+          box: 'closed-box',
+          token: CLOSED_TOKEN,
+          open: false,
+          hosts: ['mcp.internal:8443'],
+          upstreamCas: [{ host: 'mcp.internal:8443', cert: 'PRIVATE CA' }],
+        },
+      ],
+      ca: { key: 'K', cert: 'C' },
+      credentials: [],
+    };
+    const front = createForwardServer({
+      policy: () => policy,
+      identify: boxFromAuthorization,
+      interceptPort: () => enginePort,
+      engineClients,
+      applied: () => true,
+      denied: () => {},
+      log: () => {},
+    });
+    const port = await listen(front);
+
+    expect(await connect(port, 'mcp.internal:8443', basic('closed-box', CLOSED_TOKEN))).toBe(
+      'HTTP/1.1 200 Connection Established',
+    );
+    expect(engine).toEqual(['mcp.internal:8443 closed-box']);
+  });
+
   describe('without a valid box identity', () => {
     /** The headers that do not identify a box, by the name of the case. */
     const badHeaders: Array<[string, string | null]> = [

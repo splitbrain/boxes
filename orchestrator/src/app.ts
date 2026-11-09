@@ -90,6 +90,7 @@ import { runtime, setRuntime } from './runtime/runtime.ts';
 import { deploymentId, patchSettings, readSettings } from './settings.ts';
 import { fetchRepo } from './skill-repos.ts';
 import { devTunnelsApi, TunnelReconciler } from './tunnels.ts';
+import { UpstreamCaStore } from './upstream-cas.ts';
 import {
   boxScope,
   claimUnownedData,
@@ -328,7 +329,8 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
   // the rows of the stores, and each write to a store pushes the policy again. The hoisted
   // functions below let the stores be built first.
   const credentials = new CredentialStore(db, () => repushPolicy(), cfg.credentialSet);
-  const apiKeys = new ApiKeyStore(db, () => repushPolicy());
+  const upstreamCas = new UpstreamCaStore(db, () => repushPolicy());
+  const apiKeys = new ApiKeyStore(db, () => repushPolicy(), upstreamCas);
   const profiles = new EgressProfileStore(db, () => repushPolicy());
   const mcpSecrets = new McpSecretStore(db, () => repushPolicy());
   const egress = new EgressManager(
@@ -343,6 +345,7 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
         log.warn('could not handle the refused tokens of MCP servers', { error: err.message });
       });
     },
+    () => upstreamCas.listAll(),
   );
   const notifier = new Notifier(db, cfg);
 
@@ -395,10 +398,15 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
     },
     (owner) => builtinSkills({ hasCredential: (id) => credentials.get(owner, id) !== undefined }),
     mcpSecrets,
+    upstreamCas,
   );
   const mcpOAuth = new McpOAuth(
     mcpSecrets,
     (owner, setId, name) => agents.mcpServer(owner, setId, name),
+    (owner, url) => {
+      const host = mcpHostPattern(url);
+      return host === null ? null : upstreamCas.shared(owner, [host]);
+    },
     opts.mcpFetch,
   );
   // The closure lets the reconciler be built before the manager it reads.
@@ -1103,8 +1111,8 @@ export function buildApp(cfg: Config, db: Db, opts: BuildOptions = {}): Orchestr
 
   app.put('/api/api-keys/:name', async (req) => {
     const { name } = req.params as { name: string };
-    const { hosts, secret } = parseBody(putApiKeyBody, req.body);
-    return apiKeys.summarize(apiKeys.put(userOf(req), name, hosts, secret));
+    const { hosts, secret, upstreamCa } = parseBody(putApiKeyBody, req.body);
+    return apiKeys.summarize(apiKeys.put(userOf(req), name, hosts, secret, upstreamCa));
   });
 
   app.delete('/api/api-keys/:name', async (req, reply) => {

@@ -155,6 +155,7 @@ export const agentMcpServerBody = z.object({
   headers: z
     .array(z.object({ name: z.string(), value: z.string(), secret: z.boolean().default(false) }))
     .default([]),
+  upstreamCa: z.string().optional(),
 });
 
 /** The body of POST /api/agent-sets/:setId/mcp-servers/:name/connect, which starts an OAuth login. */
@@ -208,12 +209,13 @@ export const putCredentialBody = z.object({
 });
 
 /**
- * The body of PUT /api/api-keys/:name, with the hosts of the key and the key.
- * Without a secret, the stored key stays.
+ * The body of PUT /api/api-keys/:name, with the hosts of the key, the key and the upstream CA of the hosts.
+ * Without a secret, the stored key stays. Without an upstream CA, the upstream CAs of the hosts stay.
  */
 export const putApiKeyBody = z.object({
   hosts: z.array(z.string()),
   secret: z.string().trim().min(1, 'must not be empty').optional(),
+  upstreamCa: z.string().optional(),
 });
 
 /**

@@ -583,6 +583,7 @@ test('a bearer token of an MCP server goes into a secret row, and an empty value
       headers: [{ name: 'Authorization', value: '', secret: true }],
       status: null,
       lastError: null,
+      upstreamCa: null,
     },
   ]);
   const stored = db.prepare('SELECT headers FROM agent_mcp_servers').get() as { headers: string };
@@ -766,7 +767,9 @@ test('an OAuth server gets a row without a token, and the editor shows its statu
   };
 
   const saved = mcp.putMcpServer('', id, server);
-  assert.deepEqual(saved.mcpServers, [{ ...server, status: 'disconnected', lastError: null }]);
+  assert.deepEqual(saved.mcpServers, [
+    { ...server, status: 'disconnected', lastError: null, upstreamCa: null },
+  ]);
   const [secret, placeholder] = rowsOf(id, 'todoist').authorization ?? [];
   assert.equal(secret, '');
 
@@ -779,7 +782,12 @@ test('an OAuth server gets a row without a token, and the editor shows its statu
   secrets.markStatus(id, 'todoist', 'failing', 'the server refused the token');
   mcp.putMcpServer('', id, server);
   assert.deepEqual(mcp.getSet('', id).mcpServers, [
-    { ...server, status: 'failing', lastError: 'the server refused the token' },
+    {
+      ...server,
+      status: 'failing',
+      lastError: 'the server refused the token',
+      upstreamCa: null,
+    },
   ]);
   assert.deepEqual(rowsOf(id, 'todoist').authorization, ['Bearer at-1', placeholder]);
   assert.deepEqual(mcp.mcpServer('', id, 'todoist'), server);

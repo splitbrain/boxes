@@ -10,6 +10,7 @@ import type {
   EgressPolicy,
   EgressPushAnswer,
   EgressRefusedToken,
+  EgressUpstreamCa,
 } from '../../shared/types.ts';
 import type { ApiKeyRow, ApiKeyStore } from './api-keys.ts';
 import type { Config } from './config.ts';
@@ -24,6 +25,7 @@ import { type Db, readAppKey, writeAppKey } from './db.ts';
 import { log } from './log.ts';
 import type { McpSecretEntry } from './mcp-secrets.ts';
 import { mcpHostPattern } from './mcp-servers.ts';
+import type { UpstreamCaRow } from './upstream-cas.ts';
 
 /** The app key under which the CA and the control token are stored. */
 const APP_KEY = 'egress';
@@ -122,8 +124,9 @@ export interface RefusedMcpToken {
  * Builds the policy that the proxy runs, for every user and every box.
  *
  * The policy always carries the CA, as boxes created before the first
- * credential already trust it. The proxy intercepts a host only while a
- * credential for it has a deliverable secret. One host can have a credential
+ * credential already trust it. The proxy intercepts a host while a credential
+ * for it has a deliverable secret, and for the boxes of a user with an
+ * upstream CA for the host. One host can have a credential
  * of each user. The proxy selects the credential whose placeholder is in the
  * request. An API key names no header, so the proxy swaps it in whatever
  * header carries its placeholder. A secret of an MCP server names its header
@@ -132,7 +135,8 @@ export interface RefusedMcpToken {
  * A box can always reach the hosts of the credentials with a deliverable
  * secret and of the API keys of its owner, the other hosts that the tools of
  * these credentials need, and the hosts of its MCP servers. The egress profile
- * of the box adds its mode and its own hosts.
+ * of the box adds its mode and its own hosts. Each box gets the upstream CAs
+ * of its owner.
  *
  * @param cfg The configuration of the deployment.
  * @param material The CA and the control token.
@@ -140,6 +144,7 @@ export interface RefusedMcpToken {
  * @param apiKeys The rows of the API key store.
  * @param boxes The boxes that are not deleted.
  * @param mcpSecrets The secret rows of the MCP servers.
+ * @param upstreamCas The rows of the upstream CA store.
  * @returns The policy for the proxy.
  */
 export function composePolicy(
@@ -149,6 +154,7 @@ export function composePolicy(
   apiKeys: readonly ApiKeyRow[],
   boxes: readonly EgressBoxInput[],
   mcpSecrets: readonly McpSecretEntry[] = [],
+  upstreamCas: readonly UpstreamCaRow[] = [],
 ): EgressPolicy {
   const credentials: EgressCredential[] = [];
   const ownerHosts = new Map<string, string[]>();
@@ -194,12 +200,21 @@ export function composePolicy(
     });
   }
 
+  const ownerCas = new Map<string, EgressUpstreamCa[]>();
+  for (const row of upstreamCas) {
+    ownerCas.set(row.owner, [
+      ...(ownerCas.get(row.owner) ?? []),
+      { host: row.host, cert: row.cert },
+    ]);
+  }
+
   const boxPolicies = boxes.map(
     (box): EgressBoxPolicy => ({
       box: box.id,
       token: box.token,
       open: box.open,
       hosts: [...new Set([...box.hosts, ...(ownerHosts.get(box.owner) ?? []), ...box.mcpHosts])],
+      ...(ownerCas.has(box.owner) ? { upstreamCas: ownerCas.get(box.owner) } : {}),
     }),
   );
 
@@ -308,6 +323,7 @@ export class EgressManager {
    * @param boxes The function that returns the boxes that are not deleted, with their profiles and MCP hosts.
    * @param mcpSecrets The function that returns the secret rows of the MCP servers.
    * @param onRefused The function that gets the refused OAuth tokens that a push reports.
+   * @param upstreamCas The function that returns the rows of the upstream CA store.
    */
   constructor(
     /** The deployment's configuration. */
@@ -324,6 +340,8 @@ export class EgressManager {
     private readonly mcpSecrets: () => McpSecretEntry[] = () => [],
     /** Gets the refused OAuth tokens that a push reports. */
     private readonly onRefused: (tokens: RefusedMcpToken[]) => void = () => undefined,
+    /** Returns the rows of the upstream CA store, read on every compose. */
+    private readonly upstreamCas: () => UpstreamCaRow[] = () => [],
   ) {}
 
   /** Loads the material, without talking to the proxy. */
@@ -447,6 +465,7 @@ export class EgressManager {
       this.apiKeys.listAll(),
       this.boxes(),
       mcpSecrets,
+      this.upstreamCas(),
     );
 
     let status: EgressPushAnswer;

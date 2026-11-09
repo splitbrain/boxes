@@ -152,10 +152,14 @@ const upstream = createForwardServer({
 /** Port the upstream tunnel listens on, known once it is bound. */
 let upstreamPort = 0;
 
-/** The controller of the TLS interception engine for the credential hosts. */
+/** The id of the box of each open connection from the front door to the engine, by the local port of the connection. */
+const engineClients = new Map<number, string>();
+
+/** The controller of the TLS interception engine for the credential hosts and the hosts with an upstream CA. */
 const interceptor = new Interceptor({
   policy: () => policy,
   upstreamProxyUrl: () => `http://127.0.0.1:${upstreamPort}`,
+  engineClients,
   denied,
   refusedToken: (report) => {
     refusedTokens.set(report.credentialId, report);
@@ -170,12 +174,14 @@ const interceptor = new Interceptor({
 
 /**
  * The front door, facing the boxes. It forwards vetted requests and tunnels,
- * and hands a CONNECT to a credential host to the interception engine.
+ * and hands a CONNECT to a credential host or to a host with an upstream CA of
+ * the box to the interception engine.
  */
 const front = createForwardServer({
   policy: () => policy,
   identify: boxFromAuthorization,
   interceptPort: () => interceptor.port(),
+  engineClients,
   applied: () => applied,
   denied,
   log,

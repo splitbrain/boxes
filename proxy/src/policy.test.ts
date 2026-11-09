@@ -12,6 +12,8 @@ import {
   policyHash,
   swapCredentialValue,
   upstreamBoxPolicy,
+  upstreamCaCerts,
+  upstreamCasFor,
 } from './policy.ts';
 
 /** The Claude credential. */
@@ -247,6 +249,51 @@ describe('upstreamBoxPolicy', () => {
     expect(hostAllowed('raw.githubusercontent.com', 443, upstream)).toBe(true);
     expect(hostAllowed('example.com', 443, upstream)).toBe(false);
   });
+
+  it('holds the hosts of the upstream CAs of all boxes', () => {
+    const withCa: EgressBoxPolicy = {
+      ...box(false),
+      upstreamCas: [{ host: 'mcp.internal:8443', cert: 'PRIVATE CA' }],
+    };
+    const upstream = upstreamBoxPolicy(policy({ credentials: [], boxes: [withCa] }));
+    expect(upstream.hosts).toEqual(['mcp.internal:8443']);
+  });
+});
+
+describe('upstreamCasFor', () => {
+  /** A box with upstream CAs for two host patterns. */
+  const withCas: EgressBoxPolicy = {
+    box: 'box-1',
+    token: 'a'.repeat(64),
+    open: false,
+    hosts: [],
+    upstreamCas: [
+      { host: 'mcp.internal:8443', cert: 'CA ONE' },
+      { host: '*.corp.example', cert: 'CA TWO' },
+    ],
+  };
+
+  it('finds the CAs whose host pattern matches the host and the port', () => {
+    expect(upstreamCasFor('mcp.internal', 8443, withCas)).toEqual(['CA ONE']);
+    expect(upstreamCasFor('mcp.internal', 443, withCas)).toEqual([]);
+    expect(upstreamCasFor('git.corp.example', 443, withCas)).toEqual(['CA TWO']);
+    expect(upstreamCasFor('git.corp.example', 443, { ...withCas, upstreamCas: undefined })).toEqual(
+      [],
+    );
+  });
+
+  it('lists the certificates of all boxes once', () => {
+    const other: EgressBoxPolicy = {
+      ...withCas,
+      box: 'box-2',
+      token: 'b'.repeat(64),
+      upstreamCas: [{ host: 'mcp.internal:8443', cert: 'CA ONE' }],
+    };
+    expect(upstreamCaCerts(policy({ boxes: [withCas, other, box(true)] }))).toEqual([
+      'CA ONE',
+      'CA TWO',
+    ]);
+  });
 });
 
 describe('isInjectionHost', () => {
@@ -479,6 +526,12 @@ describe('policyHash', () => {
     expect(policyHash(policy({ boxes: [{ ...one, open: true }, two] }))).not.toBe(hash);
     expect(policyHash(policy({ boxes: [{ ...one, hosts: ['a.com'] }, two] }))).not.toBe(hash);
     expect(policyHash(policy({ boxes: [{ ...one, token: 'c'.repeat(64) }, two] }))).not.toBe(hash);
+    const ca = { host: 'mcp.internal', cert: 'PRIVATE CA' };
+    const withCa = policyHash(policy({ boxes: [{ ...one, upstreamCas: [ca] }, two] }));
+    expect(withCa).not.toBe(hash);
+    expect(
+      policyHash(policy({ boxes: [{ ...one, upstreamCas: [{ ...ca, cert: 'OTHER CA' }] }, two] })),
+    ).not.toBe(withCa);
   });
 
   it('never echoes a secret', () => {
@@ -532,6 +585,20 @@ describe('parsePolicy', () => {
     expect(withBox({ open: true, hosts: [' GitHub.com ', '*.Example.com'] }).boxes).toEqual([
       { ...validBox, open: true, hosts: ['github.com', '*.example.com'] },
     ]);
+  });
+
+  it('keeps the upstream CAs of a box with lowercased hosts, and refuses a bad one', () => {
+    expect(
+      withBox({ upstreamCas: [{ host: ' MCP.internal:8443 ', cert: 'PRIVATE CA' }] }).boxes,
+    ).toEqual([{ ...validBox, upstreamCas: [{ host: 'mcp.internal:8443', cert: 'PRIVATE CA' }] }]);
+    expect(withBox({ upstreamCas: [] }).boxes).toEqual([validBox]);
+    expect(() => withBox({ upstreamCas: 'PRIVATE CA' })).toThrow(/must be an array/);
+    expect(() => withBox({ upstreamCas: [{ host: 'mcp.internal', cert: '' }] })).toThrow(
+      /needs a host and a cert/,
+    );
+    expect(() => withBox({ upstreamCas: [{ host: '*', cert: 'PRIVATE CA' }] })).toThrow(
+      /would allow every host/,
+    );
   });
 
   it('accepts the empty policy the proxy boots with', () => {

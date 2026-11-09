@@ -17,6 +17,7 @@ import type {
   AgentItem,
   AgentItemBody,
   AgentMcpServer,
+  AgentMcpServerBody,
   AgentMcpServerState,
   AgentRepoBody,
   AgentSetDetail,
@@ -31,6 +32,7 @@ import { McpSecretStore, OAUTH_HEADER } from './mcp-secrets.ts';
 import {
   MAX_MCP_SERVERS,
   type McpSnapshotEntry,
+  mcpHostPattern,
   resolveMcpServers,
   validMcpServer,
 } from './mcp-servers.ts';
@@ -44,6 +46,7 @@ import {
   repoName,
   repoTree,
 } from './skill-repos.ts';
+import { parseUpstreamCa, UpstreamCaStore } from './upstream-cas.ts';
 
 /**
  * The pattern of a skill name. A name is safe as one path component. The
@@ -113,6 +116,7 @@ export class AgentStore {
    * @param fetcher The function that fetches a repository into its checkout for the owner of its set.
    * @param builtins The function that returns the built-in skills of the orchestrator for a user.
    * @param secrets The store of the secrets of the MCP servers.
+   * @param upstreamCas The store of the upstream CAs of the hosts of the MCP servers.
    */
   constructor(
     /** Where the sets are stored. */
@@ -126,6 +130,8 @@ export class AgentStore {
     private readonly builtins: (owner: string) => BuiltinSkill[] = () => [],
     /** The secrets of the MCP servers. */
     private readonly secrets: McpSecretStore = new McpSecretStore(db, () => undefined),
+    /** The upstream CAs of the hosts of the MCP servers. */
+    private readonly upstreamCas: UpstreamCaStore = new UpstreamCaStore(db, () => undefined),
   ) {}
 
   /** The pulls running now, by repository id. */
@@ -202,7 +208,7 @@ export class AgentStore {
         pulledAt: repo.pulled_at,
         error: repo.error,
       })),
-      mcpServers: this.mcpServers(id).map((server) => this.mcpState(server)),
+      mcpServers: this.mcpServers(id).map((server) => this.mcpState(owner, server)),
     };
   }
 
@@ -260,15 +266,22 @@ export class AgentStore {
 
   /**
    * Gives a stored MCP server in the form that the editor shows, with the
-   * status of its OAuth token.
+   * status of its OAuth token and the upstream CA of its host.
    *
+   * @param owner The owner of the set of the server.
    * @param server The stored server.
    * @returns The server.
    */
-  private mcpState({ setId, ...server }: McpSnapshotEntry): AgentMcpServerState {
+  private mcpState(owner: string, { setId, ...server }: McpSnapshotEntry): AgentMcpServerState {
     const token =
       server.auth === 'oauth' ? this.secrets.get(setId, server.name, OAUTH_HEADER) : undefined;
-    return { ...server, status: token?.status ?? null, lastError: token?.last_error ?? null };
+    const host = mcpHostPattern(server.url);
+    return {
+      ...server,
+      status: token?.status ?? null,
+      lastError: token?.last_error ?? null,
+      upstreamCa: host === null ? null : this.upstreamCas.shared(owner, [host]),
+    };
   }
 
   /**
@@ -435,6 +448,7 @@ export class AgentStore {
     }
     const repos = this.repoRows(id);
     this.db.prepare('DELETE FROM agent_sets WHERE id = ?').run(id);
+    this.upstreamCas.prune(owner);
     for (const repo of repos)
       rmSync(repoDir(this.dataDir, repo.id), { recursive: true, force: true });
   }
@@ -507,14 +521,20 @@ export class AgentStore {
    *
    * @param owner The user.
    * @param id The id of the set.
-   * @param body The name, the URL, the auth mode and the headers of the server.
+   * @param body The name, the URL, the auth mode, the headers and the upstream CA of the server.
    * @returns The changed set.
    * @throws {HttpError} A 404 when the user has no such set, or a 400 when a field is not valid,
    *   the URL or the auth mode of the stored server differs, or the set is full.
    */
-  putMcpServer(owner: string, id: string, body: AgentMcpServer): AgentSetDetail {
+  putMcpServer(owner: string, id: string, body: AgentMcpServerBody): AgentSetDetail {
     this.mustGet(owner, id);
-    const server = validMcpServer(body);
+    const { upstreamCa, ...fields } = body;
+    const server = validMcpServer(fields);
+    const ca = upstreamCa === undefined ? undefined : parseUpstreamCa(upstreamCa);
+    const https = new URL(server.url).protocol === 'https:';
+    if (ca && !https) {
+      throw new HttpError(400, 'upstreamCa: a server without https has no TLS to check');
+    }
     const now = Date.now();
 
     const existing = this.db
@@ -551,6 +571,9 @@ export class AgentStore {
       this.secrets.writeForServer(id, server.name, server.auth, server.headers);
       this.db.prepare('UPDATE agent_sets SET updated_at = ? WHERE id = ?').run(now, id);
     })();
+    const host = mcpHostPattern(server.url);
+    // The host of a server without https can belong to an API key, so its upstream CA stays.
+    if (ca !== undefined && https && host !== null) this.upstreamCas.put(owner, [host], ca);
     return this.getSet(owner, id);
   }
 
@@ -570,6 +593,7 @@ export class AgentStore {
       .run(id, typeof name === 'string' ? name.trim().toLowerCase() : '');
     if (info.changes === 0) throw new HttpError(404, 'No such MCP server');
     this.db.prepare('UPDATE agent_sets SET updated_at = ? WHERE id = ?').run(Date.now(), id);
+    this.upstreamCas.prune(owner);
     return this.getSet(owner, id);
   }
 

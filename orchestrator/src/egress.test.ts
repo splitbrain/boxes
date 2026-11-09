@@ -404,6 +404,27 @@ describe('composePolicy', () => {
     expect(hostsOf('bob-box')).toEqual(['mcp.example.com:443']);
   }, 30_000);
 
+  it('gives each box the upstream CAs of its owner', async () => {
+    const cfg = configFrom();
+    const { store, db } = storeWith(cfg);
+    const material = await resolveEgressMaterial(db);
+    const row = { host: 'mcp.internal:8443', cert: 'PRIVATE CA', created_at: 1, updated_at: 1 };
+    const policy = composePolicy(
+      cfg,
+      material,
+      rows(store),
+      [],
+      [boxInput({ id: 'alice-box', owner: 'alice' }), boxInput({ id: 'bob-box', owner: 'bob' })],
+      [],
+      [{ ...row, owner: 'alice' }],
+    );
+
+    expect(policy.boxes.find((b) => b.box === 'alice-box')?.upstreamCas).toEqual([
+      { host: 'mcp.internal:8443', cert: 'PRIVATE CA' },
+    ]);
+    expect(policy.boxes.find((b) => b.box === 'bob-box')?.upstreamCas).toBeUndefined();
+  }, 30_000);
+
   it('intercepts the GitLab the deployment names, and only that one', async () => {
     const cfg = configFrom({ GITLAB_HOST: 'gitlab.example.com' });
     const { store, db } = storeWith(cfg, { gitlab: GITLAB_TOKEN });

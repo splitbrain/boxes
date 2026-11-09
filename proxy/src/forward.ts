@@ -6,7 +6,7 @@ import net from 'node:net';
 import { type AddressKind, addressKind, answerKind } from '../../shared/cidr.ts';
 import { DEFAULT_PORTS } from '../../shared/hosts.ts';
 import type { EgressBoxPolicy, EgressPolicy } from '../../shared/types.ts';
-import { hostAllowed, hostListed, isInjectionHost } from './policy.ts';
+import { hostAllowed, hostListed, isInjectionHost, upstreamCasFor } from './policy.ts';
 
 /** Time limit to open the upstream connection of a CONNECT, in milliseconds. */
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -212,6 +212,12 @@ export interface ForwardOptions {
   identify: (header: string | undefined, policy: EgressPolicy) => EgressBoxPolicy | null;
   /** Returns the loopback port of the TLS engine, or null for no interception. */
   interceptPort: () => number | null;
+  /**
+   * The id of the box of each open connection to the TLS engine, by the local
+   * port of the connection. The server adds and removes the entries, and the
+   * engine reads them. Undefined for a server that hands nothing to the engine.
+   */
+  engineClients?: Map<number, string>;
   /** Returns true after the first policy push. The server forwards nothing before it. */
   applied: () => boolean;
   /**
@@ -497,7 +503,16 @@ export function createForwardServer(opts: ForwardOptions): http.Server {
           refuse(403, 'Forbidden');
           return;
         }
-        connectToEngine(target, enginePort, clientSocket, head, opts);
+        connectToEngine(target, enginePort, box.box, clientSocket, head, opts);
+        return;
+      }
+      // The engine checks the certificate of a host with an upstream CA of the box.
+      if (
+        enginePort !== null &&
+        target.port !== 80 &&
+        upstreamCasFor(target.host, target.port, box).length > 0
+      ) {
+        connectToEngine(target, enginePort, box.box, clientSocket, head, opts);
         return;
       }
 
@@ -546,6 +561,7 @@ export function createForwardServer(opts: ForwardOptions): http.Server {
  *
  * @param target The vetted destination.
  * @param enginePort The loopback port of the engine.
+ * @param box The id of the box that sent the CONNECT.
  * @param clientSocket The socket of the client.
  * @param head The bytes that the client sent after its CONNECT.
  * @param opts The callbacks of the server.
@@ -553,13 +569,23 @@ export function createForwardServer(opts: ForwardOptions): http.Server {
 function connectToEngine(
   target: Target,
   enginePort: number,
+  box: string,
   clientSocket: net.Socket,
   head: Buffer,
   opts: ForwardOptions,
 ): void {
   const authority = `${target.host}:${target.port}`;
+  let localPort: number | undefined;
   const engine = net.connect({ host: '127.0.0.1', port: enginePort }, () => {
+    localPort = engine.localPort;
+    if (localPort !== undefined) opts.engineClients?.set(localPort, box);
     engine.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`);
+  });
+  engine.on('close', () => {
+    // A new connection can have the port already, when the close event comes late.
+    if (localPort !== undefined && opts.engineClients?.get(localPort) === box) {
+      opts.engineClients.delete(localPort);
+    }
   });
 
   // Once the tunnel is established the client speaks TLS, so a late failure

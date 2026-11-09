@@ -1,7 +1,7 @@
 import type {
   AgentBundlePreview,
   AgentItemBody,
-  AgentMcpServer,
+  AgentMcpServerBody,
   AgentRepoBody,
   AgentSetDetail,
   AgentSetSummary,
@@ -465,13 +465,13 @@ export const api = {
       method: 'DELETE',
     }),
   /**
-   * Adds one MCP server to a set, or changes the headers of a server.
+   * Adds one MCP server to a set, or changes the headers or the upstream CA of a server.
    *
    * @param setId The id of the agent set.
-   * @param body The name, the URL, the auth mode and the headers of the server.
+   * @param body The name, the URL, the auth mode, the headers and the upstream CA of the server.
    * @returns The whole set after the change.
    */
-  putAgentMcpServer: (setId: string, body: AgentMcpServer) =>
+  putAgentMcpServer: (setId: string, body: AgentMcpServerBody) =>
     request<AgentSetDetail>(`/api/agent-sets/${setId}/mcp-servers`, {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -600,12 +600,19 @@ export const api = {
    * @param name The environment variable name of the key.
    * @param hosts The hosts for which the egress proxy swaps in the key.
    * @param secret The key. Without it, the orchestrator keeps the stored key.
-   * @returns The name, the hosts and the last four characters of the key.
+   * @param upstreamCa The upstream CA for all hosts as PEM, an empty string to remove the upstream CA of the hosts,
+   *   or undefined to keep the upstream CAs of the hosts.
+   * @returns The name, the hosts, the last four characters and the upstream CA of the key, and the flag for hosts
+   *   with different upstream CAs.
    */
-  putApiKey: (name: string, hosts: string[], secret?: string) =>
+  putApiKey: (name: string, hosts: string[], secret?: string, upstreamCa?: string) =>
     request<ApiKeySummary>(`/api/api-keys/${encodeURIComponent(name)}`, {
       method: 'PUT',
-      body: JSON.stringify({ hosts, ...(secret ? { secret } : {}) }),
+      body: JSON.stringify({
+        hosts,
+        ...(secret ? { secret } : {}),
+        ...(upstreamCa !== undefined ? { upstreamCa } : {}),
+      }),
     }),
   /**
    * Removes an API key.

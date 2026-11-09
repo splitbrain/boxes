@@ -77,6 +77,9 @@ into `https` requests. An MCP server can have a private address. An authorizatio
 unless it is on the host of the MCP server. The URL must not name a loopback, link-local or reserved address. The
 [egress proxy](egress.md) always allows the host and the port of an MCP server.
 
+An MCP server with `https` can have an [upstream CA](credentials.md#other-api-keys), which the egress proxy and the
+OAuth login trust for the host of the MCP server.
+
 An MCP server uses a bearer token, custom headers, an OAuth login, or no authentication. An MCP server has at most 20
 custom headers, and a header value can have at most 4096 characters. A header value is literal or secret, and an
 `Authorization` header must be secret. The orchestrator stores a bearer token and each secret value with the MCP

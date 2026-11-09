@@ -76,7 +76,8 @@ periodically.
 
 ### Other API keys
 
-You can add API keys for other services, for example OpenRouter. Each key has three fields:
+You can add API keys for other services, for example OpenRouter. Each key has three fields and an optional upstream
+CA:
 
 - **Environment variable**: the name of the variable that holds the placeholder in each box, for example
   `OPENROUTER_API_KEY`. The orchestrator refuses a name that Boxes or the box image sets itself, e.g., `GH_TOKEN` or
@@ -85,6 +86,14 @@ You can add API keys for other services, for example OpenRouter. Each key has th
   with `*.`. The name `*.example.com` includes `api.example.com`, but it does not include `example.com` or
   `a.b.example.com`, and a host can end in a port, as in an [egress profile](egress-profiles.md#modes-and-hosts).
 - **Key**: the secret. To change only the hosts, leave it empty.
+- **Upstream CA**: the certificate of a private certificate authority, as PEM, for a host with a certificate from
+  that authority, e.g., a Kubernetes API server. The [egress proxy](egress.md#upstream-cas) trusts it for the hosts of
+  the key.
+
+A host has one upstream CA. The API keys and [MCP servers](agent-sets.md#mcp-servers) of a user share the upstream CA
+of each host they name. A save sets the upstream CA of all hosts of the key to the content of the field, and an empty
+field removes it. A key shows the upstream CA only when all its hosts have the same one. The orchestrator removes the
+upstream CA of a host together with the last API key or MCP server of the user that names the host.
 
 The placeholder has the same prefix and the same length as the key, so a client that checks the format of its key
 accepts the placeholder. The prefix is the start of the key up to and including the last `-` or `_`, but each part
@@ -131,7 +140,11 @@ characters, or to nothing when the secret is that short — the API never shows 
 (`orchestrator/src/log.ts`) redacts fields whose name or value looks credential-shaped before they reach stderr.
 
 The `api_keys` table holds one row for each of the other API keys, with the variable name, the hosts, the key and the
-placeholder. The API returns only the name, the hosts and the last four characters of the key.
+placeholder. The API returns only the name, the hosts, the upstream CA and the last four characters of the key.
+
+The `upstream_cas` table (`orchestrator/src/upstream-cas.ts`) holds one row for each user and host pattern, with the
+certificates as PEM. The host pattern is the host of the API key as entered, or the host and the port of the MCP
+server. The patterns `mcp.internal` and `mcp.internal:443` are two rows.
 
 ### Refresh and delivery
 

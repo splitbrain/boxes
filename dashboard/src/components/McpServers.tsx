@@ -22,10 +22,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import type {
   AgentMcpAuth,
   AgentMcpHeader,
-  AgentMcpServer,
+  AgentMcpServerBody,
   AgentMcpServerState,
   McpConnectBody,
 } from '../../../shared/types.ts';
@@ -38,18 +39,28 @@ const TOKEN_STATUS = {
 } as const;
 
 /**
+ * Gives the scheme of a URL.
+ *
+ * @param raw The URL as typed.
+ * @returns The scheme with its colon, or null when the text is not a URL.
+ */
+function schemeOf(raw: string): string | null {
+  try {
+    return new URL(raw.trim()).protocol;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Checks if a text is an http or https URL.
  *
  * @param raw The URL as typed.
  * @returns True for an http or https URL.
  */
 function validUrl(raw: string): boolean {
-  try {
-    const url = new URL(raw.trim());
-    return url.protocol === 'https:' || url.protocol === 'http:';
-  } catch {
-    return false;
-  }
+  const scheme = schemeOf(raw);
+  return scheme === 'https:' || scheme === 'http:';
 }
 
 /**
@@ -148,7 +159,8 @@ export function McpSection({
  *
  * The name, the URL and the auth mode are fixed once the server exists. A
  * secret field of a stored server starts empty, and an empty field keeps the
- * stored secret.
+ * stored secret. The upstream CA field starts with the upstream CA of the host,
+ * and a save sets the upstream CA of the host to the content of the field.
  *
  * @param server The server to edit, or null for a new server.
  * @param busy True while a save runs, which disables the buttons.
@@ -170,9 +182,9 @@ export function McpDialog({
   busy: boolean;
   error: string | null;
   onCancel: () => void;
-  onSave: (body: AgentMcpServer) => void;
+  onSave: (body: AgentMcpServerBody) => void;
   onConnect: (
-    body: AgentMcpServer,
+    body: AgentMcpServerBody,
     client: Omit<McpConnectBody, 'origin'>,
   ) => Promise<string | null>;
 }) {
@@ -189,6 +201,8 @@ export function McpDialog({
   const [redirectUri, setRedirectUri] = useState<string | null>(null);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [upstreamCa, setUpstreamCa] = useState(server?.upstreamCa ?? '');
+  const https = schemeOf(url) === 'https:';
 
   /**
    * Checks if the header of a row has a stored secret, so an empty value keeps the secret.
@@ -206,7 +220,7 @@ export function McpDialog({
   };
 
   /** The server that a save sends. */
-  const body: AgentMcpServer = {
+  const body: AgentMcpServerBody = {
     name: name.trim(),
     url: url.trim(),
     auth,
@@ -222,6 +236,7 @@ export function McpDialog({
         : auth === 'headers'
           ? headers.filter((h) => h.name.trim() !== '' || h.value !== '')
           : [],
+    ...(https ? { upstreamCa } : {}),
   };
 
   /**
@@ -389,6 +404,25 @@ export function McpDialog({
                   Add header
                 </Button>
               </div>
+            </div>
+          ) : null}
+
+          {https ? (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="mcp-upstream-ca">Upstream CA (optional)</Label>
+              <Textarea
+                id="mcp-upstream-ca"
+                className="max-h-40 font-mono text-xs md:text-xs"
+                placeholder="-----BEGIN CERTIFICATE-----"
+                value={upstreamCa}
+                onChange={(e) => setUpstreamCa(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                The certificate of a private certificate authority, as PEM. The egress proxy and the
+                OAuth login trust it for the host of the server, in addition to the public
+                authorities. The host shares it with your API keys and MCP servers for the same
+                host.
+              </p>
             </div>
           ) : null}
 

@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, test } from 'vitest';
+import { generateCACertificate } from 'mockttp';
+import { afterEach, beforeAll, beforeEach, test } from 'vitest';
 import { ApiKeyStore, placeholderFor } from './api-keys.ts';
 import { type Db, openDb } from './db.ts';
+import { HttpError } from './http-error.ts';
+import { UpstreamCaStore } from './upstream-cas.ts';
 
 /** The temporary data directory of each test. */
 let dir: string;
@@ -14,17 +17,33 @@ let db: Db;
 let changes: number;
 /** The store under test. */
 let store: ApiKeyStore;
+/** The store of the upstream CAs that the store under test writes. */
+let cas: UpstreamCaStore;
+/** A CA certificate as PEM. */
+let caOne: string;
+/** Another CA certificate as PEM. */
+let caTwo: string;
 
 /** A key in the format of OpenRouter. */
 const KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef';
+
+beforeAll(async () => {
+  caOne = (await generateCACertificate({ subject: { commonName: 'CA one' } })).cert;
+  caTwo = (await generateCACertificate({ subject: { commonName: 'CA two' } })).cert;
+});
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'boxes-api-keys-'));
   db = openDb(dir);
   changes = 0;
-  store = new ApiKeyStore(db, () => {
-    changes += 1;
-  });
+  cas = new UpstreamCaStore(db, () => undefined);
+  store = new ApiKeyStore(
+    db,
+    () => {
+      changes += 1;
+    },
+    cas,
+  );
 });
 
 afterEach(() => {
@@ -42,6 +61,8 @@ test('a key is stored with its hosts and shown as its last four characters', () 
     name: 'OPENROUTER_API_KEY',
     hosts: ['openrouter.ai'],
     account: 'cdef',
+    upstreamCa: null,
+    mixedUpstreamCas: false,
     updatedAt: row!.updated_at,
   });
   assert.equal(changes, 1);
@@ -132,4 +153,62 @@ test('removing a key forgets it, and an unknown name is a 404', () => {
   assert.equal(store.get('', 'OPENROUTER_API_KEY'), undefined);
   assert.deepEqual(store.list(''), []);
   assert.throws(() => store.remove('', 'OPENROUTER_API_KEY'), /No API key/);
+});
+
+test('an upstream CA goes to each host of a key, and the summary shows it', () => {
+  const row = store.put(
+    '',
+    'KUBE_TOKEN',
+    ['a.kube.example:6443', 'b.kube.example:6443'],
+    KEY,
+    caOne,
+  );
+
+  assert.equal(cas.shared('', ['a.kube.example:6443']), `${caOne.trim()}\n`);
+  assert.equal(store.summarize(row).upstreamCa, `${caOne.trim()}\n`);
+});
+
+test('a key shows no upstream CA when its hosts have different ones', () => {
+  store.put('', 'KUBE_TOKEN', ['a.kube.example:6443'], KEY, caOne);
+  store.put('', 'OTHER_TOKEN', ['b.kube.example:6443'], KEY, caTwo);
+  const row = store.put('', 'KUBE_TOKEN', ['a.kube.example:6443', 'b.kube.example:6443'], KEY);
+
+  assert.equal(store.summarize(row).upstreamCa, null);
+  assert.equal(store.summarize(row).mixedUpstreamCas, true);
+  assert.equal(cas.shared('', ['b.kube.example:6443']), `${caTwo.trim()}\n`);
+});
+
+test('an empty upstream CA removes the CA of the hosts of a key', () => {
+  store.put('', 'KUBE_TOKEN', ['a.kube.example:6443'], KEY, caOne);
+  const row = store.put('', 'KUBE_TOKEN', ['a.kube.example:6443'], undefined, '');
+
+  assert.equal(store.summarize(row).upstreamCa, null);
+  assert.equal(store.summarize(row).mixedUpstreamCas, false);
+});
+
+test('an upstream CA stays while a key or an MCP server names its host', () => {
+  store.put('', 'KUBE_TOKEN', ['a.kube.example:6443', 'b.kube.example:6443'], KEY, caOne);
+  store.put('', 'OTHER_TOKEN', ['b.kube.example:6443'], KEY);
+
+  store.put('', 'KUBE_TOKEN', ['a.kube.example:6443'], undefined);
+  assert.equal(cas.shared('', ['b.kube.example:6443']), `${caOne.trim()}\n`);
+
+  store.remove('', 'OTHER_TOKEN');
+  assert.equal(cas.shared('', ['b.kube.example:6443']), null);
+  assert.equal(cas.shared('', ['a.kube.example:6443']), `${caOne.trim()}\n`);
+});
+
+test('an upstream CA belongs to its user', () => {
+  store.put('alice', 'KUBE_TOKEN', ['a.kube.example:6443'], KEY, caOne);
+  store.put('bob', 'KUBE_TOKEN', ['a.kube.example:6443'], KEY);
+
+  assert.equal(store.summarize(store.get('bob', 'KUBE_TOKEN')!).upstreamCa, null);
+});
+
+test('a key with an upstream CA that is not a certificate is not stored', () => {
+  assert.throws(
+    () => store.put('', 'KUBE_TOKEN', ['a.kube.example:6443'], KEY, 'not a certificate'),
+    (err: unknown) => err instanceof HttpError && err.statusCode === 400,
+  );
+  assert.equal(store.get('', 'KUBE_TOKEN'), undefined);
 });

@@ -12,6 +12,7 @@ import { reservedEnvNames } from './boxenv.ts';
 import { accountOf } from './credentials.ts';
 import type { Db } from './db.ts';
 import { HttpError } from './http-error.ts';
+import { parseUpstreamCa, UpstreamCaStore } from './upstream-cas.ts';
 
 /** One row of the api_keys table, with its hosts parsed. */
 export interface ApiKeyRow {
@@ -68,12 +69,15 @@ export class ApiKeyStore {
   /**
    * @param db The database that holds the api_keys table.
    * @param onChange The function that the store calls after each write.
+   * @param upstreamCas The store of the upstream CAs of the hosts of the keys.
    */
   constructor(
     /** The database that holds the api_keys table. */
     private readonly db: Db,
     /** The function that the store calls after each write. */
     private readonly onChange: () => void,
+    /** The upstream CAs of the hosts of the keys. */
+    private readonly upstreamCas: UpstreamCaStore = new UpstreamCaStore(db, () => undefined),
   ) {}
 
   /**
@@ -127,14 +131,17 @@ export class ApiKeyStore {
    * @param hosts The hosts of the key, as exact hostnames or `*.` wildcards, each with an
    *   optional port.
    * @param secret The key, or undefined to keep the stored key.
+   * @param upstreamCa The upstream CA for all hosts of the key as PEM, an empty string to remove the upstream CA of
+   *   the hosts, or undefined to keep the upstream CAs of the hosts.
    * @returns The stored row.
-   * @throws {HttpError} A 400 when the name, a host or the secret is not valid.
+   * @throws {HttpError} A 400 when the name, a host, the secret or the upstream CA is not valid.
    */
   put(
     owner: string,
     name: string,
     hosts: readonly string[],
     secret: string | undefined,
+    upstreamCa?: string,
   ): ApiKeyRow {
     if (!NAME_PATTERN.test(name)) {
       throw new HttpError(400, `${name} is not a valid environment variable name`);
@@ -149,6 +156,8 @@ export class ApiKeyStore {
         throw new HttpError(400, `hosts: ${pattern} is not a hostname or a *. wildcard`);
       }
     }
+
+    const ca = upstreamCa === undefined ? undefined : parseUpstreamCa(upstreamCa);
 
     const existing = this.get(owner, name);
     const key = secret ?? existing?.secret;
@@ -175,6 +184,8 @@ export class ApiKeyStore {
       )
       .run({ ...row, hosts: JSON.stringify(row.hosts) });
     this.onChange();
+    if (ca !== undefined) this.upstreamCas.put(owner, row.hosts, ca);
+    this.upstreamCas.prune(owner);
     return row;
   }
 
@@ -191,19 +202,23 @@ export class ApiKeyStore {
       .run(owner, name);
     if (info.changes === 0) throw new HttpError(404, `No API key named ${name}`);
     this.onChange();
+    this.upstreamCas.prune(owner);
   }
 
   /**
    * Makes the form of a key that the API reports. It holds only the last characters of the secret.
    *
    * @param row The stored key.
-   * @returns The summary.
+   * @returns The summary, with the upstream CA that all hosts of the key share and the flag for hosts with different
+   *   upstream CAs.
    */
   summarize(row: ApiKeyRow): ApiKeySummary {
     return {
       name: row.name,
       hosts: row.hosts,
       account: accountOf(row.secret),
+      upstreamCa: this.upstreamCas.shared(row.owner, row.hosts),
+      mixedUpstreamCas: this.upstreamCas.mixed(row.owner, row.hosts),
       updatedAt: row.updated_at,
     };
   }

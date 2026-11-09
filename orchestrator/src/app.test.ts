@@ -890,6 +890,7 @@ test('an MCP server is written, refused and removed over the API', async () => {
       headers: [{ name: 'Authorization', value: '', secret: true }],
       status: null,
       lastError: null,
+      upstreamCa: null,
     },
   ]);
   assert.ok(!put.body.includes('ghp_'));

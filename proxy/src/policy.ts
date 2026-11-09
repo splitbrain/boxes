@@ -2,7 +2,12 @@
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { DEFAULT_PORTS, hostMatches, hostPatternProblem } from '../../shared/hosts.ts';
-import type { EgressBoxPolicy, EgressCredential, EgressPolicy } from '../../shared/types.ts';
+import type {
+  EgressBoxPolicy,
+  EgressCredential,
+  EgressPolicy,
+  EgressUpstreamCa,
+} from '../../shared/types.ts';
 
 /** The policy of a proxy before the first push. It is frozen, because all callers share the same object. */
 export const EMPTY_POLICY: EgressPolicy = Object.freeze({
@@ -53,9 +58,9 @@ export function hostListed(host: string, port: number, box: EgressBoxPolicy): bo
 
 /**
  * Makes the policy for the connections of the interception engine, which
- * have no box identity. The policy is closed and allows the hosts of all
- * credentials, because the front door has already vetted each target against
- * the policy of its box.
+ * have no box identity. The policy is closed and allows every host that the
+ * engine intercepts, because the front door has already vetted each target
+ * against the policy of its box.
  *
  * @param policy The policy of the proxy.
  * @returns The policy for the upstream tunnel.
@@ -119,7 +124,7 @@ export function credentialsForHost(
 }
 
 /**
- * Checks if the proxy intercepts the TLS of a host on a port.
+ * Checks if the proxy intercepts the TLS of a host on a port to swap in a credential.
  *
  * @param host The hostname or IP literal.
  * @param port The destination port.
@@ -131,13 +136,42 @@ export function isInjectionHost(host: string, port: number, policy: EgressPolicy
 }
 
 /**
- * Lists every host pattern that the policy intercepts, for logging.
+ * Finds the upstream CAs of a box for a host on a port.
+ *
+ * @param host The hostname or IP literal.
+ * @param port The destination port.
+ * @param box The policy of the box.
+ * @returns The certificates of the matching upstream CAs, in policy order.
+ */
+export function upstreamCasFor(host: string, port: number, box: EgressBoxPolicy): string[] {
+  return (box.upstreamCas ?? [])
+    .filter((ca) => hostMatches(host, port, ca.host))
+    .map((ca) => ca.cert);
+}
+
+/**
+ * Lists the certificates of the upstream CAs of all boxes.
  *
  * @param policy The policy to read.
- * @returns The host patterns of all credentials, without duplicates.
+ * @returns The certificates, without duplicates.
+ */
+export function upstreamCaCerts(policy: EgressPolicy): string[] {
+  return [...new Set(policy.boxes.flatMap((b) => (b.upstreamCas ?? []).map((ca) => ca.cert)))];
+}
+
+/**
+ * Lists every host pattern that the policy intercepts.
+ *
+ * @param policy The policy to read.
+ * @returns The host patterns of all credentials and of all upstream CAs, without duplicates.
  */
 export function injectionPatterns(policy: EgressPolicy): string[] {
-  return [...new Set(policy.credentials.flatMap((c) => c.hosts))];
+  return [
+    ...new Set([
+      ...policy.credentials.flatMap((c) => c.hosts),
+      ...policy.boxes.flatMap((b) => (b.upstreamCas ?? []).map((ca) => ca.host)),
+    ]),
+  ];
 }
 
 /**
@@ -270,6 +304,12 @@ export function policyHash(policy: EgressPolicy): string {
         token: createHash('sha256').update(b.token).digest('hex'),
         open: b.open,
         hosts: [...b.hosts].map((h) => h.toLowerCase()).sort(),
+        upstreamCas: (b.upstreamCas ?? [])
+          .map(
+            (ca) =>
+              `${ca.host.toLowerCase()} ${createHash('sha256').update(ca.cert).digest('hex')}`,
+          )
+          .sort(),
       }))
       .sort((a, b) => a.box.localeCompare(b.box)),
     ca: policy.ca ? createHash('sha256').update(policy.ca.cert).digest('hex') : null,
@@ -329,7 +369,19 @@ export function parsePolicy(input: unknown): EgressPolicy {
       const problem = hostPatternProblem(pattern);
       if (problem !== null) return fail(`box ${box} hosts: ${problem}`);
     }
-    return { box, token, open: b.open, hosts };
+    const rawCas = b.upstreamCas ?? [];
+    if (!Array.isArray(rawCas)) return fail(`box ${box} upstreamCas must be an array`);
+    const upstreamCas = rawCas.map((entry, j): EgressUpstreamCa => {
+      const { host, cert } = (entry ?? {}) as Record<string, unknown>;
+      if (typeof host !== 'string' || typeof cert !== 'string' || !host.trim() || !cert.trim()) {
+        return fail(`box ${box} upstream CA ${j} needs a host and a cert`);
+      }
+      const pattern = host.trim().toLowerCase();
+      const problem = hostPatternProblem(pattern);
+      if (problem !== null) return fail(`box ${box} upstream CA ${j}: ${problem}`);
+      return { host: pattern, cert };
+    });
+    return { box, token, open: b.open, hosts, ...(upstreamCas.length > 0 ? { upstreamCas } : {}) };
   });
 
   let ca: EgressPolicy['ca'] = null;

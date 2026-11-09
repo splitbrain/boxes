@@ -53,7 +53,8 @@ hosts that accept this credential. It decrypts each request, examines the creden
 For the [other API keys](credentials.md#other-api-keys), the proxy applies these rules to every header of the request,
 not only to the credential header.
 
-The proxy does not intercept any other host. It only sends that traffic through, and does not read it.
+The proxy intercepts the hosts of the credentials and the hosts with an [upstream CA](#upstream-cas). The traffic to all
+other hosts passes through the proxy unread.
 
 Each credential is valid for a fixed set of hosts:
 
@@ -66,6 +67,14 @@ Each credential is valid for a fixed set of hosts:
 | Dev Tunnels | `*.rel.tunnels.api.visualstudio.com` |
 | Other API keys | the hosts set for each key |
 | Secrets of [MCP servers](agent-sets.md#mcp-servers) | the host and the port of the MCP server |
+
+## Upstream CAs
+
+The proxy checks the certificate of an intercepted host against the public certificate authorities. A user can add an
+upstream CA for a host of an [API key](credentials.md#other-api-keys) or of an [MCP server](agent-sets.md#mcp-servers).
+The proxy then also trusts the upstream CA for the host, in requests from the boxes of the user. The boxes of other
+users keep the public check. The proxy intercepts a host with an upstream CA also when the host has no credential. The
+tool in the box then checks the certificate of the proxy, and the proxy checks the certificate of the host.
 
 ## The deployment certificate authority
 
@@ -89,8 +98,8 @@ The proxy (`proxy/src/`) runs four listeners:
 
 1. control channel: the orchestrator connects to it on the Compose network and sends the rules and the CA.
 2. front door: the tools in a box connect to it on the box network and send their requests.
-3. interception engine: the front door hands connections to it for the hosts that have a credential. It decrypts the
-   request, examines the credential header, and sends the request on.
+3. interception engine: the front door hands connections to it for the hosts that have a credential or an upstream CA
+   of the box. It decrypts the request, examines the credential header, and sends the request on.
 4. upstream tunnel: the only way out of the engine. The engine connects to it on the loopback.
 
 ```mermaid
@@ -161,8 +170,8 @@ then makes its own request, and that request leaves through the upstream tunnel.
 every forwarder does.
 
 The front door vets a target against the policy of the box. The connections of the engine have no box identity, so the
-upstream tunnel vets them against a closed policy with the hosts of all credentials. The engine connects only to
-credential hosts, and the front door has already vetted the target against the policy of the box.
+upstream tunnel vets them against a closed policy with the hosts of all credentials and all upstream CAs. The engine
+connects only to intercepted hosts, and the front door has already vetted the target against the policy of the box.
 
 The front door and the upstream tunnel are the same server code. Only the front door hands connections to the engine.
 The tunnel never intercepts, so the connections of the engine cannot loop back into it.
@@ -228,6 +237,12 @@ the client without delay.
 The engine resolves no name of its own. It sends every request to the upstream tunnel, and the tunnel vets the
 destination and opens the socket.
 
+The engine has one passthrough rule for each upstream CA, before the rule without one. The rule of an upstream CA
+matches a request when the box of its connection has the upstream CA for the host of the request. The front door
+records the box of each connection to the engine under the local port of the connection. The engine reads the box from
+the remote port of a request. A changed set of upstream CAs restarts the engine, because the rules are fixed at its
+start.
+
 ### Control channel
 
 The control channel (`control.ts`) binds to the container's own address on the network that carries the default route.
@@ -239,10 +254,10 @@ The orchestrator side (`orchestrator/src/egress.ts`) generates the CA and that t
 database. A placeholder is generated when a credential is stored, and is kept with it. A restarted proxy has lost the
 policy, so the reconciler pushes it again every minute.
 
-`composePolicy` builds one policy for each box that is not deleted, with its id, its token, the mode of its profile and
-its hosts. The hosts are those of the profile, the credentials and the API keys of the owner, and the MCP servers of the
-box. The policy holds the credentials, the API keys and the secrets of the MCP servers of every [user](users.md), so one
-host can have more than one credential. The proxy selects the credential whose placeholder is in the request. In the
-policy, the id of a credential has its owner as a prefix, for example `alice/claude`, because the ids must be unique. A
-credential of the empty user has no prefix. The credential of a secret of an MCP server names only the header of the
-secret, and its id is `<owner>/mcp/<set>/<server>/<header>`.
+`composePolicy` builds one policy for each box that is not deleted, with its id, its token, the mode of its profile, its
+hosts and the upstream CAs of its owner. The hosts are those of the profile, the credentials and the API keys of the
+owner, and the MCP servers of the box. The policy holds the credentials, the API keys and the secrets of the MCP servers
+of every [user](users.md), so one host can have more than one credential. The proxy selects the credential whose
+placeholder is in the request. In the policy, the id of a credential has its owner as a prefix, for example
+`alice/claude`, because the ids must be unique. A credential of the empty user has no prefix. The credential of a secret
+of an MCP server names only the header of the secret, and its id is `<owner>/mcp/<set>/<server>/<header>`.
