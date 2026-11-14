@@ -49,22 +49,43 @@ if [ -n "${TMPDIR:-}" ]; then
   fi
 fi
 
-# --- the CA bundle -------------------------------------------------------------
-# The system authorities and the deployment CA together. The orchestrator
-# writes the CA to ~/.boxes/proxy-ca.crt and points the CA env vars at the
-# bundle. Some tools, such as git-lfs, trust only the file they are pointed
-# at, so it must hold every authority. Written even without a CA, because
-# nix.conf of the full image names the file.
+# --- the trust store -----------------------------------------------------------
+# /etc/ssl/certs links to ~/.boxes/certs. The setup points that link at a new
+# copy of the system certificates with the deployment CA, which the
+# orchestrator writes to ~/.boxes/proxy-ca.crt. A new name for each copy lets
+# one rename switch the link. ca-bundle.crt links to the bundle file, because
+# the CA env vars and nix.conf of the full image name it.
+
+# Adds the deployment CA to the bundle file and the hash links of a copy of
+# the trust store, so clients that read either one trust it.
+#
+# $1 is the directory of the copy. Returns non-zero when a step fails.
+add_proxy_ca() {
+  local hash
+  hash=$(openssl x509 -noout -subject_hash -in "$proxy_ca") \
+    && cp "$proxy_ca" "$1/boxes-proxy-ca.pem" \
+    && cat "$proxy_ca" >> "$1/ca-certificates.crt" \
+    && ln -s boxes-proxy-ca.pem "$1/$hash.0"
+}
+
 proxy_ca=/home/agent/.boxes/proxy-ca.crt
-bundle=/home/agent/.boxes/ca-bundle.crt
+certs=/home/agent/.boxes/certs
+copy=
 if mkdir -p /home/agent/.boxes \
-   && cat /etc/ssl/certs/ca-certificates.crt > "$bundle.tmp" \
-   && { [ ! -f "$proxy_ca" ] || cat "$proxy_ca" >> "$bundle.tmp"; } \
-   && mv "$bundle.tmp" "$bundle"; then
-  log "wrote the CA bundle to $bundle"
+   && copy=$(mktemp -d "$certs.XXXXXX") \
+   && chmod 0755 "$copy" \
+   && cp -a /etc/ssl/certs-system/. "$copy/" \
+   && { [ ! -f "$proxy_ca" ] || add_proxy_ca "$copy"; } \
+   && ln -sfn certs/ca-certificates.crt "$certs.new" \
+   && mv -T "$certs.new" /home/agent/.boxes/ca-bundle.crt \
+   && ln -sfn "$(basename "$copy")" "$certs.new" \
+   && mv -T "$certs.new" "$certs"; then
+  find /home/agent/.boxes -maxdepth 1 -name 'certs.*' ! -name "$(basename "$copy")" -exec rm -rf {} +
+  log "wrote the trust store to $copy"
 else
-  rm -f "$bundle.tmp"
-  fail "could not write $bundle; TLS would fail for nix, git, curl and other tools"
+  [ -z "$copy" ] || rm -rf "$copy"
+  rm -f "$certs.new"
+  fail "could not write the trust store to $certs; TLS would fail for nix, git, curl and other tools"
 fi
 
 # --- directories an agent needs to find already there ------------------------

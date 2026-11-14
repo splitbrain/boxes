@@ -14,8 +14,9 @@
 # and the target ships the image once the test has passed.
 #
 # boxes-setup seeds a new home once from /usr/local/share/boxes/home and does
-# not refresh it. /home/agent in the image is an empty mount point. Thus a
-# tool that must follow the image is installed outside the home.
+# not refresh it. /home/agent in the image is a mount point, and its only
+# entry is the link of the trust store. Thus a tool that must follow the
+# image is installed outside the home.
 #
 # The build context is the repository root, because the file service is
 # built from files/ and shared/.
@@ -242,9 +243,18 @@ RUN mkdir -p /usr/local/lib/boxes/setup.d
 
 # The root filesystem is read-only at runtime, so every mount point must
 # exist in the image. /workspace, /home/agent and /nix are writable binds, and
-# /tmp is a tmpfs. The home stays empty, because the mount hides it in a box.
-RUN mkdir -p /workspace /nix /home/agent \
- && chown agent:agent /workspace /nix /home/agent
+# /tmp is a tmpfs. The mount hides the home in a box, so the only entry of
+# the home is the link of the trust store.
+#
+# The trust store /etc/ssl/certs links to ~/.boxes/certs, and the image points
+# that link at the system certificates in /etc/ssl/certs-system. So a build
+# step and update-ca-certificates use the system certificates. In a box,
+# boxes-setup points the link at a copy with the deployment CA added.
+RUN mkdir -p /workspace /nix /home/agent/.boxes \
+ && mv /etc/ssl/certs /etc/ssl/certs-system \
+ && ln -s /etc/ssl/certs-system /home/agent/.boxes/certs \
+ && ln -s /home/agent/.boxes/certs /etc/ssl/certs \
+ && chown -h agent:agent /workspace /nix /home/agent /home/agent/.boxes /home/agent/.boxes/certs
 
 # The files of a new home. boxes-setup copies them into a home that has no
 # seed marker, and overwrites nothing. They belong to root and are readable
@@ -300,7 +310,9 @@ RUN test "$(id -u)" = "${AGENT_UID}" \
  && test "$(id -g)" = "${AGENT_GID}" \
  && test "$(id -un)" = "agent" \
  && test -w /workspace && test -w /home/agent && test -w /nix \
- && test -z "$(ls -A /home/agent)" \
+ && test "$(ls -A /home/agent)" = .boxes && test "$(ls -A /home/agent/.boxes)" = certs \
+ && test "$(readlink /home/agent/.boxes/certs)" = /etc/ssl/certs-system \
+ && test -f /etc/ssl/certs/ca-certificates.crt \
  && test "$(command -v boxes-setup)" = "/usr/local/bin/boxes-setup" \
  && boxes-setup \
  && test -f /home/agent/.boxes/seeded \
@@ -328,6 +340,15 @@ RUN test "$(id -u)" = "${AGENT_UID}" \
  && bash -lc 'set -eu; IFS=:; for d in $0; do \
       case ":$PATH:" in *":$d:"*) ;; *) echo "a login shell lost $d" >&2; exit 1 ;; esac; \
     done' "$PATH"
+
+# The setup adds a proxy CA to the trust store. A client that reads only the
+# bundle file and a client that reads only the hash links both trust it.
+RUN openssl req -x509 -newkey rsa:2048 -nodes -subj '/CN=Boxes test CA' -days 1 \
+      -keyout /tmp/test-ca.key -out /home/agent/.boxes/proxy-ca.crt 2>/dev/null \
+ && boxes-setup \
+ && openssl verify -no-CApath -CAfile /etc/ssl/certs/ca-certificates.crt /home/agent/.boxes/proxy-ca.crt \
+ && openssl verify -no-CAfile -CApath /etc/ssl/certs /home/agent/.boxes/proxy-ca.crt \
+ && test "$(find /home/agent/.boxes -maxdepth 1 -name 'certs.*' | wc -l)" = 1
 
 # Node has the requested major and comes from NodeSource. The vendor check
 # catches apt preferring Ubuntu's nodejs.
@@ -562,7 +583,7 @@ ARG NIX_VERSION
 RUN test "$(id -u)" = "${AGENT_UID}" \
  && test "$(id -un)" = "agent" \
  && test "$HOME" = "/home/agent" \
- && test -z "$(ls -A /home/agent)" \
+ && test "$(ls -A /home/agent)" = .boxes && test "$(ls -A /home/agent/.boxes)" = certs \
  && test "$(command -v nix)" = "/usr/local/bin/nix" \
  && nix --version | grep -qF "${NIX_VERSION}" \
  && boxes-setup \

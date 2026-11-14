@@ -3,8 +3,8 @@ import { HARNESSES } from './harness.ts';
 import { HOME_DIR } from './runtime/runtime.ts';
 
 /**
- * The path of the CA bundle. The box setup writes the system authorities and
- * the deployment CA to it, and the CA variables point to it.
+ * The path of the CA bundle. It links to the bundle file of the trust store
+ * that the box setup writes with the system certificates and the deployment CA.
  */
 const CA_PATH = `${HOME_DIR}/.boxes/ca-bundle.crt`;
 
@@ -80,9 +80,8 @@ export function boxEnv(inputs: BoxEnvInputs): Record<string, string> {
   env.no_proxy = 'localhost,127.0.0.1';
 
   if (inputs.hasCa) {
-    // The box setup writes the system authorities and the CA to CA_PATH. The
-    // variables below point node, gh, git, git-lfs, curl and Codex to it. A tool
-    // that reads none of them fails TLS only for the intercepted hosts.
+    // The variables below point node, gh, git, git-lfs, curl and Codex to
+    // CA_PATH. A tool that ignores /etc/ssl/certs, such as node, needs them.
     env.NODE_EXTRA_CA_CERTS = CA_PATH;
     env.SSL_CERT_FILE = CA_PATH;
     env.GIT_SSL_CAINFO = CA_PATH;
