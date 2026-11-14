@@ -75,8 +75,8 @@ executable file in `/usr/local/lib/boxes/setup.d/` in name order. Use a number p
 - The setup and all steps together have a limit of 60 seconds.
 
 When a step runs, the certificate of the egress proxy CA is at `~/.boxes/proxy-ca.crt` (only when the deployment has
-one), and `~/.boxes/ca-bundle.crt` holds the certificates of the system authorities and of that CA. The environment has
-the proxy variables (`HTTPS_PROXY`, `NO_PROXY`).
+one). `/etc/ssl/certs` links to a copy of the system trust store `/etc/ssl/certs-system` with that CA added. The
+environment has the proxy variables (`HTTPS_PROXY`, `NO_PROXY`).
 
 ## Environment variables
 
