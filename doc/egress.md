@@ -82,10 +82,12 @@ The orchestrator creates a certificate authority once and stores it in the [data
 certificate and the key to the proxy with the rules. The proxy then creates a certificate for each host that it
 intercepts.
 
-The orchestrator also writes the certificate to `~/.boxes/proxy-ca.crt` in each box, and the
-[box setup](boxes.md#the-setup) writes it together with the system certificates to `~/.boxes/ca-bundle.crt`. The
-environment variables `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and `CURL_CA_BUNDLE` contain the path
-of that bundle. A tool that uses none of these variables fails on the intercepted hosts, and works on all other hosts.
+The orchestrator also writes the certificate to `~/.boxes/proxy-ca.crt` in each box. The
+[box setup](boxes.md#the-setup) writes a trust store with the system certificates and that certificate to the home,
+and `/etc/ssl/certs` links to it. So every tool that uses `/etc/ssl/certs` accepts the certificates of the proxy. The
+environment variables `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and `CURL_CA_BUNDLE` contain the path of
+the bundle file of the trust store, for tools such as Node that use their own list of certificate authorities. A tool
+that uses only its own list fails on the intercepted hosts, and works on all other hosts.
 
 ## Settings
 
@@ -261,3 +263,32 @@ of every [user](users.md), so one host can have more than one credential. The pr
 placeholder is in the request. In the policy, the id of a credential has its owner as a prefix, for example
 `alice/claude`, because the ids must be unique. A credential of the empty user has no prefix. The credential of a secret
 of an MCP server names only the header of the secret, and its id is `<owner>/mcp/<set>/<server>/<header>`.
+
+### Trust store of a box
+
+The root file system of a box is read-only, so the box image makes `/etc/ssl/certs` a link to `~/.boxes/certs`. The
+system trust store of the image is in `/etc/ssl/certs-system`. In the image, `~/.boxes/certs` links back to the system
+trust store, so a build step and `update-ca-certificates` use it. The mount of the home hides that link. So the
+entrypoint of the image writes the same link into a home that has none, for example in a new box or a login container.
+
+`boxes-setup` (`box-image/setup.sh`) copies the system trust store to a new directory `~/.boxes/certs.<random>`. It adds
+the CA to the bundle file of the copy and as a hash link, because some tools read only one of them. Then it points
+`~/.boxes/certs` at the copy and deletes the older copies. `~/.boxes/ca-bundle.crt` links to the bundle file of the
+copy.
+
+In the diagram, a solid arrow is a link, and a dotted arrow is a step of the setup.
+
+```mermaid
+flowchart TD
+    subgraph before["image, login container, new home"]
+        etc1["/etc/ssl/certs/"] --> home1["~/.boxes/certs/"]
+        home1 --> sys1["/etc/ssl/certs-system/"]
+    end
+
+    subgraph after["box after the setup"]
+        etc2["/etc/ssl/certs/"] --> home2["~/.boxes/certs/"]
+        home2 --> copy["~/.boxes/certs.&lt;random&gt;/"]
+        sys2["/etc/ssl/certs-system/"] -. "copy" .-> copy
+        ca["~/.boxes/proxy-ca.crt"] -. "add" .-> copy
+    end
+```

@@ -146,8 +146,8 @@ file operations wait for it. When a step fails, the box gets the status `error` 
 2. It runs `boxes-setup`, a shell script of the base image at `/usr/local/bin/boxes-setup` (source
    `box-image/setup.sh`), with a limit of 60 seconds. The script first seeds a new home with the files of
    `/usr/local/share/boxes/home`, once: the marker `~/.boxes/seeded` records the seed, and the copy overwrites no file.
-   Then it prepares the home for the tools of the base image: it empties `TMPDIR`, builds the CA bundle, and sets the
-   credential helpers of `gh` and `glab`. Then it runs
+   Then it prepares the home for the tools of the base image: it empties `TMPDIR`, writes the trust store of the box,
+   and sets the credential helpers of `gh` and `glab`. Then it runs
    the [setup steps](custom-images.md#setup-steps) of the image in `/usr/local/lib/boxes/setup.d/`. The steps of the
    full image (source `box-image/setup.d/`) check `/nix`, add the CA to the trust store of Chromium, and link the
    browsers.
