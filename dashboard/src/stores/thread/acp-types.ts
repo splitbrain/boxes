@@ -160,6 +160,7 @@ export type ThreadUpdate =
   | { sessionUpdate: typeof UPDATE_KIND.currentMode; currentModeId: string }
   | { sessionUpdate: typeof UPDATE_KIND.availableCommands; availableCommands?: AvailableCommand[] }
   | { sessionUpdate: typeof UPDATE_KIND.configOption; configOptions?: ThreadConfigOption[] }
+  | { sessionUpdate: typeof UPDATE_KIND.sessionInfo; _meta?: Record<string, unknown> | null }
   // Forward compatibility, because an adapter can send a kind that is newer than this build.
   | { sessionUpdate: string; [key: string]: unknown };
 

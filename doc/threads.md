@@ -43,6 +43,10 @@ are uploaded to the box's workspace when the prompt is sent; the agent receives 
 While the agent works, a stop button replaces the send button. It cancels the turn. A command the turn left running in
 the background is not cancelled by this; see "Background work" below.
 
+After a turn, Claude Code can predict the next prompt. The empty text area then shows that prompt in gray. Tab writes it
+into the text area without sending it. Claude Code sends no prediction for the first turn of a thread and in the plan
+mode.
+
 ### Slash commands
 
 Type `/` at the start of the text area to list the slash commands the agent's adapter accepts. The list filters as you

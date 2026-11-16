@@ -61,6 +61,8 @@ export interface ThreadSnapshot {
   plan: PlanEntry[] | null;
   /** The slash commands the adapter accepts, for the composer to complete. */
   commands: AvailableCommand[];
+  /** The prompt that the agent expects the user to send next, or null. */
+  promptSuggestion: string | null;
   /** The last send or connection error, or null. */
   error: string | null;
   /**
@@ -94,6 +96,7 @@ export const INITIAL_SNAPSHOT: ThreadSnapshot = {
   configOptions: [],
   plan: null,
   commands: [],
+  promptSuggestion: null,
   error: null,
   loading: true,
   truncated: false,
@@ -413,6 +416,7 @@ export class ThreadStore {
       messages: this.messageViews(null),
       plan: this.model.plan,
       commands: this.model.commands,
+      promptSuggestion: this.model.promptSuggestion,
       loading: false,
       truncated: this.truncated,
       rebuilds: this.rebuilds,
@@ -463,13 +467,15 @@ export class ThreadStore {
       this.snapshot.modes !== this.model.modes ||
       this.snapshot.configOptions !== this.model.configOptions ||
       this.snapshot.plan !== this.model.plan ||
-      this.snapshot.commands !== this.model.commands
+      this.snapshot.commands !== this.model.commands ||
+      this.snapshot.promptSuggestion !== this.model.promptSuggestion
     ) {
       this.emit({
         modes: this.model.modes,
         configOptions: this.model.configOptions,
         plan: this.model.plan,
         commands: this.model.commands,
+        promptSuggestion: this.model.promptSuggestion,
       });
     }
     this.refreshMessages(touched);
@@ -558,7 +564,9 @@ export class ThreadStore {
     if (!sessionId) throw new Error('no ACP thread yet');
     if (blocks.length === 0) return;
 
-    this.emit({ error: null });
+    // The prompt answers the suggestion, so the composer stops showing it.
+    this.model.promptSuggestion = null;
+    this.emit({ error: null, promptSuggestion: null });
     try {
       await client.request(ACP_METHOD.sessionPrompt, {
         sessionId,

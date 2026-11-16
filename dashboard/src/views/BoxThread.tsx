@@ -377,6 +377,8 @@ export function BoxThread() {
                 <ThreadLoading />
               ) : (
                 <Thread
+                  // A suggestion is for the next prompt, so a running turn shows none.
+                  promptSuggestion={state.isRunning ? null : state.promptSuggestion}
                   aboveMessages={
                     state.truncated ? (
                       <FullHistoryButton

@@ -47,6 +47,7 @@ import {
   type ImageMessagePartComponent,
   type ToolCallMessagePartComponent,
   unstable_useComposerInputHistory,
+  useAui,
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
@@ -69,6 +70,7 @@ import {
   useState,
   type ComponentType,
   type FC,
+  type KeyboardEvent,
   type PropsWithChildren,
   type ReactNode,
 } from "react";
@@ -115,6 +117,11 @@ export type ThreadProps = {
    * that loads the older messages of a cut thread.
    */
   aboveMessages?: ReactNode | undefined;
+  /**
+   * Boxes edit: the prompt that the agent expects the user to send next. The
+   * composer offers it in an empty draft.
+   */
+  promptSuggestion?: string | null | undefined;
 };
 
 /** The overrides when the caller gives none. */
@@ -179,12 +186,14 @@ const ThreadHistorySkeleton: FC = () => (
  * @param autoFocus True to focus the composer on mount.
  * @param aboveComposer Boxes edit: content shown directly above the composer.
  * @param aboveMessages Boxes edit: content shown above the first message.
+ * @param promptSuggestion Boxes edit: the prompt that the agent expects next.
  */
 export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   autoFocus = true,
   aboveComposer,
   aboveMessages,
+  promptSuggestion,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -195,6 +204,7 @@ export const Thread: FC<ThreadProps> = ({
         autoFocus={autoFocus}
         aboveComposer={aboveComposer}
         aboveMessages={aboveMessages}
+        promptSuggestion={promptSuggestion ?? null}
       />
     </ThreadComponentsContext.Provider>
   );
@@ -207,6 +217,7 @@ export const Thread: FC<ThreadProps> = ({
  * @param autoFocus True to focus the composer on mount.
  * @param aboveComposer Content shown directly above the composer.
  * @param aboveMessages Content shown above the first message.
+ * @param promptSuggestion The prompt that the agent expects next, or null.
  */
 const ThreadRoot: FC<{
   /** True while the thread shows as a new chat. */
@@ -217,7 +228,9 @@ const ThreadRoot: FC<{
   aboveComposer?: ReactNode | undefined;
   /** Content shown above the first message. */
   aboveMessages?: ReactNode | undefined;
-}> = ({ isEmpty, autoFocus, aboveComposer, aboveMessages }) => {
+  /** The prompt that the agent expects next, or null. */
+  promptSuggestion: string | null;
+}> = ({ isEmpty, autoFocus, aboveComposer, aboveMessages, promptSuggestion }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   // Boxes edit: keeps the newest output in view once a turn outgrows the
   // screen. The turn anchor alone holds the prompt at the top and follows nothing.
@@ -285,7 +298,7 @@ const ThreadRoot: FC<{
             <ThreadFollowupSuggestions />
             {/* Boxes edit: the last thing read before typing. */}
             {aboveComposer}
-            <Composer autoFocus={autoFocus} />
+            <Composer autoFocus={autoFocus} suggestion={promptSuggestion} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>
@@ -424,15 +437,30 @@ const ThreadSuggestionItem: FC = () => {
  * The message composer, with attachments and the slash-command list.
  *
  * @param autoFocus True to focus the input on mount.
+ * @param suggestion The prompt that the agent expects next, or null.
  */
 const Composer: FC<{
   /** True to focus the input on mount. */
   autoFocus: boolean;
-}> = ({ autoFocus }) => {
+  /** Boxes edit: the prompt that the agent expects next, or null. */
+  suggestion: string | null;
+}> = ({ autoFocus, suggestion }) => {
   // Boxes edit: ArrowUp on an empty draft walks back through sent messages,
   // and ArrowDown returns to the draft.
   const history = unstable_useComposerInputHistory();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const aui = useAui();
+
+  // Boxes edit: the agent's predicted next prompt shows as the placeholder of
+  // an empty draft, and Tab takes it into the draft without sending it.
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    history.onKeyDown(e);
+    if (e.defaultPrevented || e.key !== "Tab" || !suggestion) return;
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.nativeEvent.isComposing) return;
+    if (e.currentTarget.value !== "") return;
+    e.preventDefault();
+    aui.composer.setText(suggestion);
+  };
 
   // Boxes edit: keeps the caret in the composer after a send, so the next
   // prompt needs no tap.
@@ -457,7 +485,7 @@ const Composer: FC<{
             <ComposerAttachments />
             <ComposerPrimitive.Input
               ref={inputRef}
-              placeholder="Send a message..."
+              placeholder={suggestion ? `${suggestion}  (Tab)` : "Send a message..."}
               className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
               rows={1}
               autoFocus={autoFocus}
@@ -467,7 +495,7 @@ const Composer: FC<{
               submitMode="ctrlEnter"
               enterKeyHint="enter"
               aria-label="Message input"
-              onKeyDown={history.onKeyDown}
+              onKeyDown={onKeyDown}
             />
             <ComposerAction />
           </div>
