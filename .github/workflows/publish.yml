@@ -21,9 +21,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A new run on the same ref cancels the run before it.
+# A new run on the same ref cancels the run before it. A pull request run is
+# grouped by its number, because a run that starts after its pull request was
+# merged gets the ref of the base branch and would cancel the run of the merge.
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -196,7 +198,8 @@ jobs:
       # and which does not count against the cache limit of GitHub Actions.
       # A pull request writes its own layers to the cache of GitHub Actions,
       # so its next push reuses them. One cache per image, so the builds do
-      # not evict each other's layers.
+      # not evict each other's layers. A cache write that the token refuses
+      # does not fail the build.
       #
       # A plain single-platform manifest, because watchtower compares the
       # digest to decide whether an image is new.
@@ -220,7 +223,7 @@ jobs:
           cache-to: >-
             ${{ github.event_name == 'push'
             && format('type=registry,ref={0}/cache:orchestrator,mode=max', env.IMAGE_BASE)
-            || 'type=gha,mode=max,scope=orchestrator' }}
+            || 'type=gha,mode=max,scope=orchestrator,ignore-error=true' }}
           provenance: false
           sbom: false
 
@@ -241,7 +244,7 @@ jobs:
           cache-to: >-
             ${{ github.event_name == 'push'
             && format('type=registry,ref={0}/cache:egress-proxy,mode=max', env.IMAGE_BASE)
-            || 'type=gha,mode=max,scope=egress-proxy' }}
+            || 'type=gha,mode=max,scope=egress-proxy,ignore-error=true' }}
           provenance: false
           sbom: false
 
@@ -264,7 +267,7 @@ jobs:
           cache-to: >-
             ${{ github.event_name == 'push'
             && format('type=registry,ref={0}/cache:box,mode=max', env.IMAGE_BASE)
-            || 'type=gha,mode=max,scope=box' }}
+            || 'type=gha,mode=max,scope=box,ignore-error=true' }}
           provenance: false
           sbom: false
 
